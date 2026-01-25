@@ -27,7 +27,7 @@
     do {                                                                                                  \
         if (not (cond)) {                                                                                 \
             printf("Assertion failed (%s:%d): %s\n", __FILE__, __LINE__, #cond);                          \
-            asm("trap;");                                                                                 \
+            asm volatile("s_trap 0 \n\t");                                                                                 \
         }                                                                                                 \
     } while(0)
 
