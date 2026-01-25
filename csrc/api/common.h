@@ -245,7 +245,7 @@ public:
     }
 
     inline void run(const RunArgT &params, const std::vector<FeatureT> &required_features) {
-        // check_if_all_features_are_supported_and_abort(required_features);
+        check_if_all_features_are_supported_and_abort(required_features);
         run_(params, required_features);
     }
 };
