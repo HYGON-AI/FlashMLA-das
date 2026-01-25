@@ -1,10 +1,6 @@
 #pragma once
 
-#include <math_constants.h>
 #include <cute/tensor.hpp>
-#include <cutlass/cluster_launch.hpp>
-#include <cooperative_groups.h>
-#include <cutlass/arch/reg_reconfig.h>
 #include <cutlass/arch/arch.h>
 #include <kerutils/kerutils.cuh>
 
@@ -78,66 +74,15 @@ struct SharedMemoryPlan {
     float2 sM[32];
     float2 sL[64];   // For reduction across WG0/1 in epilogue
     float final_max_logits[64], final_lse[64];
-    transac_bar_t bar_q, bar_k0_free[2], bar_k0_ready[2], bar_k1_free[2], bar_k1_ready[2], bar_is_kv_valid_ready;
+    // transac_bar_t bar_q, bar_k0_free[2], bar_k0_ready[2], bar_k1_free[2], bar_k1_ready[2], bar_is_kv_valid_ready;
 };
 
-using TiledMMA_QK = decltype(make_tiled_mma(
-    GMMA::MMA_64x64x16_F32BF16BF16_SS<GMMA::Major::K, GMMA::Major::K>{},
-    Layout<Shape<_1, _1, _1>>{}
-));
 
-using TiledMMA_PV_LocalP = decltype(make_tiled_mma(
-    GMMA::MMA_64x256x16_F32BF16BF16_RS<GMMA::Major::K, GMMA::Major::MN>{},
-    Layout<Shape<_1, _1, _1>>{}
-));
 
-using TiledMMA_PV_RemoteP = decltype(make_tiled_mma(
-    GMMA::MMA_64x256x16_F32BF16BF16_SS<GMMA::Major::K, GMMA::Major::MN>{},
-    Layout<Shape<_1, _1, _1>>{}
-));
 
-template<
-    typename Shape_Q, typename TMA_Q
->
-struct TmaParams {
-    Shape_Q shape_Q; TMA_Q tma_Q;
-    CUtensorMap tensor_map_O;
-};
 
-enum NamedBarriers : uint32_t {
-    wg0_bunch_0_ready = 0,
-    wg1_bunch_0_ready = 1,
-    wg0_s0_ready = 2,
-    wg1_s1_ready = 3,
-    sL_ready = 4,
-    warpgroup0_sync = 5,
-    warpgroup1_sync = 6,
-    epilogue_sync = 7
-};
-
-// Save rPb (64x64, bfloat16) to sP using the stmatrix instruction
-template<
-    typename Tensor0,
-    typename Tensor1
->
-static __forceinline__ __device__ void save_rS_to_sS(
-    Tensor0 const &rPb,
-    Tensor1 const &sP,
-    int idx_in_warpgroup
-) {
-    auto r2s_copy = make_tiled_copy_C(
-        Copy_Atom<SM90_U32x4_STSM_N, bf16>{},
-        TiledMMA_QK{}
-    );
-    ThrCopy thr_copy = r2s_copy.get_slice(idx_in_warpgroup);
-    Tensor thr_copy_rPb = thr_copy.retile_S(rPb);
-    Tensor thr_copy_sP = thr_copy.partition_D(sP);
-    cute::copy(r2s_copy, thr_copy_rPb, thr_copy_sP);
-}
-
-template<typename TMAParams>
 static __device__ __forceinline__ void
-devfunc(const SparseAttnFwdParams &params, const TMAParams &tma_params);
+devfunc(const SparseAttnFwdParams &params);
 
 static void run(const SparseAttnFwdParams &params);
 

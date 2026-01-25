@@ -10,3 +10,6 @@ compile_commands.json
 .cache
 /dev
 /.clangd
+*.log
+**/*_hip*
+**/*.hip

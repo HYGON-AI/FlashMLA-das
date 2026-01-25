@@ -84,24 +84,5 @@ struct Traits {
 
 };
 
-template<
-    typename ShapeQ, typename TMA_Q,
-    typename ShapeK, typename TMA_K,
-    typename ShapeO, typename TMA_O
->
-struct TmaParams {
-    ShapeQ shape_Q;
-    TMA_Q tma_Q;
-    ShapeK shape_K;
-    TMA_K tma_K;
-    ShapeO shape_O;
-    TMA_O tma_O;
-};
 
-enum NamedBarriers : int {
-    sScale0Ready = 0,
-    sScale1Ready = 1,
-    sP0Ready = 2,
-    rO1sP0sV0RIssued = 3,
-    sMInitialized = 4,
-};
+
