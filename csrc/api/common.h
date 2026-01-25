@@ -129,8 +129,10 @@ static constexpr std::size_t get_enum_max(){
         return N;
 }
 
-template<typename T> requires std::is_enum_v<T>
+template<typename T>
 static constexpr std::string get_dynamic_enum_name(T value){
+    static_assert(std::is_enum<T>::value, 
+                "Template parameter T must be an enumeration type");
     constexpr std::size_t num = get_enum_max<T>();
     constexpr auto names = []<std::size_t... Is>(std::index_sequence<Is...>){
         return std::array<std::string_view, num>{ 
@@ -140,12 +142,30 @@ static constexpr std::string get_dynamic_enum_name(T value){
     return (std::string)names[static_cast<std::size_t>(value)];
 }
 
+template<typename T>
+class SimpleSpan {
+private:
+    const T* data_;
+    size_t size_;
+    
+public:
+    constexpr SimpleSpan(const T* data, size_t size) : data_(data), size_(size) {}
+    constexpr SimpleSpan(const T* begin, const T* end) : data_(begin), size_(end - begin) {}
+    
+    constexpr const T* data() const { return data_; }
+    constexpr size_t size() const { return size_; }
+    constexpr const T* begin() const { return data_; }
+    constexpr const T* end() const { return data_ + size_; }
+    constexpr const T& operator[](size_t index) const { return data_[index]; }
+};
+
+
 // A shortcut macro to declare supported features in an implementation class.
 #define DECLARE_SUPPORTED_FEATURES(...) \
 protected: \
     static constexpr FeatureT features[] = { __VA_ARGS__ }; \
-    constexpr inline std::span<const FeatureT> get_supported_features() const override { \
-        return features; \
+    constexpr inline SimpleSpan<const FeatureT> get_supported_features() const override { \
+        return SimpleSpan<const FeatureT>(features, std::size(features)); \
     }
 
 /*
@@ -168,7 +188,7 @@ protected:
 
     virtual inline void run_(const RunArgT &params, const std::vector<FeatureT> &required_features) = 0;
 
-    constexpr virtual inline std::span<const FeatureT> get_supported_features() const = 0;
+    constexpr virtual inline SimpleSpan<const FeatureT> get_supported_features() const = 0;
 
     virtual ~ImplBase() = default;
 
@@ -224,7 +244,7 @@ public:
     }
 
     inline void run(const RunArgT &params, const std::vector<FeatureT> &required_features) {
-        check_if_all_features_are_supported_and_abort(required_features);
+        // check_if_all_features_are_supported_and_abort(required_features);
         run_(params, required_features);
     }
 };

@@ -7,7 +7,7 @@ enum class ModelType {
     MODEL1
 };
 
-struct __align__(4*8) DecodingSchedMeta {
+struct alignas(32) DecodingSchedMeta {
     int begin_req_idx, end_req_idx;     // Both inclusive
     int begin_block_idx, end_block_idx; // Inclusive, exclusive
     int begin_split_idx;

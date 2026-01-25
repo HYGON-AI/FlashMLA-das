@@ -1,7 +1,7 @@
 #pragma once
 
 #include <cutlass/numeric_types.h>
-#include <cutlass/arch/barrier.h>
+// #include <cutlass/arch/barrier.h>
 #include <cute/tensor.hpp>
 #include "defines.h"
 
