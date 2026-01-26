@@ -16,10 +16,11 @@ template<ModelType MODEL_TYPE, int NUM_HEADS>
 class KernelTemplate {
 public:
 
-static_assert(NUM_HEADS == 64 || NUM_HEADS == 128);
-static constexpr int NUM_M_BLOCKS = NUM_HEADS / 64;
-static constexpr int CLUSTER_SIZE = NUM_M_BLOCKS;
-
+static_assert(NUM_HEADS == 64 || NUM_HEADS == 128 || NUM_HEADS == 16);
+// todo only support tp8
+static constexpr int BLOCK_M = 16;
+static constexpr int NUM_M_BLOCKS = NUM_HEADS / BLOCK_M;
+static constexpr bool Is_causal = false;
 static constexpr int HEAD_DIM_K = MODEL_TYPE == ModelType::V32 ? 576 : 512;
 static constexpr int HEAD_DIM_V = 512;
 static constexpr int HEAD_DIM_ROPE = 64;
@@ -28,67 +29,88 @@ static constexpr int HEAD_DIM_NOPE = HEAD_DIM_K - HEAD_DIM_ROPE;
 static constexpr int QUANT_TILE_SIZE = MODEL_TYPE == ModelType::V32 ? 128 : 64;
 static constexpr int NUM_SCALES = MODEL_TYPE == ModelType::V32 ? 4 : 8;  // For MODEL1: 7 fp8_e4m3 + 1 padding
 
-static constexpr int NUM_THREADS = 128*3;
-static constexpr int BLOCK_M = 64;
+static constexpr int NUM_THREADS = 256;
 static constexpr int TOPK_BLOCK_SIZE = 64;
-static constexpr int NUM_K_BUFS = 2;
-
-using SmemLayoutQTile = decltype(tile_to_shape(
-    GMMA::Layout_SW128_Atom<bf16, GMMA::Major::K>{},
-    Shape<Int<BLOCK_M>, Int<64>>{}
-));
-
-template<int NUM_TILES>
-using SmemLayoutQTiles = decltype(tile_to_shape(
-    SmemLayoutQTile{},
-    Shape<Int<BLOCK_M>, Int<64*NUM_TILES>>{},
-    Step<_1, _2>{}
-));
-
-using SmemLayoutQ = SmemLayoutQTiles<HEAD_DIM_K/64>;
-
-using SmemLayoutKTile = decltype(tile_to_shape(
-    GMMA::Layout_INTER_Atom<bf16, GMMA::Major::K>{},
-    Shape<Int<TOPK_BLOCK_SIZE>, _64>{},
-    Step<_1, _2>{}
-));
-
-template<int NUM_TILES>
-using SmemLayoutKTiles = decltype(tile_to_shape(
-    SmemLayoutKTile{},
-    Shape<Int<TOPK_BLOCK_SIZE>, Int<64*NUM_TILES>>{},
-    Step<_1, _2>{}
-));
-
-template<int NUM_TILES>
-using SmemLayoutKTilesTransposed = decltype(composition(
-	SmemLayoutKTiles<NUM_TILES>{},
-	Layout<Shape<Int<64*NUM_TILES>, Int<TOPK_BLOCK_SIZE>>, Stride<Int<TOPK_BLOCK_SIZE>, _1>>{}
-));
-
-static constexpr int OBUF_SW = 64;
-using SmemLayoutOBufAtom = GMMA::Layout_K_SW128_Atom<bf16>;
-using SmemLayoutOBuf = decltype(tile_to_shape(
-    SmemLayoutOBufAtom{},
-    Shape<Int<BLOCK_M>, Int<HEAD_DIM_V>>{},
-    Step<_1, _2>{}
-));
-
-using SmemLayoutOAccumBuf = Layout<
-    Shape<Int<BLOCK_M>, Int<HEAD_DIM_V>>,
-    Stride<Int<520>, _1>	// We use stride = 520 here to avoid bank conflict
+using elem_type = cutlass::bfloat16_t;
+using MMA_Atom_Arch = std::conditional_t<
+    std::is_same_v<elem_type, cutlass::half_t>,
+    MMA_Atom<GFX928_16x16x64_F32F16F16F32_NT>,
+    MMA_Atom<GFX928_16x16x64_F32BF16BF16F32_NT>
 >;
+static constexpr int kNWarps = 4;
+using ValLayoutMNK = Layout<Shape<_1, _1, _1>>;
+using TiledMma = TiledMMA<
+    MMA_Atom_Arch,
+    Layout<Shape<_1, Int<kNWarps>, _1>>,  // 1x4x1 or 1x8x1 thread group
+    ValLayoutMNK>;
 
-using SmemLayoutK = SmemLayoutKTiles<HEAD_DIM_K/64>;
-using SmemLayoutV = SmemLayoutKTilesTransposed<HEAD_DIM_V/64>;
-using SmemLayoutHalfV = SmemLayoutKTilesTransposed<HEAD_DIM_V/64/2>;
+using MMA_Atom_Arch_16_16_32 = std::conditional_t<
+    std::is_same_v<elem_type, cutlass::half_t>,
+    MMA_Atom<GFX928_16x16x32_F32F16F16F32_NN>,
+    MMA_Atom<GFX928_16x16x32_F32BF16BF16F32_NN>
+>;
+using TiledMma_16_16_32 = TiledMMA<
+    MMA_Atom_Arch_16_16_32,
+    Layout<Shape<_1, Int<kNWarps>, _1>>,  // 1x4x1 or 1x8x1 thread group
+    ValLayoutMNK>;
 
-using SmemLayoutS = decltype(tile_to_shape(
-    GMMA::Layout_K_SW128_Atom<bf16>{},
-    Shape<Int<BLOCK_M>, Int<TOPK_BLOCK_SIZE>>{}
-));
+using MMA_Atom_Arch_16x32_NT = std::conditional_t<
+    std::is_same_v<elem_type, cutlass::half_t>,
+    MMA_Atom<GFX928_16x32x16_F32F16F16F32_NT>,
+    MMA_Atom<GFX928_16x32x16_F32BF16BF16F32_NT>
+>;
+using TiledMma_O = TiledMMA<
+    MMA_Atom_Arch_16x32_NT,
+    Layout<Shape<_1, Int<kNWarps>, _1>>,  // 1x4x1 or 1x8x1 thread group
+    ValLayoutMNK>;
 
+using SmemLayoutAtomK = decltype(composition(
+    Swizzle<3, 3, 3>{},
+    Layout<Shape<Int<8>, Int<32>>, Stride<Int<32>, _1>>{}));
+using SmemLayoutK = decltype(tile_to_shape(
+    SmemLayoutAtomK{},
+    Shape<Int<TOPK_BLOCK_SIZE>, Int<8 * 32>>{}));
+
+using SmemLayoutAtomV = SmemLayoutAtomK;   
+using SmemLayoutV = decltype(tile_to_shape(
+    SmemLayoutAtomV{},
+    Shape<Int<TOPK_BLOCK_SIZE>, Int<512>>{}));
+
+using SmemLayoutVtransposed = decltype(
+    composition(SmemLayoutV{}, make_layout(Shape<Int<512>, Int<TOPK_BLOCK_SIZE>>{}, GenRowMajor{})));
+using SmemLayoutVtransposedNoSwizzle = decltype(get_nonswizzle_portion(SmemLayoutVtransposed{}));
+
+using SmemLayoutAtomP = Layout<Shape<Int<4*16*16>>, Stride<Int<1>>>;
+using SmemLayoutP = decltype(tile_to_shape(
+    SmemLayoutAtomP{},
+    Shape<Int<4*16*16>>{}));
+using SmemLayoutRow = Layout<Shape<_128>, Stride<_1>>; 
+
+using Element = cutlass::bfloat16_t;
+using ElementAccum = float;
 struct SharedMemoryPlan {
+    union {
+        struct {
+            cute::array_aligned<Element, cute::cosize_v<SmemLayoutV>> smem_v;
+        };
+        struct {
+            // cute::array_aligned<typename Kernel_traits::Element, cute::cosize_v<typename Kernel_traits::SmemLayoutV_tmp>> smem_v_tmp;  // Double buffer
+            cute::array_aligned<Element, cute::cosize_v<SmemLayoutP>> smem_p;
+            cute::array_aligned<ElementAccum, cute::cosize_v<SmemLayoutRow>> smem_row_sum;
+            cute::array_aligned<ElementAccum, cute::cosize_v<SmemLayoutRow>> smem_row_max;
+
+        };
+        // struct {
+        //     cute::array_aligned<typename Kernel_traits::ElementAccum, cute::cosize_v<typename Kernel_traits::SmemLayoutO>> smem_o;
+        //     // cute::array_aligned<typename Kernel_traits::Element, cute::cosize_v<typename Kernel_traits::SmemLayoutP>> smem_p;
+        //     // cute::array_aligned<typename Kernel_traits::ElementAccum, cute::cosize_v<typename Kernel_traits::SmemLayoutRow>> smem_row_sum;
+        //     // cute::array_aligned<typename Kernel_traits::ElementAccum, cute::cosize_v<typename Kernel_traits::SmemLayoutRow>> smem_row_max;
+        // };
+        // struct {
+        //     cute::array_aligned<typename Kernel_traits::Element, cute::cosize_v<typename Kernel_traits::SmemLayoutQ>> smem_q;
+        // };
+    };
+
     // array_aligned<bf16, cosize_v<SmemLayoutQ>> q;
     // union {
     //     array_aligned<bf16, cosize_v<SmemLayoutK>> k[NUM_K_BUFS];
@@ -131,9 +153,8 @@ struct SharedMemoryPlan {
 
 
 
-
-
-
+static __device__ __forceinline__ void
+compute_attn_1rowblock_splitkv_sparse_mla_fp8(const SparseAttnDecodeParams &params, const DecodingSchedMeta& sched_meta, int batch_idx);
 
 static __device__ __forceinline__ void
 devfunc(const SparseAttnDecodeParams &params);
