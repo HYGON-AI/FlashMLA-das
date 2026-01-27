@@ -53,7 +53,7 @@ get_mla_metadata_kernel(const GetDecodeSchedMetaParams params) {
         first_block_idx_shared[i] = cur_first_block_idx;
         last_block_idx_shared[i] = cur_last_block_idx;
     }
-    for (int offset = 16; offset >= 1; offset /= 2) {
+    for (int offset = 32; offset >= 1; offset /= 2) {
         total_num_blocks += __shfl_xor(total_num_blocks, offset);
     }
     __syncthreads();
