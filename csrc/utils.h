@@ -347,5 +347,19 @@ __forceinline__ __device__ auto convert_layout_acc_Aregs(const TiledMma& tiled_m
     return tSrACC;
 }
 
+__forceinline__ __device__ bool
+is_positive_infinity(const float& f_val)
+{
+    union Fp32{
+        uint32_t as_bits;
+        float as_value;
+    };
+    Fp32 fp32;
+    fp32.as_value = f_val;
+    Fp32 inf_tmp;
+    inf_tmp.as_value = INFINITY;
+
+    return fp32.as_bits == inf_tmp.as_bits;
+}
 
 }
