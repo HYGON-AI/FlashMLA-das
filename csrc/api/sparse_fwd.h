@@ -4,7 +4,7 @@
 
 #include "params.h"
 
-// #include "sm90/prefill/sparse/phase1.h"
+#include "sm90/prefill/sparse/phase1.h"
 
 
 enum class FwdFeatures : int {
@@ -39,7 +39,7 @@ protected:
     void run_(const SparseAttnFwdParams &params, const std::vector<FeatureT> &required_features) override {
         DISPATCH_HEAD_DIM(params.d_qk, HEAD_DIM_QK, [&]() {
             DISPATCH_BOOLEAN_FLAG(params.topk_length != nullptr, HAVE_TOPK_LENGTH, [&]() {
-                // sm90::fwd::run_fwd_phase1_kernel<HEAD_DIM_QK, HAVE_TOPK_LENGTH>(params);
+                sm90::fwd::run_fwd_phase1_kernel<HEAD_DIM_QK, HAVE_TOPK_LENGTH>(params);
             });
         });
     }
@@ -208,34 +208,12 @@ static std::vector<at::Tensor> sparse_attn_prefill_interface(
         required_features.push_back(FwdFeatures::TOPK_LENGTH);
     }
 
-    // if (is_sm90a) {
-    //     Fwd_Sm90_Impl fwd_impl;
-    //     fwd_impl.run(params, required_features);
-    // } else if (is_sm100f) {
-    //     if (h_q == 64) {
-    //         Fwd_Sm100_Head64_Impl fwd_impl;
-    //         fwd_impl.run(params, required_features);
-    //     } else if (h_q == 128) {
-    //         Fwd_Sm100_Head128_Small_TopK_Impl small_topk_impl;
-    //         Fwd_Sm100_Head128_Impl regular_impl;
-    //         bool use_small_topk_impl = false;
-    //         if (
-    //             (topk <= 1280 && small_topk_impl.check_if_all_features_are_supported(required_features)) ||
-    //             !regular_impl.check_if_all_features_are_supported(required_features)
-    //         ) {
-    //             use_small_topk_impl = true;
-    //         }
-    //         if (use_small_topk_impl) {
-    //             small_topk_impl.run(params, required_features);
-    //         } else {
-    //             regular_impl.run(params, required_features);
-    //         }
-    //     } else {
-    //         TORCH_CHECK(false, "Unsupported h_q: ", h_q);
-    //     }
-    // } else {
-    //     TORCH_CHECK(false, "Unsupported architecture");
-    // }
+    if (is_sm90a) {
+        Fwd_Sm90_Impl fwd_impl;
+        fwd_impl.run(params, required_features);
+    } else {
+        TORCH_CHECK(false, "Unsupported architecture");
+    }
 
     return {out, max_logits, lse};
 }

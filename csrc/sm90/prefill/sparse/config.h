@@ -19,61 +19,97 @@ static constexpr int D_Q = D_QK;
 static constexpr int D_K = D_QK;
 static constexpr int D_V = 512;
 
-static constexpr int B_H = 64;
+static constexpr int kNWarps = 4;
+static constexpr int B_H = 16;
 static constexpr int B_TOPK = 64;    // TopK block size
-static constexpr int NUM_THREADS = 128*3;
+static constexpr int NUM_THREADS = kNWarps * 64;
 static constexpr float MAX_INIT_VAL = -1e30;    // We use this number as the initial value for mi (max logits)
 
-template<int NUM_TILES>
-using SmemLayoutQTiles = decltype(coalesce(tile_to_shape(
-    GMMA::Layout_K_SW128_Atom<bf16>{},
-    Shape<Int<B_H>, Int<64*NUM_TILES>>{},
-    Step<_1, _2>{}
-), Shape<_1, _1>{}));
+using Element = cutlass::bfloat16_t;
+using elem_type = Element;
+using ElementAccum = float;
+using index_t = int64_t;
+static constexpr int kBlockM = B_H;
+static constexpr int kBlockN = B_TOPK;
+static constexpr int kHeadDim = D_QK;
+static constexpr int kHeadDimV = D_V;
 
-template<int NUM_TILES>
-using SmemLayoutOTiles = decltype(coalesce(tile_to_shape(
-    GMMA::Layout_K_SW128_Atom<bf16>{},
-    Shape<Int<B_H>, Int<64*NUM_TILES>>{},
-    Step<_1, _2>{}
-), Shape<_1, _1>{}));
+using ValLayoutMNK = Layout<Shape<_1, _1, _1>>;
+// 没打开?
+// #if defined(__gfx936__) || defined(__gfx938__) || 1
+    // using MMA_Atom_Arch = std::conditional_t<
+    //     std::is_same_v<elem_type, cutlass::half_t>,
+    //     MMA_Atom<GFX928_16x16x32_F32F16F16F32_NT>,
+    //     MMA_Atom<GFX928_16x16x32_F32BF16BF16F32_NT>
+    // >;
+using MMA_Atom_Arch = std::conditional_t<
+    std::is_same_v<elem_type, cutlass::half_t>,
+    MMA_Atom<GFX928_16x16x32_F32F16F16F32_NN>,
+    MMA_Atom<GFX928_16x16x32_F32BF16BF16F32_NN>
+>;
+using TiledMma = TiledMMA<
+    MMA_Atom_Arch,
+    Layout<Shape<_1, Int<kNWarps>, _1>>,  // 1x4x1 or 1x8x1 thread group
+    ValLayoutMNK>;
+// #endif
 
-template<int NUM_TILES>
-using SmemLayoutKTiles = decltype(coalesce(tile_to_shape(
-    GMMA::Layout_SW128_Atom<bf16, GMMA::Major::K>{},
-    Shape<Int<B_TOPK>, Int<64*NUM_TILES>>{},
-    Step<_1, _2>{}
-), Shape<_1, _1>{}));
+using MMA_Atom_Arch_16x32 = std::conditional_t<
+    std::is_same_v<elem_type, cutlass::half_t>,
+    MMA_Atom<GFX928_16x32x16_F32F16F16F32_NT>,
+    MMA_Atom<GFX928_16x32x16_F32BF16BF16F32_NT>
+>;
 
-template<int NUM_TILES>
-using SmemLayoutKTilesTransposed = decltype(composition(
-	SmemLayoutKTiles<NUM_TILES>{},
-	Layout<Shape<Int<64*NUM_TILES>, Int<B_TOPK>>, Stride<Int<B_TOPK>, _1>>{}
-));
+using TiledMma_O = TiledMMA<
+    MMA_Atom_Arch_16x32,
+    Layout<Shape<_1, Int<kNWarps>, _1>>,  // 1x4x1 or 1x8x1 thread group
+    ValLayoutMNK>;
 
-using SmemLayoutQ = SmemLayoutQTiles<D_Q/64>;
-using SmemLayoutO = SmemLayoutOTiles<D_V/64>;
-using SmemLayoutK = SmemLayoutKTiles<D_Q/64>;
-using SmemLayoutV = SmemLayoutKTilesTransposed<D_V/64>;
-using SmemLayoutHalfV = SmemLayoutKTilesTransposed<D_V/64/2>;
+using SmemLayoutAtomQ = 
+        Layout<Shape<Int<16>, Int<32>>, Stride<Int<32>, _1>>;
+using SmemLayoutQ = decltype(tile_to_shape(
+        SmemLayoutAtomQ{},
+        Shape<Int<kBlockM>, Int<kHeadDim>>{}));
 
-using SmemLayoutS = decltype(coalesce(tile_to_shape(
-    GMMA::Layout_K_SW128_Atom<bf16>{},
-    Shape<Int<B_H>, Int<B_TOPK>>{}
-), Shape<_1, _1>{}));
+using SmemLayoutAtomK = decltype(composition(
+    Swizzle<3, 3, 3>{},
+    Layout<Shape<Int<8>, Int<32>>, Stride<Int<32>, _1>>{}));
+using SmemLayoutK = decltype(tile_to_shape(
+    SmemLayoutAtomK{},
+    Shape<Int<kBlockN>, Int<16 * 32>>{}));
+using SmemLayoutAtomV = SmemLayoutAtomK;
+using SmemLayoutV = decltype(tile_to_shape(
+    SmemLayoutAtomV{},
+    Shape<Int<kBlockN>, Int<kHeadDimV>>{}));
+using SmemLayoutVtransposed = decltype(
+    composition(SmemLayoutV{}, make_layout(Shape<Int<kHeadDimV>, Int<kBlockN>>{}, GenRowMajor{})));
+using SmemLayoutVtransposedNoSwizzle = decltype(get_nonswizzle_portion(SmemLayoutVtransposed{}));
+
+using SmemLayoutAtomP = Layout<Shape<Int<4*16*16>>, Stride<Int<1>>>;
+using SmemLayoutP = decltype(tile_to_shape(
+    SmemLayoutAtomP{},
+    Shape<Int<4*16*16>>{}));
+
+using SmemLayoutRow = Layout<Shape<_128>, Stride<_1>>; 
+
+using SmemLayoutK_place_holder = decltype(tile_to_shape(
+    SmemLayoutAtomK{},
+    Shape<Int<kBlockN>, Int<4 * 32>>{}));
 
 struct SharedMemoryPlan {
     union {
-        array_aligned<bf16, cosize_v<SmemLayoutQ>> q;
-        array_aligned<bf16, cosize_v<SmemLayoutO>> o;
-    } q_o;
-    array_aligned<bf16, cosize_v<SmemLayoutK>> k[2];
-    array_aligned<bf16, cosize_v<SmemLayoutS>> s[D_QK == 576 ? 1 : 2];  // For V3.2 (whose D_QK is 576), we overlap sS[0] with k's RoPE part to save shared memory; For MODEL1 (whose D_QK is 512), we allocate two buffers
-
-    bool is_kv_valid[2][B_TOPK];
-    float2 sM[32];
-    float2 sL[64];   // For reduction across WG0/1 in epilogue
-    float final_max_logits[64], final_lse[64];
+        struct {
+            cute::array_aligned<Element, cute::cosize_v<SmemLayoutV>> smem_v;  // Double buffer
+        };
+        struct {
+            cute::array_aligned<Element, cute::cosize_v<SmemLayoutK_place_holder>> smem_place_holder;  // Double buffer
+            cute::array_aligned<Element, cute::cosize_v<SmemLayoutP>> smem_p;
+            cute::array_aligned<ElementAccum, cute::cosize_v<SmemLayoutRow>> smem_row_sum;
+            cute::array_aligned<ElementAccum, cute::cosize_v<SmemLayoutRow>> smem_row_max;
+        };
+        struct {
+            cute::array_aligned<Element, cute::cosize_v<SmemLayoutQ>> smem_q;
+        };
+    };
     // transac_bar_t bar_q, bar_k0_free[2], bar_k0_ready[2], bar_k1_free[2], bar_k1_ready[2], bar_is_kv_valid_ready;
 };
 
