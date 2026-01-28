@@ -96,9 +96,12 @@ flash_fwd_mla_combine_kernel(const CombineParams params) {
             }
             else
             {
-                float Attn_sink_exp2 = __builtin_amdgcn_exp2f(attn_sink * CUDART_L2E_F);
-                float lse_exp2 = __builtin_amdgcn_exp2f(global_lse * CUDART_L2E_F);
-                o_scale = lse_exp2 / (lse_exp2 + Attn_sink_exp2);
+                if (!flash::is_positive_infinity(global_lse))
+                {
+                    float Attn_sink_exp2 = __builtin_amdgcn_exp2f(attn_sink * CUDART_L2E_F);
+                    float lse_exp2 = __builtin_amdgcn_exp2f(global_lse * CUDART_L2E_F);
+                    o_scale = lse_exp2 / (lse_exp2 + Attn_sink_exp2);
+                }
             }
 
 
