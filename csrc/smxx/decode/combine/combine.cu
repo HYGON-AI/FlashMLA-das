@@ -90,9 +90,17 @@ flash_fwd_mla_combine_kernel(const CombineParams params) {
         if (params.attn_sink != nullptr) {
             int q_head_idx = h_block_idx*BLOCK_SIZE_M + warp_idx;
             float attn_sink = __ldg(params.attn_sink + q_head_idx);
-            float Attn_sink_exp2 = __builtin_amdgcn_exp2f(attn_sink * CUDART_L2E_F);
-            float lse_exp2 = __builtin_amdgcn_exp2f(global_lse * CUDART_L2E_F);
-            o_scale = lse_exp2 / (lse_exp2 + Attn_sink_exp2);
+            if (flash::is_positive_infinity(attn_sink))
+            {
+                o_scale = 0.0f;
+            }
+            else
+            {
+                float Attn_sink_exp2 = __builtin_amdgcn_exp2f(attn_sink * CUDART_L2E_F);
+                float lse_exp2 = __builtin_amdgcn_exp2f(global_lse * CUDART_L2E_F);
+                o_scale = lse_exp2 / (lse_exp2 + Attn_sink_exp2);
+            }
+
 
             // if (global_lse != INFINITY) {
             //     // If attn_sink is +inf, global_lse will be +inf and scale factors will be exp2f(local_lse - inf) = 0 (since local_lse never becomes +inf)
