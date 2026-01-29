@@ -23,17 +23,19 @@ def get_features_args():
     return features_args
 
 def get_arch_flags():
-    return ["--offload-arch=gfx938"]
+    arch_flags = []
+    arch_flags.append("--offload-arch=gfx938")
+    return arch_flags
 
-def get_nvcc_thread_args():
-    # nvcc_threads = os.getenv("NVCC_THREADS") or "32"
-    return ["--threads", nvcc_threads]
+# def get_nvcc_thread_args():
+#     # nvcc_threads = os.getenv("NVCC_THREADS") or "32"
+#     return ["--threads", nvcc_threads]
 
 # subprocess.run(["git", "submodule", "update", "--init", "csrc/cutlass"])
 
 this_dir = os.path.dirname(os.path.abspath(__file__))
 
-if IS_WINDOWS:
+if False:
     cxx_args = ["/O2", "/std:c++20", "/DNDEBUG", "/W0"]
 else:
     cxx_args = ["-O3", "-std=c++17", "-DNDEBUG", "-Wno-deprecated-declarations", "-DDCU_ASM", "-Wno-return-type", ]
