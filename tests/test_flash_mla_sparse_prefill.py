@@ -64,7 +64,7 @@ if __name__ == '__main__':
         TestParam(s_q, s_kv, topk, h_q=h_q, num_runs=0, d_qk=d_qk)
         for d_qk in [512, 576]
         for h_q in [
-            128, 64
+            16, 128, 64
         ]
         for s_kv, topk in [
             # Regular shapes
@@ -92,7 +92,7 @@ if __name__ == '__main__':
         TestParam(s_q, s_kv, topk, h_q=h_q, num_runs=0, have_attn_sink=have_attn_sink, have_topk_length=have_topk_length, d_qk=d_qk)
         for d_qk in [512, 576]
         for h_q in [
-            128, 64
+            16, 128, 64
         ]
         for s_kv, topk in [
             (592, 128),
@@ -114,7 +114,7 @@ if __name__ == '__main__':
         TestParam(s_q, s_kv, topk, h_q=h_q, is_all_indices_invalid=True, num_runs=0, have_attn_sink=True, have_topk_length=True, d_qk=d_qk)
         for d_qk in [512, 576]
         for h_q in [
-            128, 64
+            16, 128, 64
         ]
         for s_q, s_kv, topk in [
             (1, 128, 128),
@@ -150,6 +150,7 @@ if __name__ == '__main__':
         (512, 64, 512, [8192, 32768, 49152, 65536]),
         # MODEL1 CONFIG2
         (512, 128, 1024, [8192, 32768, 49152, 65536]),
+        (512, 16, 1024, [8192, 32768, 49152, 65536]),
     ]
 
     performance_cases = [

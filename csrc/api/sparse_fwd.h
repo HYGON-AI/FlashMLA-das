@@ -8,6 +8,7 @@
 
 
 enum class FwdFeatures : int {
+    HEAD_16,
     HEAD_64,
     HEAD_128,
 
@@ -26,6 +27,7 @@ class FwdImplBase : public ImplBase<
 
 class Fwd_Sm90_Impl : public FwdImplBase {
     DECLARE_SUPPORTED_FEATURES(
+        FwdFeatures::HEAD_16,
         FwdFeatures::HEAD_64,
         FwdFeatures::HEAD_128,
         FwdFeatures::HEAD_DIM_512,
@@ -42,57 +44,6 @@ protected:
                 sm90::fwd::run_fwd_phase1_kernel<HEAD_DIM_QK, HAVE_TOPK_LENGTH>(params);
             });
         });
-    }
-};
-
-class Fwd_Sm100_Head64_Impl : public FwdImplBase {
-    DECLARE_SUPPORTED_FEATURES(
-        FwdFeatures::HEAD_64,
-        FwdFeatures::HEAD_DIM_512,
-        FwdFeatures::HEAD_DIM_576,
-        FwdFeatures::ATTN_SINK,
-        FwdFeatures::SINK_LSE,
-        FwdFeatures::TOPK_LENGTH
-    )
-
-protected:
-    void run_(const SparseAttnFwdParams &params, const std::vector<FeatureT> &required_features) override {
-        DISPATCH_HEAD_DIM(params.d_qk, HEAD_DIM_QK, [&]() {
-            // sm100::fwd::head64::run_fwd_phase1_kernel<HEAD_DIM_QK>(params);
-        });
-    }
-};
-
-class Fwd_Sm100_Head128_Impl : public FwdImplBase {
-    DECLARE_SUPPORTED_FEATURES(
-        FwdFeatures::HEAD_128,
-        FwdFeatures::HEAD_DIM_512,
-        FwdFeatures::HEAD_DIM_576,
-        FwdFeatures::ATTN_SINK,
-        FwdFeatures::SINK_LSE,
-        FwdFeatures::TOPK_LENGTH
-    )
-
-protected:
-    void run_(const SparseAttnFwdParams &params, const std::vector<FeatureT> &required_features) override {
-        DISPATCH_HEAD_DIM(params.d_qk, HEAD_DIM_QK, [&]() {
-            // sm100::fwd::head128::run_fwd_phase1_kernel<HEAD_DIM_QK>(params);
-        });
-    }
-};
-
-class Fwd_Sm100_Head128_Small_TopK_Impl : public FwdImplBase {
-    DECLARE_SUPPORTED_FEATURES(
-        FwdFeatures::HEAD_128,
-        FwdFeatures::HEAD_DIM_512,
-        FwdFeatures::ATTN_SINK,
-        FwdFeatures::SINK_LSE,
-        FwdFeatures::TOPK_LENGTH
-    )
-
-protected:
-    void run_(const SparseAttnFwdParams &params, const std::vector<FeatureT> &required_features) override {
-        // sm100::fwd_for_small_topk::head128::run_fwd_for_small_topk_phase1_kernel<SparseAttnFwdMode::Prefill, 512>(params);
     }
 };
 
@@ -187,7 +138,9 @@ static std::vector<at::Tensor> sparse_attn_prefill_interface(
     };
 
     std::vector<FwdFeatures> required_features;
-    if (h_q == 64) {
+    if (h_q == 16) {
+        required_features.push_back(FwdFeatures::HEAD_16);
+    } else if (h_q == 64) {
         required_features.push_back(FwdFeatures::HEAD_64);
     } else if (h_q == 128) {
         required_features.push_back(FwdFeatures::HEAD_128);
