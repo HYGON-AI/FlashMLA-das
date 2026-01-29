@@ -464,7 +464,7 @@ __device__ void KernelTemplate<D_QK, HAVE_TOPK_LENGTH>::devfunc(const SparseAttn
                     }
                 }
                 gLSE[row] = lse(mi);
-                gMax_logits[row] = softmax.row_max(mi) * params.sm_scale;
+                gMax_logits[row] = topk_length == 0 ? -INFINITY : softmax.row_max(mi) * params.sm_scale;
             }
         }
     }
