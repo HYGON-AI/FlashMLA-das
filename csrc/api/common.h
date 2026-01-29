@@ -57,6 +57,9 @@ inline int int64_stride_to_int(int64_t orig_stride) {
         } else if (NUM_HEADS == 64) { \
             static constexpr int CONSTEXPR_NAME = 64; \
             return __VA_ARGS__(); \
+        } else if (NUM_HEADS <= 16) { \
+            static constexpr int CONSTEXPR_NAME = 16; \
+            return __VA_ARGS__(); \
         } else { \
             TORCH_CHECK(false, "Unsupported num_heads_q: ", NUM_HEADS); \
         } \

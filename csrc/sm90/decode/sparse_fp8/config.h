@@ -100,57 +100,8 @@ struct SharedMemoryPlan {
             cute::array_aligned<ElementAccum, cute::cosize_v<SmemLayoutRow>> smem_row_max;
 
         };
-        // struct {
-        //     cute::array_aligned<typename Kernel_traits::ElementAccum, cute::cosize_v<typename Kernel_traits::SmemLayoutO>> smem_o;
-        //     // cute::array_aligned<typename Kernel_traits::Element, cute::cosize_v<typename Kernel_traits::SmemLayoutP>> smem_p;
-        //     // cute::array_aligned<typename Kernel_traits::ElementAccum, cute::cosize_v<typename Kernel_traits::SmemLayoutRow>> smem_row_sum;
-        //     // cute::array_aligned<typename Kernel_traits::ElementAccum, cute::cosize_v<typename Kernel_traits::SmemLayoutRow>> smem_row_max;
-        // };
-        // struct {
-        //     cute::array_aligned<typename Kernel_traits::Element, cute::cosize_v<typename Kernel_traits::SmemLayoutQ>> smem_q;
-        // };
     };
-
-    // array_aligned<bf16, cosize_v<SmemLayoutQ>> q;
-    // union {
-    //     array_aligned<bf16, cosize_v<SmemLayoutK>> k[NUM_K_BUFS];
-    //     array_aligned<bf16, cosize_v<SmemLayoutOBuf>> oBuf;
-    //     array_aligned<float, cosize_v<SmemLayoutOAccumBuf>> oAccumBuf;
-    // } u;
-    // CUTE_ALIGNAS(1024) array_aligned<bf16, cosize_v<SmemLayoutS>> s;
-    // bool is_kv_valid[NUM_K_BUFS][TOPK_BLOCK_SIZE];
-
-    // float sM[BLOCK_M], sL[BLOCK_M], sScale[BLOCK_M], sOScale[BLOCK_M];
-    // transac_bar_t bar_q, bar_k_local_ready[NUM_K_BUFS], bar_k_remote_ready[NUM_K_BUFS], bar_k_avail[NUM_K_BUFS];
 };
-
-// template<
-//     typename Shape_Q, typename TMA_Q
-// >
-
-// using TiledMMA_QK = decltype(make_tiled_mma(
-//     GMMA::MMA_64x64x16_F32BF16BF16_SS<GMMA::Major::K, GMMA::Major::K>{},
-//     Layout<Shape<_1, _1, _1>>{}
-// ));
-
-// using TiledMMA_QK_rQ = decltype(make_tiled_mma(
-//     GMMA::MMA_64x64x16_F32BF16BF16_RS<GMMA::Major::K, GMMA::Major::K>{},
-//     Layout<Shape<_1, _1, _1>>{}
-// ));
-
-// using TiledMMA_PV_LocalP = decltype(make_tiled_mma(
-//     GMMA::MMA_64x256x16_F32BF16BF16_RS<GMMA::Major::K, GMMA::Major::MN>{},
-//     Layout<Shape<_1, _1, _1>>{}
-// ));
-
-// using TiledMMA_PV_RemoteP = decltype(make_tiled_mma(
-//     GMMA::MMA_64x256x16_F32BF16BF16_SS<GMMA::Major::K, GMMA::Major::MN>{},
-//     Layout<Shape<_1, _1, _1>>{}
-// ));
-
-
-
-
 
 
 static __device__ __forceinline__ void
@@ -162,5 +113,8 @@ devfunc(const SparseAttnDecodeParams &params);
 static void run(const SparseAttnDecodeParams &params);
 
 };
+
+
+
 
 }
