@@ -10,6 +10,7 @@
 
 // Feature set of sparse decoding kernels
 enum class DecodeFeatures : int {
+    HEAD_16,
     HEAD_64,
     HEAD_128,
 
@@ -41,6 +42,7 @@ public:
 
 class Decode_Sm90_Impl : public DecodeImplBase {
     DECLARE_SUPPORTED_FEATURES(
+        DecodeFeatures::HEAD_16,
         DecodeFeatures::HEAD_64,
         DecodeFeatures::HEAD_128,
         DecodeFeatures::HEAD_DIM_512,
@@ -56,6 +58,13 @@ class Decode_Sm90_Impl : public DecodeImplBase {
 public:
     DecodeImplMeta get_meta(int h_q, int s_q) override {
         Arch arch = Arch();
+        if (h_q <= 16) {
+            return {
+                std::max(arch.num_sms * 2 / s_q / (h_q/16), 1),
+                5,
+                64
+            };
+        }
         return {
             std::max(arch.num_sms / s_q / (h_q/64), 1),
             5,
@@ -218,7 +227,9 @@ sparse_attn_decode_interface(
     }
 
     std::vector<DecodeFeatures> features;
-    if (h_q == 64) {
+    if (h_q <= 16) {
+        features.push_back(DecodeFeatures::HEAD_16);
+    } else if (h_q == 64) {
         features.push_back(DecodeFeatures::HEAD_64);
     } else if (h_q == 128) {
         features.push_back(DecodeFeatures::HEAD_128);
