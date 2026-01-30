@@ -84,6 +84,7 @@ ext_modules.append(
                 "-ftemplate-backtrace-limit=0",
                 "-Rpass-analysis=kernel-resource-usage",
                 "-DDCU_ASM",
+                "--save-temps",
                 "-w"
             ] + get_features_args() + get_arch_flags()
         },
