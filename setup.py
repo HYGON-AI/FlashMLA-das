@@ -24,7 +24,7 @@ def get_features_args():
 
 def get_arch_flags():
     arch_flags = []
-    arch_flags.append("--offload-arch=gfx938")
+    arch_flags.append("--offload-arch=gfx938;gfx936")
     return arch_flags
 
 # def get_nvcc_thread_args():
@@ -92,8 +92,7 @@ ext_modules.append(
             Path(this_dir) / "csrc",
             Path(this_dir) / "csrc" / "kerutils" / "include",   # TODO Remove me
             Path(this_dir) / "csrc" / "sm90",
-            "/public/home/zhanghj/work/dev/cutlass_3.2.1-mla/include",
-            # "/public/home/zhanghj/work/dev/cutlass_3.2.1-mla/tools/util/include",
+            Path(this_dir) / "csrc" / "cutlass" / "include"
         ],
     )
 )
