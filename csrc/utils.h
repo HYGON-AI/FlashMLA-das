@@ -88,6 +88,18 @@ struct RingBufferState {
     }
 };
 
+#define BOOL_SWITCH(COND, CONST_NAME, ...)      \
+  [&] {                                         \
+    if (COND) {                                 \
+      constexpr static bool CONST_NAME = true;  \
+      return __VA_ARGS__();                     \
+    } else {                                    \
+      constexpr static bool CONST_NAME = false; \
+      return __VA_ARGS__();                     \
+    }                                           \
+  }()
+
+
 namespace flash {
 
 using namespace cute;
@@ -558,6 +570,171 @@ lds_direct_copy_for_prefill_sparse_mla(
     :);    
 
 }
+
+template <
+        bool Is_even_MN=true, 
+        bool Is_even_K=true, 
+        bool mma_layout = false,
+        bool use_asm = false,
+        class SrcEngine, class SrcLayout
+          >
+CUTE_HOST_DEVICE
+void
+buffer_load_copy(
+     Tensor<SrcEngine, SrcLayout> const& src,
+        uint128_t     & dst,
+     int k_idx_, const int row_stride, 
+     int offset_k, 
+     const int max_MN=0)
+{
+    constexpr int warp_size = 64;
+    int tidx = threadIdx.x;
+    int warp_id = __builtin_amdgcn_readfirstlane(tidx / warp_size);
+    int lane = tidx % warp_size;
+    constexpr int element_size = 2;
+    int k_idx = __builtin_amdgcn_readfirstlane(k_idx_);
+    constexpr int elements_per_thread = 8;
+    if constexpr (mma_layout)
+    {
+        struct PtrWrapper {
+            uint32_t former;
+            uint32_t latter;
+        };
+        PtrWrapper glob_ptr;
+        *(uint64_t*)&glob_ptr = reinterpret_cast<uint64_t>(src.data().get());
+        // glob_ptr.latter |= 0x40000000; // 62 bit: cache swizzle;  48~61: Stride
+    
+        uint32x4_t global_addr = {0};
+        global_addr[0] = __builtin_amdgcn_readfirstlane(glob_ptr.former);
+        global_addr[1] = __builtin_amdgcn_readfirstlane(glob_ptr.latter);
+        global_addr[2] = 0x80000000;
+        global_addr[3] = 0x00020000;
+
+        int mma_k = 32*64;
+        int row = tidx % 16;
+        int col = lane / 16;
+        int row_offset = row +  (warp_id * 16) ;
+        int col_offset = col * elements_per_thread + k_idx * 32;
+        int offset_v = (row_offset * row_stride + col_offset) * element_size; // bytes
+        if (!Is_even_MN && row_offset >= max_MN) offset_v = -1;
+
+
+        if constexpr(use_asm) {
+            asm volatile(
+                "buffer_load_dwordx4 %0, %1, %2 ,0 offen  offset:0 \n" 
+                " \n\t" :"=v"(dst),
+                "+v"(offset_v), "+s"(global_addr)
+            );
+        }
+        else {
+            auto res = __builtin_amdgcn_buffer_load_dwordx4(global_addr, 0, offset_v, false, false);
+
+            dst = *reinterpret_cast<uint128_t*>(&res);
+        }
+
+
+    }
+    else 
+    {
+        uint32x4_t global_addr = {0};
+        *(uint64_t*)&global_addr = reinterpret_cast<uint64_t>(src.data().get());
+        // global_addr[1] += 0x41000000; // 62 bit: cache swizzle;  48~61: Stride
+        global_addr[2] = 0x80000000;
+        global_addr[3] = 0x00020000;
+
+        int mma_k = 32*64;
+        int row = tidx / 4;
+        int col = lane % 4;
+        int row_offset = row;
+        int col_offset = col * elements_per_thread + k_idx * 32;
+        int offset_v = (row_offset * row_stride + col_offset) * element_size; // bytes
+        if (!Is_even_MN && row_offset >= max_MN) offset_v = -1;
+
+        if constexpr(use_asm) {
+            asm volatile(
+                "buffer_load_dwordx4 %0, %1, %2 ,0 offen  offset:0 \n" 
+                " \n\t" :"=v"(dst),
+                "+v"(offset_v), "+s"(global_addr)
+            );
+        }
+        else {
+            auto res = __builtin_amdgcn_buffer_load_dwordx4(global_addr, 0, offset_v, false, false);
+
+            dst = *reinterpret_cast<uint128_t*>(&res);
+        }
+
+    }
+
+
+}
+
+template<
+class SrcEngine, class SrcLayout>
+CUTE_HOST_DEVICE
+void
+buffer_to_tensor(const uint128_t & src,  Tensor<SrcEngine, SrcLayout> & dst, int k_idx)
+{
+
+    uint128_t* d = reinterpret_cast<uint128_t*>(&dst(0, 0, k_idx));
+    d[0] = src;
+
+}
+
+template <class TiledMma, class TiledMma_O,
+        typename Engine0, typename Layout0,
+        typename Engine1, typename Layout1
+        >
+__forceinline__ __device__ auto convert_layout_acc_Aregs_dense(const TiledMma& tiled_mma, const TiledMma_O& tiled_mma_o, Tensor<Engine0, Layout0> const& tOrP,
+    Tensor<Engine1, Layout1> const& sAcc)
+{
+    using Value_type = typename Engine0::value_type;
+
+    int tid = threadIdx.x % 64;
+    int warp_id = threadIdx.x / 64;
+    // __fp16 *smem_ptr = 
+    
+    // sAcc((tid % 16 ) * 4  + (tid / 16) +  warp_id * 16 * 16) = tOrP(0, 0, 0);
+    // sAcc((tid % 16 ) * 4  + (tid / 16) + 16 * 4 + warp_id * 16 * 16) = tOrP(1, 0, 0);
+    // sAcc((tid % 16 ) * 4  + (tid / 16) + 2 * 16 * 4 + warp_id * 16 * 16) = tOrP(2, 0, 0);
+    // sAcc((tid % 16 ) * 4  + (tid / 16) + 3 * 16 * 4 + warp_id * 16 * 16) = tOrP(3, 0, 0);
+    sAcc((tid % 16 ) * 8  + (tid / 16) + (warp_id % 2) * 4 + (warp_id / 2) * 16 * 32) = tOrP(0, 0, 0);
+    sAcc((tid % 16 ) * 8  + (tid / 16) + 1 * 16 * 8 + (warp_id % 2) * 4 + (warp_id / 2) * 16 * 32) = tOrP(1, 0, 0);
+    sAcc((tid % 16 ) * 8  + (tid / 16) + 2 * 16 * 8 + (warp_id % 2) * 4 + (warp_id / 2) * 16 * 32) = tOrP(2, 0, 0);
+    sAcc((tid % 16 ) * 8  + (tid / 16) + 3 * 16 * 8 + (warp_id % 2) * 4 + (warp_id / 2) * 16 * 32) = tOrP(3, 0, 0);
+    __syncthreads();
+
+    using SmemLayoutAtomP = Layout<Shape<Int<16>, Int<64>>, Stride<Int<64>, _1>>;
+    using SmemLayoutP = decltype(tile_to_shape(
+        SmemLayoutAtomP{},
+        Shape<Int<16>, Int<64>>{}));
+    Tensor sP_tmp = make_tensor(sAcc.data(),SmemLayoutP{});    
+    auto thr_mma = tiled_mma_o.get_thread_slice(tid);
+    Tensor tSrACC  = thr_mma.partition_fragment_A(sP_tmp);  
+
+
+            tSrACC(0, 0, 0) = sAcc(tid * 8 + 0);
+            tSrACC(1, 0, 0) = sAcc(tid * 8 + 1);
+            tSrACC(2, 0, 0) = sAcc(tid * 8 + 2);
+            tSrACC(3, 0, 0) = sAcc(tid * 8 + 3);
+
+            tSrACC(0, 0, 1) = sAcc(tid * 8 + 0 + 4);
+            tSrACC(1, 0, 1) = sAcc(tid * 8 + 1 + 4);
+            tSrACC(2, 0, 1) = sAcc(tid * 8 + 2 + 4);
+            tSrACC(3, 0, 1) = sAcc(tid * 8 + 3 + 4);
+
+            tSrACC(0, 0, 2) = sAcc(tid * 8 + 0 + 16*32);
+            tSrACC(1, 0, 2) = sAcc(tid * 8 + 1 + 16*32);
+            tSrACC(2, 0, 2) = sAcc(tid * 8 + 2 + 16*32);
+            tSrACC(3, 0, 2) = sAcc(tid * 8 + 3 + 16*32);
+
+            tSrACC(0, 0, 3) = sAcc(tid * 8 + 0 + 4 + 16*32);
+            tSrACC(1, 0, 3) = sAcc(tid * 8 + 1 + 4 + 16*32);
+            tSrACC(2, 0, 3) = sAcc(tid * 8 + 2 + 4 + 16*32);
+            tSrACC(3, 0, 3) = sAcc(tid * 8 + 3 + 4 + 16*32);
+
+    return tSrACC;
+}
+
 
 
 }
