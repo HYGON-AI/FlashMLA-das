@@ -223,9 +223,10 @@ def main(torch_dtype):
     ]
 
     performance_cases = [
-        TestParam(128, s_q, s_k, is_varlen=True, is_causal=is_causal, test_performance=True)
+        TestParam(128, s_q, s_k, is_varlen=True, is_causal=is_causal, h_q = h_q, test_performance=True)
         for is_causal in [False, True]
         for s_q in [1, 2]
+        for h_q in [16, 128]
         for s_k in [4096, 8192, 16384, 32768]
     ]
 
