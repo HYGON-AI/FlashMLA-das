@@ -57,6 +57,9 @@ ext_modules.append(
             "csrc/sm90/decode/dense/instantiations/fp16.cu",
             "csrc/sm90/decode/dense/instantiations/bf16.cu",
 
+            ## sm90 dense qkvfp8 decode
+            "csrc/sm90/decode/dense_qkvfp8/instantiations/fp8e4m3.cu",
+            
             # # sm90 sparse decode
             "csrc/sm90/decode/sparse_fp8/instantiations/model1_persistent_h16.cu",
             "csrc/sm90/decode/sparse_fp8/instantiations/model1_persistent_h64.cu",
