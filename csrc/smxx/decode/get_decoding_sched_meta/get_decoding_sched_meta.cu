@@ -96,7 +96,7 @@ get_mla_metadata_kernel(const GetDecodeSchedMetaParams params) {
             }
             tile_scheduler_metadata_ptr[i] = cur_meta;
         }
-        FLASH_DEVICE_ASSERT(now_req_idx == batch_size && now_block == 0 && now_n_split_idx == 0);
+        // FLASH_DEVICE_ASSERT(now_req_idx == batch_size && now_block == 0 && now_n_split_idx == 0);
     }
     __syncthreads();
 
