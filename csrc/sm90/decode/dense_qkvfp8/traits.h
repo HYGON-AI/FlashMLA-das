@@ -31,6 +31,13 @@ struct Traits {
     using SmemLayoutRow = Layout<Shape<_128>, Stride<_1>>; 
     static constexpr int kSwizzle = 3;
 
+    using SmemLayoutAtomQ = 
+        Layout<Shape<Int<16>, Int<64>>, Stride<Int<64>, _1>>;
+
+    using SmemLayoutQ = decltype(tile_to_shape(
+        SmemLayoutAtomQ{},
+        Shape<Int<kBlockM>, Int<kHeadDim>>{}));
+
     using SmemLayoutAtomK = decltype(composition(
         Swizzle<kSwizzle, 4, 3>{},
         Layout<Shape<Int<8>, Int<64>>, Stride<Int<64>, _1>>{}));
@@ -38,10 +45,59 @@ struct Traits {
     using SmemLayoutK = decltype(tile_to_shape(
         SmemLayoutAtomK{},
         Shape<Int<kBlockN>, Int<8 * 64>>{}));
+  
+    using SmemLayoutAtomV = SmemLayoutAtomK;
+    using SmemLayoutV = decltype(tile_to_shape(
+        SmemLayoutAtomV{},
+        Shape<Int<kBlockN>, Int<kHeadDimV>>{}));
 
+    using SmemLayoutAtomP = Layout<Shape<Int<4*16*16>>, Stride<Int<1>>>;
+    using SmemLayoutP = decltype(tile_to_shape(
+        SmemLayoutAtomP{},
+        Shape<Int<4*16*16>>{}));
+    
+    using SmemLayoutVtransposed = decltype(
+        composition(SmemLayoutV{}, make_layout(Shape<Int<kHeadDimV>, Int<kBlockN>>{}, GenRowMajor{})));
+    using SmemLayoutVtransposedNoSwizzle = decltype(get_nonswizzle_portion(SmemLayoutVtransposed{}));
+    
+    using SmemLayoutAtomK_place_holder = Layout<Shape<Int<kBlockN>, Int<64>>, Stride<_64, _1>>; 
+    using SmemLayoutK_place_holder = decltype(tile_to_shape(
+        SmemLayoutAtomK_place_holder{},
+        Shape<Int<kBlockN>, Int<7*64>>{}));
 
+    using MMA_Atom_Arch = MMA_Atom<GFX938_16x16x64_F32F8F8F32E4M3E4M3_NN_LIT>;
+    using MMA_Atom_Arch_16x32 = MMA_Atom<GFX938_16x32x32_F32F8F8F32E4M3E4M3_NT_LIT>;
+
+    using ValLayoutMNK = Layout<Shape<_1, _1, _1>>;
+
+    using TiledMma = TiledMMA<
+        MMA_Atom_Arch,
+        Layout<Shape<_1, Int<kNWarps>, _1>>,  // 1x4x1 or 1x8x1 thread group
+        ValLayoutMNK>;//
+    using TiledMma_O = TiledMMA<
+        MMA_Atom_Arch_16x32,
+        Layout<Shape<_1, Int<kNWarps>, _1>>,  // 1x4x1 or 1x8x1 thread group
+        ValLayoutMNK>;
+    
+    
     struct SharedMemoryPlan {
-        
+        union {
+            struct {
+                cute::array_aligned<Element, cute::cosize_v<SmemLayoutV>> smem_v;  // Double buffer
+
+            };
+            struct {
+                cute::array_aligned<Element, cute::cosize_v<SmemLayoutK_place_holder>> smem_temp;  // Double buffer
+                cute::array_aligned<Element, cute::cosize_v<SmemLayoutP>> smem_p;
+                cute::array_aligned<ElementAccum, cute::cosize_v<SmemLayoutRow>> smem_row_sum;
+                cute::array_aligned<ElementAccum, cute::cosize_v<SmemLayoutRow>> smem_row_max;
+            };
+            struct {
+                cute::array_aligned<Element, cute::cosize_v<SmemLayoutQ>> smem_q;
+            };
+       
+        };
+
     };
 
 };

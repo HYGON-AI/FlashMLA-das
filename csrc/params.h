@@ -60,6 +60,11 @@ struct DenseAttnDecodeParams { // TODO Change name to DenseAttnDecodeParams
     cudaStream_t stream;
 };
 
+struct DenseAttnDecodeParams_fp8 : public DenseAttnDecodeParams {
+    float* __restrict__ descale_q_ptr = nullptr;
+    float* __restrict__ descale_k_ptr = nullptr;
+};
+
 struct SparseAttnDecodeParams {
     int b, s_q;
     int h_q, h_kv;

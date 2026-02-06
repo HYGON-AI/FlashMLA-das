@@ -712,29 +712,236 @@ __forceinline__ __device__ auto convert_layout_acc_Aregs_dense(const TiledMma& t
     Tensor tSrACC  = thr_mma.partition_fragment_A(sP_tmp);  
 
 
-            tSrACC(0, 0, 0) = sAcc(tid * 8 + 0);
-            tSrACC(1, 0, 0) = sAcc(tid * 8 + 1);
-            tSrACC(2, 0, 0) = sAcc(tid * 8 + 2);
-            tSrACC(3, 0, 0) = sAcc(tid * 8 + 3);
+    tSrACC(0, 0, 0) = sAcc(tid * 8 + 0);
+    tSrACC(1, 0, 0) = sAcc(tid * 8 + 1);
+    tSrACC(2, 0, 0) = sAcc(tid * 8 + 2);
+    tSrACC(3, 0, 0) = sAcc(tid * 8 + 3);
 
-            tSrACC(0, 0, 1) = sAcc(tid * 8 + 0 + 4);
-            tSrACC(1, 0, 1) = sAcc(tid * 8 + 1 + 4);
-            tSrACC(2, 0, 1) = sAcc(tid * 8 + 2 + 4);
-            tSrACC(3, 0, 1) = sAcc(tid * 8 + 3 + 4);
+    tSrACC(0, 0, 1) = sAcc(tid * 8 + 0 + 4);
+    tSrACC(1, 0, 1) = sAcc(tid * 8 + 1 + 4);
+    tSrACC(2, 0, 1) = sAcc(tid * 8 + 2 + 4);
+    tSrACC(3, 0, 1) = sAcc(tid * 8 + 3 + 4);
 
-            tSrACC(0, 0, 2) = sAcc(tid * 8 + 0 + 16*32);
-            tSrACC(1, 0, 2) = sAcc(tid * 8 + 1 + 16*32);
-            tSrACC(2, 0, 2) = sAcc(tid * 8 + 2 + 16*32);
-            tSrACC(3, 0, 2) = sAcc(tid * 8 + 3 + 16*32);
+    tSrACC(0, 0, 2) = sAcc(tid * 8 + 0 + 16*32);
+    tSrACC(1, 0, 2) = sAcc(tid * 8 + 1 + 16*32);
+    tSrACC(2, 0, 2) = sAcc(tid * 8 + 2 + 16*32);
+    tSrACC(3, 0, 2) = sAcc(tid * 8 + 3 + 16*32);
 
-            tSrACC(0, 0, 3) = sAcc(tid * 8 + 0 + 4 + 16*32);
-            tSrACC(1, 0, 3) = sAcc(tid * 8 + 1 + 4 + 16*32);
-            tSrACC(2, 0, 3) = sAcc(tid * 8 + 2 + 4 + 16*32);
-            tSrACC(3, 0, 3) = sAcc(tid * 8 + 3 + 4 + 16*32);
+    tSrACC(0, 0, 3) = sAcc(tid * 8 + 0 + 4 + 16*32);
+    tSrACC(1, 0, 3) = sAcc(tid * 8 + 1 + 4 + 16*32);
+    tSrACC(2, 0, 3) = sAcc(tid * 8 + 2 + 4 + 16*32);
+    tSrACC(3, 0, 3) = sAcc(tid * 8 + 3 + 4 + 16*32);
 
     return tSrACC;
 }
 
+template <
+        bool Is_even_MN=true, 
+        bool Is_even_K=true, 
+        bool Is_load_Q=false,
+        class SrcEngine, class SrcLayout,
+        class DstEngine, class DstLayout>
+CUTE_HOST_DEVICE
+void
+lds_direct_copy_qkvfp8(
+     Tensor<SrcEngine, SrcLayout> const& src,
+     Tensor<DstEngine, DstLayout>      & dst,
+     int k_idx_, const int row_stride, 
+     const int max_MN=0)
+{
+     
+    if constexpr (Is_load_Q) {
+
+        constexpr int warp_size = 64;
+        int tidx = threadIdx.x;
+        int warp_id = __builtin_amdgcn_readfirstlane(tidx / warp_size);
+        int lane = tidx % warp_size;
+        constexpr int element_size = 1;
+        int k_idx = __builtin_amdgcn_readfirstlane(k_idx_);
+        const int offset_s = 0;
+
+        struct PtrWrapper {
+            uint32_t former;
+            uint32_t latter;
+        };
+        PtrWrapper glob_ptr;
+        *(uint64_t*)&glob_ptr = reinterpret_cast<uint64_t>(src.data().get());
+        // glob_ptr.latter |= 0x40000000; // 62 bit: cache swizzle;  48~61: Stride
+    
+        uint32x4_t global_addr = {0};
+        global_addr[0] = (glob_ptr.former);
+        global_addr[1] = (glob_ptr.latter);
+        global_addr[2] = 0x80000000;
+        global_addr[3] = 0x00020000;
+
+        constexpr int elements_per_thread = 16;
+        constexpr int bytes_per_warp = warp_size * elements_per_thread * element_size;
+        int mma_k = 16*256;
+        
+        int row = lane % 16;
+        int col = lane / 16;
+        
+        int row_offset = row ;
+        int col_offset = (col + warp_id  * 4) * elements_per_thread + k_idx * 256;
+        int offset_v = (row_offset * row_stride + col_offset) * element_size; // bytes
+        if (!Is_even_MN && row_offset >= max_MN) offset_v = -1;
+
+
+        if (!Is_even_K && col_offset >= 576) offset_v = -1;
+        int ldsAddrPerWave = reinterpret_cast<size_t>(dst.data().get()) + warp_id * bytes_per_warp + k_idx * mma_k * element_size;
+
+        asm volatile(
+            "s_mov_b32 m0, %1 \n\t"
+            "buffer_load_dwordx4 %0, %2, %3 ,offen  offset:0, lds \n" ::"v"(offset_v),
+            "s"(ldsAddrPerWave), "s"(global_addr), "s"(offset_s)
+        :);  
+
+
+
+    } else {
+        constexpr int warp_size = 64;
+        int tidx = threadIdx.x;//0-256
+        int warp_id = __builtin_amdgcn_readfirstlane(tidx / warp_size);
+        int lane = tidx % warp_size;//0-63
+        constexpr int element_size = 1;
+        int k_idx = __builtin_amdgcn_readfirstlane(k_idx_);//576
+        const int offset_s = 0;
+
+        // global addr
+        // uint32x4_t global_addr = {0};
+        // *(uint64_t*)&global_addr = reinterpret_cast<uint64_t>(src.data().get());
+        // global_addr[1] += 0x41000000; // 62 bit: cache swizzle;  48~61: Stride
+        // global_addr[2] = 0xfffffffe;
+        // global_addr[3] = 0x00020000;
+        struct PtrWrapper {
+            uint32_t former;
+            uint32_t latter;
+        };
+        PtrWrapper glob_ptr;
+        *(uint64_t*)&glob_ptr = reinterpret_cast<uint64_t>(src.data().get());
+        // glob_ptr.latter |= 0x40000000; // 62 bit: cache swizzle;  48~61: Stride
+    
+        uint32x4_t global_addr = {0};
+        global_addr[0] = __builtin_amdgcn_readfirstlane(glob_ptr.former);
+        global_addr[1] = __builtin_amdgcn_readfirstlane(glob_ptr.latter);
+        global_addr[2] = 0x80000000;
+        global_addr[3] = 0x00020000;
+
+
+
+        constexpr int elements_per_thread = 16;
+        constexpr int bytes_per_warp = warp_size * elements_per_thread * element_size;//64*16*1
+        int mma_k = 64*64;
+    
+
+        // int row = lane / 4;
+        // int col = lane % 4;
+        // int swizzle_col = ((row / 2) ^ (col  )) * 4 + (col % 4);
+        // 此处待优化，后8行，行号需要交换
+        int virtual_row = lane / 8;//0
+        int virtual_col = lane % 8;//0
+        int swizzle_col = virtual_row ^ virtual_col;
+        int row = lane / 4;//0
+        // 8->9 9->8
+        row = (row >= 8 ) ^ row;
+        // row = row >= 8 ? (swizzle_col / 4) > 0 ? row + 1 : row - 1 : row;
+        int col = swizzle_col % 4;
+        int row_offset = row +  (warp_id * 16) ;
+        int col_offset = col * elements_per_thread + k_idx * 64;
+        int offset_v = row_offset * row_stride + (col_offset) * element_size; // bytes
+        if (!Is_even_MN && row_offset >= max_MN) offset_v = -1;
+
+        //int ldsAddrPerWave = reinterpret_cast<size_t>(dst.data().get()) + warp_id * bytes_per_warp + (k_idx % 2) * mma_k * element_size;
+        int ldsAddrPerWave = reinterpret_cast<size_t>(dst.data().get()) + warp_id * bytes_per_warp + (k_idx) * mma_k * element_size;
+  
+
+        #if defined(__gfx938__)
+        asm volatile(
+            "s_mov_b32 m0, %1 \n\t"
+            "buffer_load_dwordx4 %0, %2, %3 ,offen  offset:0, lds \n" ::"v"(offset_v),
+            "s"(ldsAddrPerWave), "s"(global_addr), "s"(offset_s)
+        :);   
+        #endif 
+    }
+}
+
+
+template <
+        bool Is_even_MN=true, 
+        bool Is_even_K=true, 
+        bool mma_layout = false,
+        bool use_asm = false,
+        class SrcEngine, class SrcLayout
+          >
+CUTE_HOST_DEVICE
+void
+buffer_load_copy_qkvfp8(
+     Tensor<SrcEngine, SrcLayout> const& src,
+        uint128_t     & dst,
+     int k_idx_, const int row_stride, 
+     int offset_k, 
+     const int max_MN=0)
+{
+    constexpr int warp_size = 64;
+    int tidx = threadIdx.x;
+    int warp_id = __builtin_amdgcn_readfirstlane(tidx / warp_size);
+    int lane = tidx % warp_size;
+    constexpr int element_size = 1;
+    int k_idx = __builtin_amdgcn_readfirstlane(k_idx_);
+    constexpr int elements_per_thread = 16;
+    if constexpr (mma_layout)
+    {
+        struct PtrWrapper {
+            uint32_t former;
+            uint32_t latter;
+        };
+        PtrWrapper glob_ptr;
+        *(uint64_t*)&glob_ptr = reinterpret_cast<uint64_t>(src.data().get());
+        // glob_ptr.latter |= 0x40000000; // 62 bit: cache swizzle;  48~61: Stride
+    
+        uint32x4_t global_addr = {0};
+        global_addr[0] = __builtin_amdgcn_readfirstlane(glob_ptr.former);
+        global_addr[1] = __builtin_amdgcn_readfirstlane(glob_ptr.latter);
+        global_addr[2] = 0x80000000;
+        global_addr[3] = 0x00020000;
+
+        int mma_k = 32*64;
+        int row = tidx % 16;
+        int col = lane / 16;
+        int row_offset = row +  (warp_id * 16) ;
+        int col_offset = col * elements_per_thread + k_idx * 64;
+        int offset_v = (row_offset * row_stride + col_offset) * element_size; // bytes
+        if (!Is_even_MN && row_offset >= max_MN) offset_v = -1;
+
+
+        if constexpr(use_asm) {
+            asm volatile(
+                "buffer_load_dwordx4 %0, %1, %2 ,0 offen  offset:0 \n" 
+                " \n\t" :"=v"(dst),
+                "+v"(offset_v), "+s"(global_addr)
+            );
+        }
+        else {
+            auto res = __builtin_amdgcn_buffer_load_dwordx4(global_addr, 0, offset_v, false, false);
+
+            dst = *reinterpret_cast<uint128_t*>(&res);
+        }
+
+
+    }
+}
+
+template<int row, int col, int r_row, typename Tensor0>
+__forceinline__ __device__  void __ds_read_m32x32_row_col_rrow(Tensor0& src, intx4_t& dst)
+{
+
+    auto lds = reinterpret_cast<int *>(src.data().get());
+    auto layout  = src.layout();
+    constexpr short offset = layout(0, row, col) * 1;
+
+    auto d = __builtin_amdgcn_ds_read_m32x32u8((__attribute__((address_space(3))) int*)(lds), offset);
+    dst = d;
+}
 
 
 }
