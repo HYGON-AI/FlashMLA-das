@@ -20,7 +20,9 @@ dense_attn_decode_qkvfp8_interface(
     const float softmax_scale,
     bool is_causal,
     std::optional<at::Tensor> &tile_scheduler_metadata,   // num_sm_parts x (DecodingSchedMetaSize/4)
-    std::optional<at::Tensor> &num_splits                 // batch_size + 1
+    std::optional<at::Tensor> &num_splits,                 // batch_size + 1
+    std::optional<const at::Tensor> &descale_q,
+    std::optional<const at::Tensor> &descale_k
 ) {
     // Check arch
     Arch arch = Arch();
@@ -30,8 +32,11 @@ dense_attn_decode_qkvfp8_interface(
 
     // Check data types
     auto q_dtype = q.dtype();
-    TORCH_CHECK(q_dtype == torch::kBFloat16 || q_dtype == torch::kHalf);
-    
+    TORCH_CHECK(q_dtype == torch::kFloat8_e4m3fn);
+    TORCH_CHECK(descale_q.has_value() && descale_k.has_value(), "descale is required when input dtype is fp8");
+    auto descale_q_ = descale_q.value();
+    auto descale_k_ = descale_k.value();
+
     TORCH_CHECK(kcache.dtype() == q_dtype, "query and key must have the same dtype");
     TORCH_CHECK(seqlens_k.dtype() == torch::kInt32, "seqlens_k must have dtype int32");
     TORCH_CHECK(block_table.dtype() == torch::kInt32, "block_table must have dtype torch.int32");
@@ -43,6 +48,14 @@ dense_attn_decode_qkvfp8_interface(
     KU_CHECK_DEVICE(block_table);
     KU_CHECK_DEVICE(tile_scheduler_metadata);
     KU_CHECK_DEVICE(num_splits);
+    KU_CHECK_DEVICE(descale_q_);
+    KU_CHECK_DEVICE(descale_k_);
+    TORCH_CHECK(descale_q_.stride(-1) == 1);
+    TORCH_CHECK(descale_k_.stride(-1) == 1);
+    TORCH_CHECK(descale_q_.dtype() == torch::kFloat);
+    TORCH_CHECK(descale_k_.dtype() == torch::kFloat);
+    KU_CHECK_SHAPE(descale_q_, 1);
+    KU_CHECK_SHAPE(descale_k_, 1);
 
     // Check layout
     TORCH_CHECK(q.stride(-1) == 1, "q must have contiguous last dimension");
@@ -75,7 +88,7 @@ dense_attn_decode_qkvfp8_interface(
     const int num_heads = num_heads_k;
     q = q.view({batch_size, seqlen_q_ori, num_heads_k, num_q_heads_per_hk, head_size_k}).transpose(2, 3)
         .reshape({batch_size, q_seq_per_hk, num_heads, head_size_k});
-    int num_sm_parts = std::max(arch.num_sms / num_heads_k / cutlass::ceil_div(seqlen_q_ori*num_heads_q/num_heads_k, 16), 1);
+    int num_sm_parts = std::max(arch.num_sms / num_heads_k / cutlass::ceil_div(seqlen_q_ori*num_heads_q/num_heads_k, 16) * 2, 1);
 
     KU_CHECK_SHAPE(q, batch_size, q_seq_per_hk, num_heads, head_size_k);
     KU_CHECK_SHAPE(kcache, num_blocks, page_block_size, num_heads_k, head_size_k);
@@ -87,7 +100,7 @@ dense_attn_decode_qkvfp8_interface(
     at::cuda::CUDAGuard device_guard{(char)q.get_device()};
 
     auto opts = q.options();
-    at::Tensor out = torch::empty({batch_size, num_heads, q_seq_per_hk, head_size_v}, opts);
+    at::Tensor out = torch::empty({batch_size, num_heads, q_seq_per_hk, head_size_v}, opts.dtype(torch::kBFloat16));
     at::Tensor lse = torch::empty({batch_size, num_heads, q_seq_per_hk}, opts.dtype(at::kFloat));
     KU_CHECK_CONTIGUOUS(out);
     KU_CHECK_CONTIGUOUS(lse);
@@ -123,7 +136,7 @@ dense_attn_decode_qkvfp8_interface(
     }
 
     // Set the sizes
-    DenseAttnDecodeParams params;
+    DenseAttnDecodeParams_fp8 params;
     params.b = batch_size;
     params.s_q = seqlen_q_ori;
     params.q_seq_per_hk = q_seq_per_hk;
@@ -161,6 +174,8 @@ dense_attn_decode_qkvfp8_interface(
     params.num_sm_parts = num_sm_parts;
     params.num_splits_ptr = num_splits->data_ptr<int>();
 
+    params.descale_q_ptr = descale_q_.data_ptr<float>();
+    params.descale_k_ptr = descale_k_.data_ptr<float>();;
     const int total_num_splits = batch_size + params.num_sm_parts;
     at::Tensor lse_accum = torch::empty({total_num_splits, num_heads, q_seq_per_hk}, opts.dtype(at::kFloat));
     at::Tensor out_accum = torch::empty({total_num_splits, num_heads, q_seq_per_hk, head_size_v}, opts.dtype(at::kFloat));
@@ -200,11 +215,8 @@ dense_attn_decode_qkvfp8_interface(
         at::cuda::getCurrentCUDAStream().stream()
     };
 
-    if (q_dtype == torch::kBFloat16) {
-        smxx::decode::run_flash_mla_combine_kernel<cutlass::bfloat16_t>(combine_params);
-    } else {
-        TORCH_CHECK(false, "Unsupported tensor dtype for query");
-    }
+    smxx::decode::run_flash_mla_combine_kernel<cutlass::bfloat16_t>(combine_params);
+
 
     out = out.view({batch_size, num_heads_k, seqlen_q_ori, num_q_heads_per_hk, head_size_v}).transpose(1, 2)
             .reshape({batch_size, seqlen_q_ori, num_heads_q, head_size_v});

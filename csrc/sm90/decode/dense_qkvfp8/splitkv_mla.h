@@ -5,6 +5,6 @@
 namespace sm90 {
 
 template<typename InputT>
-void run_flash_splitkv_mla_qkvfp8_kernel(DenseAttnDecodeParams &params);
+void run_flash_splitkv_mla_qkvfp8_kernel(DenseAttnDecodeParams_fp8 &params);
 
 }

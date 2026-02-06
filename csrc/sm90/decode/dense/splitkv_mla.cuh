@@ -12,7 +12,7 @@ namespace sm90 {
 
 template<typename T>
 __device__ void
-compute_attn_1rowblock_splitkv_mla_gfx936(const DenseAttnDecodeParams params, 
+compute_attn_1rowblock_splitkv_mla_gfx936(const DenseAttnDecodeParams& params, 
                                         const int bidb, const int bidh, const int m_block,
                                         const int n_split_idx, const int seqlen_k,
                                         const int n_block_min, const int n_block_max, const bool NoSplit)
