@@ -191,7 +191,7 @@ flash_fwd_mla_combine_kernel(const CombineParams params) {
                 //     return res;
                 // };
 
-                // float4 data = result[i];
+                float4 data = result[i];
                 // o_ptr[i * 4] = float32_to_bfloat16((data.x));
                 // o_ptr[i * 4 + 1] = float32_to_bfloat16((data.y));
                 // o_ptr[i * 4 + 2] = float32_to_bfloat16((data.z));
