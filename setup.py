@@ -2,9 +2,11 @@ import os
 from pathlib import Path
 from datetime import datetime
 import subprocess
+from typing import Optional
+from get_version import get_version
 
 from setuptools import setup, find_packages
-
+import torch
 from torch.utils.cpp_extension import (
     BuildExtension,
     CUDAExtension,
@@ -100,11 +102,28 @@ ext_modules.append(
     )
 )
 
-
+def _find_rocm_home() -> Optional[str]:
+    rocm_home = os.environ.get('ROCM_HOME') or os.environ.get('ROCM_PATH')
+    if rocm_home is None:
+        try:
+            pipe_hipcc = subprocess.Popen(
+                ["which hipcc | xargs readlink -f"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=True)
+            hipcc, _ = pipe_hipcc.communicate()
+            rocm_home = os.path.dirname(os.path.dirname(hipcc.decode(*()).rstrip('\r\n')))
+            if os.path.basename(rocm_home) == 'hip':
+                rocm_home = os.path.dirname(rocm_home)
+        except Exception:
+            rocm_home = '/opt/rocm'
+            if not os.path.exists(rocm_home):
+                rocm_home = None
+    if rocm_home and torch.version.hip is None:
+        print(f"No ROCm runtime is found, using ROCM_HOME='{rocm_home}'")
+    return rocm_home
+ROCM_HOME = _find_rocm_home()
 
 setup(
-    name="flash_mla",
-    version="1.0.0",
+    name="flash_mla",   
+    version=get_version(ROCM_HOME),
     packages=find_packages(include=['flash_mla']),
     ext_modules=ext_modules,
     cmdclass={"build_ext": BuildExtension},
