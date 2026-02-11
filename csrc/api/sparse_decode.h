@@ -101,7 +101,9 @@ sparse_attn_decode_interface(
 
     // Check the architecture
     Arch arch = Arch();
-
+    if (!arch.is_gfx93x()) {
+        TORCH_CHECK(false, "Dense decode MLA is only supported on gfx936 or gfx938 architecture");
+    }
     KU_CHECK_NDIM(q, 4);
     KU_CHECK_NDIM(kv, 4);
     KU_CHECK_NDIM(indices, 3);

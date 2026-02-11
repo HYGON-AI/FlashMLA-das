@@ -59,10 +59,9 @@ static std::vector<at::Tensor> sparse_attn_prefill_interface(
     using bf16 = cutlass::bfloat16_t;
     
     Arch arch = Arch();
-    bool is_sm90a = arch.is_sm90a();
-    bool is_sm100f = arch.is_sm100f();
-    TORCH_CHECK(is_sm90a || is_sm100f, "Sparse Attention Forward Kernel is only supported on SM90a and SM100f architectures.");
-
+    if (!arch.is_gfx93x()) {
+        TORCH_CHECK(false, "Dense decode MLA is only supported on gfx936 or gfx938 architecture");
+    }
     KU_CHECK_NDIM(q, 3);
     KU_CHECK_NDIM(kv, 3);
     KU_CHECK_NDIM(indices, 3);
@@ -161,7 +160,7 @@ static std::vector<at::Tensor> sparse_attn_prefill_interface(
         required_features.push_back(FwdFeatures::TOPK_LENGTH);
     }
 
-    if (is_sm90a) {
+    if (arch.is_gfx93x()) {
         Fwd_Sm90_Impl fwd_impl;
         fwd_impl.run(params, required_features);
     } else {

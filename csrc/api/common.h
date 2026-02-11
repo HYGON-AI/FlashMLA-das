@@ -6,7 +6,7 @@
 #include <ATen/cuda/CUDAContext.h>
 #include <c10/cuda/CUDAGuard.h>
 #include <kerutils/supplemental/torch_tensors.h>
-
+#include <string>
 #include <cutlass/bfloat16.h>
 
 static constexpr float LOG_2_E = 1.44269504f;
@@ -22,6 +22,7 @@ struct Arch {
     int major;
     int minor;
     int num_sms;
+    std::string archName;
     cudaDeviceProp* device_prop;
 
     Arch() {
@@ -29,6 +30,7 @@ struct Arch {
         major = device_prop->major;
         minor = device_prop->minor;
         num_sms = device_prop->multiProcessorCount;
+        archName = device_prop->gcnArchName;
     }
 
     bool is_sm90a() const {
@@ -38,6 +40,22 @@ struct Arch {
 
     bool is_sm100f() const {
         return major == 10;
+    }   
+
+    bool is_gfx938() const {
+        return archName.substr(0, archName.find(':')) == "gfx938";
+    }
+
+    bool is_gfx936() const {
+        return archName.substr(0, archName.find(':')) == "gfx936";
+    }
+
+    bool is_gfx928() const {
+        return archName.substr(0, archName.find(':')) == "gfx928";
+    }
+
+    bool is_gfx93x() const {
+        return is_gfx936() || is_gfx938();
     }
 };
 
