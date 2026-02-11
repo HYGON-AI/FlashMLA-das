@@ -183,3 +183,10 @@ inline constexpr bool is_decode_v = std::bool_constant<FWD_MODE == SparseAttnFwd
 
 template<SparseAttnFwdMode FWD_MODE>
 using SparseFwdArgT = std::conditional_t<is_decode_v<FWD_MODE>, SparseAttnDecodeParams, SparseAttnFwdParams>;
+
+enum class Fp8KVCacheDataType {
+  kAuto = 0,
+  kFp8E4M3 = 1,
+  kFp8E5M2 = 2,
+  kInt8 = 3,
+};
