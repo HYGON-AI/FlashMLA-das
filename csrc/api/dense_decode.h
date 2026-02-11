@@ -24,8 +24,8 @@ dense_attn_decode_interface(
 ) {
     // Check arch
     Arch arch = Arch();
-    if (!arch.is_sm90a()) {
-        TORCH_CHECK(false, "Dense decode MLA is only supported on SM90a architecture");
+    if (!arch.is_gfx93x()) {
+        TORCH_CHECK(false, "Dense decode MLA is only supported on gfx936 or gfx938 architecture");
     }
 
     // Check data types
