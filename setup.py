@@ -61,6 +61,9 @@ ext_modules.append(
 
             ## sm90 dense qkvfp8 decode
             "csrc/sm90/decode/dense_qkvfp8/instantiations/fp8e4m3.cu",
+
+            ## sm90 dense kvfp8 decode
+            "csrc/sm90/decode/dense_kvfp8/instantiations/kvfp8.cu",
             
             # # sm90 sparse decode
             "csrc/sm90/decode/sparse_fp8/instantiations/model1_persistent_h16.cu",
@@ -97,7 +100,7 @@ ext_modules.append(
             Path(this_dir) / "csrc",
             Path(this_dir) / "csrc" / "kerutils" / "include",   # TODO Remove me
             Path(this_dir) / "csrc" / "sm90",
-            Path(this_dir) / "csrc" / "cutlass" / "include"
+            Path(this_dir) / "csrc" / "cutlass" / "include",
         ],
     )
 )

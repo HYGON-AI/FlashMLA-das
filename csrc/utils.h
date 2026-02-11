@@ -9,6 +9,7 @@
 #include <cutlass/numeric_types.h>
 #include <cute/tensor.hpp>
 #include "defines.h"
+#include "params.h"
 #define CHECK_CUDA(call)                                                                                  \
     do {                                                                                                  \
         cudaError_t status_ = call;                                                                       \
@@ -942,6 +943,562 @@ __forceinline__ __device__  void __ds_read_m32x32_row_col_rrow(Tensor0& src, int
     auto d = __builtin_amdgcn_ds_read_m32x32u8((__attribute__((address_space(3))) int*)(lds), offset);
     dst = d;
 }
+
+template <
+        bool Is_even_MN=true, 
+        bool Is_even_K=true, 
+        bool Is_load_Q=false,
+        class SrcEngine, class SrcLayout,
+        class DstEngine, class DstLayout>
+CUTE_HOST_DEVICE
+void
+lds_direct_copy_fp8(
+     Tensor<SrcEngine, SrcLayout> const& src,
+     Tensor<DstEngine, DstLayout>      & dst,
+     int k_idx_, const int row_stride, 
+     const int max_MN=0)
+{
+     
+    if constexpr (Is_load_Q) {
+
+    } else {
+        constexpr int warp_size = 64;
+        int tidx = threadIdx.x;
+        int warp_id = __builtin_amdgcn_readfirstlane(tidx / warp_size);
+        int lane = tidx % warp_size;
+        constexpr int element_size = 1;
+        int k_idx = __builtin_amdgcn_readfirstlane(k_idx_);
+        const int offset_s = 0;
+
+        struct PtrWrapper {
+            uint32_t former;
+            uint32_t latter;
+        };
+        PtrWrapper glob_ptr;
+        *(uint64_t*)&glob_ptr = reinterpret_cast<uint64_t>(src.data().get());
+        // glob_ptr.latter |= 0x40000000; // 62 bit: cache swizzle;  48~61: Stride
+    
+        uint32x4_t global_addr = {0};
+        global_addr[0] = __builtin_amdgcn_readfirstlane(glob_ptr.former);
+        global_addr[1] = __builtin_amdgcn_readfirstlane(glob_ptr.latter);
+        global_addr[2] = 0x80000000;
+        global_addr[3] = 0x00020000;
+
+
+
+        constexpr int elements_per_thread = 16;
+        constexpr int bytes_per_warp = warp_size * elements_per_thread * element_size;
+        int mma_k = 64*64;
+    
+
+        // int row = lane / 4;
+        // int col = lane % 4;
+        // int swizzle_col = ((row / 2) ^ (col  )) * 4 + (col % 4);
+        // 此处待优化，后8行，行号需要交换
+        int virtual_row = lane / 8;
+        int virtual_col = lane % 8;
+        int swizzle_col = virtual_row ^ virtual_col;
+        int row = lane / 4;
+        // 8->9 9->8
+        row = (row >= 8 ) ^ row;
+        // row = row >= 8 ? (swizzle_col / 4) > 0 ? row + 1 : row - 1 : row;
+        int col = swizzle_col % 4;
+        int row_offset = row +  (warp_id * 16) ;
+        int col_offset = col * elements_per_thread + k_idx * 64;
+        int offset_v = row_offset * row_stride + (col_offset) * element_size; // bytes
+        if (!Is_even_MN && row_offset >= max_MN) offset_v = -1;
+        int ldsAddrPerWave = reinterpret_cast<size_t>(dst.data().get()) + warp_id * bytes_per_warp + k_idx * mma_k * element_size;
+        // if (thread(0))
+        // {
+        //     printf("offset_v = %d %d \n", offset_v, warp_id * bytes_per_warp + k_idx * mma_k * element_size);
+        // }
+
+        #if defined(__gfx936__) ||  defined(__gfx938__)
+        asm volatile(
+            "s_mov_b32 m0, %1 \n\t"
+            "buffer_load_dwordx4 %0, %2, %3 ,offen  offset:0, lds \n" ::"v"(offset_v),
+            "s"(ldsAddrPerWave), "s"(global_addr), "s"(offset_s)
+        :);   
+        #endif 
+    }
+}
+__forceinline__ __device__ cutlass::bfloat16_t fp8e4m3_to_bf16(const fp8& input) {
+    const uint16_t w = (uint16_t)input << 8;
+    const uint16_t sign = w & UINT16_C(0x8000);
+    const uint16_t nonsign = w & UINT16_C(0x7FFF);
+    constexpr uint16_t exp_offset=(0x78 << 7);
+    uint16_t result = sign | ((nonsign >> 4) + exp_offset);
+    // if(nonsign == 0x0000) result = 0x0000;
+
+    // if (thread0() && nonsign == 0x0000)
+    // {
+    //     printf(" input = %x  result = %x\n", input, result);
+    // }
+    return cutlass::bfloat16_t::bitcast(result);
+}
+__forceinline__ __device__ float fp8e5m2_to_fp32(const fp8& input) {
+  union uf16{
+    uint16_t as_bits;
+    _Float16 as_value;
+  } ;
+  union uf32 {
+    uint32_t as_bits;
+    float as_value;
+  };
+  uf16 u16;
+  uf32 u32;
+  u16.as_bits = (uint16_t)input << 8;
+  u32.as_value = (float)u16.as_value;
+//   return u32.as_bits>>16;
+  return  u32.as_value;
+}
+__forceinline__ __device__ cutlass::half_t fp8e5m2_to_fp16(const fp8& input) {
+  union uf16{
+    uint16_t as_bits;
+    __fp16 as_value;
+  } ;
+  union uf32 {
+    uint32_t as_bits;
+    float as_value;
+  };
+  uf16 u16;
+//   uf32 u32;
+//   u16.as_bits = (uint16_t)input << 8;
+//   u32.as_value = (float)u16.as_value;
+//   return u32.as_bits>>16;
+
+  uint16_t output = (uint16_t)(input << 8);
+  return cutlass::half_t::bitcast(output);
+}
+
+template <int N>
+CUTE_HOST_DEVICE
+void wait_vmcnt() {
+    asm volatile("s_waitcnt vmcnt(%0) ;\n\t"
+                "s_barrier; \n\t"                
+                :: "n"(N));
+}
+
+template<typename Element, bool is_scale_equal_one, Fp8KVCacheDataType KV_DTYPE, typename Tensor0, typename Tensor1, typename Tensor2, typename Tensor3, typename Tensor4, 
+         typename TiledMma, typename TiledCopy, typename ThrCopy>
+__forceinline__ __device__ void gemm_rs_fp8(Tensor0 &acc, Tensor1 &tCrA, Tensor2 &tCrB_int8, Tensor3 &tCrB, Tensor4 const& tCsB,
+                               TiledMma tiled_mma, TiledCopy smem_tiled_copy_B,
+                               ThrCopy smem_thr_copy_B, const float& k_scale ) 
+{
+    typedef  __fp16  __fp16x8_t __attribute__((ext_vector_type(8)));
+    typedef unsigned int __hip_fp8x4_storage_t;
+    typedef unsigned short int __hip_fp8x2_storage_t;
+    typedef unsigned char __hip_fp8_storage_t;
+    union {
+        __fp16x8_t data_128;
+        __hip_fp8x4_storage_t fp8_array[4];
+    } data[8];
+    __builtin_amdgcn_sched_barrier(0);
+    wait_vmcnt<8>();
+    data[0].data_128 = *reinterpret_cast<__fp16x8_t *>(&tCsB(0, 0, 0));
+    wait_vmcnt<7>();
+    data[1].data_128 = *reinterpret_cast<__fp16x8_t *>(&tCsB(0, 0, 1));
+    wait_vmcnt<6>();
+    data[2].data_128 = *reinterpret_cast<__fp16x8_t *>(&tCsB(0, 0, 2));
+    wait_vmcnt<5>();
+    data[3].data_128 = *reinterpret_cast<__fp16x8_t *>(&tCsB(0, 0, 3));
+    wait_vmcnt<4>();
+    data[4].data_128 = *reinterpret_cast<__fp16x8_t *>(&tCsB(0, 0, 4));
+    wait_vmcnt<3>();
+    data[5].data_128 = *reinterpret_cast<__fp16x8_t *>(&tCsB(0, 0, 5));
+    wait_vmcnt<2>();
+    data[6].data_128 = *reinterpret_cast<__fp16x8_t *>(&tCsB(0, 0, 6));
+    wait_vmcnt<1>();
+    data[7].data_128 = *reinterpret_cast<__fp16x8_t *>(&tCsB(0, 0, 7));
+    __builtin_amdgcn_sched_barrier(0);
+    #pragma unroll
+    for (int k_idx = 0; k_idx < 8; k_idx++)
+    {
+        #pragma unroll
+        for (int j = 0; j < 16; j+=4) {
+            auto fp8x2_low = *reinterpret_cast<__hip_fp8x2_storage_t*>(&data[k_idx].fp8_array[j / 4]);
+            auto fp8x2_high = *(reinterpret_cast<__hip_fp8x2_storage_t*>(&(data[k_idx].fp8_array[j / 4])) + 1);
+
+            if constexpr (KV_DTYPE == Fp8KVCacheDataType::kFp8E4M3 && std::is_same_v<Element, cutlass::bfloat16_t>) {
+                auto f1 = (static_cast<__hip_fp8_storage_t>((fp8x2_low << 8) >> 8));
+                auto f2 = (static_cast<__hip_fp8_storage_t>((fp8x2_low >> 8)));
+                auto f3 = (static_cast<__hip_fp8_storage_t>((fp8x2_high << 8) >> 8));
+                auto f4 = (static_cast<__hip_fp8_storage_t>((fp8x2_high) >> 8));
+                auto rst0 = fp8e4m3_to_bf16(f1);
+                auto rst1 = fp8e4m3_to_bf16(f2);
+                auto rst2 = fp8e4m3_to_bf16(f3);
+                auto rst3 = fp8e4m3_to_bf16(f4);
+                tCrB(j, 0, k_idx) = rst0;
+                tCrB(j + 1, 0, k_idx) = rst1;
+                tCrB(j + 2, 0, k_idx) = rst2;
+                tCrB(j + 3, 0, k_idx) = rst3;
+            } else if constexpr (KV_DTYPE == Fp8KVCacheDataType::kFp8E5M2 && std::is_same_v<Element, cutlass::bfloat16_t>) {
+                auto f1 = fp8e5m2_to_fp32(static_cast<__hip_fp8_storage_t>((fp8x2_low << 8) >> 8));
+                auto f2 = fp8e5m2_to_fp32(static_cast<__hip_fp8_storage_t>((fp8x2_low >> 8)));
+                auto f3 = fp8e5m2_to_fp32(static_cast<__hip_fp8_storage_t>((fp8x2_high << 8) >> 8));
+                auto f4 = fp8e5m2_to_fp32(static_cast<__hip_fp8_storage_t>((fp8x2_high) >> 8));
+                if constexpr(!is_scale_equal_one) {
+                    f1 *= k_scale;
+                    f2 *= k_scale;
+                    f3 *= k_scale;
+                    f4 *= k_scale;
+                }
+                // if (block0())
+                // {
+                //     printf("threadIdx.x = %d %.2f %.2f %.2f %.2f \n", threadIdx.x, f1, f2, f3, f4);
+                // }
+                cutlass::NumericConverter<Element, float, cutlass::FloatRoundStyle::round_toward_zero> convert_;
+                auto rst0 = convert_(f1);
+                auto rst1 = convert_(f2);
+                auto rst2 = convert_(f3);
+                auto rst3 = convert_(f4);
+                tCrB(j, 0, k_idx) = rst0;
+                tCrB(j + 1, 0, k_idx) = rst1;
+                tCrB(j + 2, 0, k_idx) = rst2;
+                tCrB(j + 3, 0, k_idx) = rst3;
+            } else if constexpr (KV_DTYPE == Fp8KVCacheDataType::kFp8E5M2 && std::is_same_v<Element, cutlass::half_t>) {
+                // auto f1 = fp8e5m2_to_fp16(static_cast<__hip_fp8_storage_t>((fp8x2_low << 8) >> 8));
+                // auto f2 = fp8e5m2_to_fp16(static_cast<__hip_fp8_storage_t>((fp8x2_low >> 8)));
+                // auto f3 = fp8e5m2_to_fp16(static_cast<__hip_fp8_storage_t>((fp8x2_high << 8) >> 8));
+                // auto f4 = fp8e5m2_to_fp16(static_cast<__hip_fp8_storage_t>((fp8x2_high) >> 8));
+                
+                // tCrB(j, 0, k_idx) = f1;
+                // tCrB(j + 1, 0, k_idx) = f2;
+                // tCrB(j + 2, 0, k_idx) = f3;
+                // tCrB(j + 3, 0, k_idx) = f4;
+                __hip_fp8x4_storage_t fp8_data = data[k_idx].fp8_array[j / 4];
+
+                union Fp8_data_union{
+                    __hip_fp8x4_storage_t fp8x4;
+                    uint16_t fp16[2];
+                };
+                Fp8_data_union first_fp8, last_fp8;
+                first_fp8.fp8x4 = ((fp8_data & 0xff00ff00));
+                last_fp8.fp8x4 = ((fp8_data & 0x00ff00ff) << 8);
+                tCrB(j, 0, k_idx) = cutlass::half_t::bitcast(last_fp8.fp16[0]);
+                tCrB(j + 1, 0, k_idx) = cutlass::half_t::bitcast(first_fp8.fp16[0]);;
+                tCrB(j + 2, 0, k_idx) = cutlass::half_t::bitcast(last_fp8.fp16[1]);;
+                tCrB(j + 3, 0, k_idx) = cutlass::half_t::bitcast(first_fp8.fp16[1]);;;
+
+            }
+            else if constexpr (KV_DTYPE == Fp8KVCacheDataType::kFp8E4M3 && std::is_same_v<Element, cutlass::half_t>) {
+                auto f1 = fp8e4m3_to_fp32(static_cast<__hip_fp8_storage_t>((fp8x2_low << 8) >> 8));
+                auto f2 = fp8e4m3_to_fp32(static_cast<__hip_fp8_storage_t>((fp8x2_low >> 8)));
+                auto f3 = fp8e4m3_to_fp32(static_cast<__hip_fp8_storage_t>((fp8x2_high << 8) >> 8));
+                auto f4 = fp8e4m3_to_fp32(static_cast<__hip_fp8_storage_t>((fp8x2_high) >> 8));
+                if constexpr(!is_scale_equal_one) {
+                    f1 *= k_scale;
+                    f2 *= k_scale;
+                    f3 *= k_scale;
+                    f4 *= k_scale;
+                }
+                auto rst0 = __builtin_amdgcn_cvt_pkrtz(f1, f2);
+                auto rst1 = __builtin_amdgcn_cvt_pkrtz(f3, f4);
+                cutlass::Array<half_t, 2> result0 = reinterpret_cast<cutlass::Array<half_t, 2> &>(rst0);
+                cutlass::Array<half_t, 2> result1 = reinterpret_cast<cutlass::Array<half_t, 2> &>(rst1);
+                tCrB(j, 0, k_idx) = result0[0];
+                tCrB(j + 1, 0, k_idx) = result0[1];
+                tCrB(j + 2, 0, k_idx) = result1[0];
+                tCrB(j + 3, 0, k_idx) = result1[1];
+            }
+        }
+        cute::gemm(tiled_mma, tCrA(_, _, k_idx), tCrB(_, _, k_idx), acc);
+    }
+}
+
+template<typename Element, int k_idx, bool is_scale_equal_one, Fp8KVCacheDataType KV_DTYPE, typename Tensor0, typename Tensor1,typename Tensor2, typename TiledMma>
+__forceinline__ __device__ void gemm_k_rs_fp8(Tensor0 &acc, Tensor1 &tCrA,  Tensor2 &tCrB, TiledMma tiled_mma, uint32x4_t& _data, const float& k_scale)
+{
+    typedef  __fp16  __fp16x8_t __attribute__((ext_vector_type(8)));
+    typedef unsigned int __hip_fp8x4_storage_t;
+    typedef unsigned short int __hip_fp8x2_storage_t;
+    typedef unsigned char __hip_fp8_storage_t;
+    union {
+        uint32x4_t data_128;
+        __hip_fp8x4_storage_t fp8_array[4];
+    } data;
+    data.data_128 = _data;
+
+    for (int j = 0; j < 16; j+=4) {
+        auto fp8x2_low = *reinterpret_cast<__hip_fp8x2_storage_t*>(&data.fp8_array[j / 4]);
+        auto fp8x2_high = *(reinterpret_cast<__hip_fp8x2_storage_t*>(&(data.fp8_array[j / 4])) + 1);
+
+        if constexpr (KV_DTYPE == Fp8KVCacheDataType::kFp8E4M3 && std::is_same_v<Element, cutlass::bfloat16_t>) {
+            auto f1 = (static_cast<__hip_fp8_storage_t>((fp8x2_low << 8) >> 8));
+            auto f2 = (static_cast<__hip_fp8_storage_t>((fp8x2_low >> 8)));
+            auto f3 = (static_cast<__hip_fp8_storage_t>((fp8x2_high << 8) >> 8));
+            auto f4 = (static_cast<__hip_fp8_storage_t>((fp8x2_high) >> 8));
+            auto rst0 = fp8e4m3_to_bf16(f1);
+            auto rst1 = fp8e4m3_to_bf16(f2);
+            auto rst2 = fp8e4m3_to_bf16(f3);
+            auto rst3 = fp8e4m3_to_bf16(f4);
+            tCrB(j, 0, k_idx) = rst0;
+            tCrB(j + 1, 0, k_idx) = rst1;
+            tCrB(j + 2, 0, k_idx) = rst2;
+            tCrB(j + 3, 0, k_idx) = rst3;
+        } else if constexpr (KV_DTYPE == Fp8KVCacheDataType::kFp8E5M2 && std::is_same_v<Element, cutlass::bfloat16_t>) {
+            auto f1 = fp8e5m2_to_fp32(static_cast<__hip_fp8_storage_t>((fp8x2_low << 8) >> 8));
+            auto f2 = fp8e5m2_to_fp32(static_cast<__hip_fp8_storage_t>((fp8x2_low >> 8)));
+            auto f3 = fp8e5m2_to_fp32(static_cast<__hip_fp8_storage_t>((fp8x2_high << 8) >> 8));
+            auto f4 = fp8e5m2_to_fp32(static_cast<__hip_fp8_storage_t>((fp8x2_high) >> 8));
+            if constexpr(!is_scale_equal_one) {
+                f1 *= k_scale;
+                f2 *= k_scale;
+                f3 *= k_scale;
+                f4 *= k_scale;
+            }
+            // if (thread0()) {
+            //     printf(" static_cast<__hip_fp8_storage_t>((fp8x2_low << 8) >> 8) = %x f1 = %.2f\n", static_cast<__hip_fp8_storage_t>((fp8x2_low << 8) >> 8), f1);
+            // }
+            cutlass::NumericConverter<Element, float, cutlass::FloatRoundStyle::round_toward_zero> convert_;
+            auto rst0 = convert_(f1);
+            auto rst1 = convert_(f2);
+            auto rst2 = convert_(f3);
+            auto rst3 = convert_(f4);
+            tCrB(j, 0, k_idx) = rst0;
+            tCrB(j + 1, 0, k_idx) = rst1;
+            tCrB(j + 2, 0, k_idx) = rst2;
+            tCrB(j + 3, 0, k_idx) = rst3;
+        } else if constexpr (KV_DTYPE == Fp8KVCacheDataType::kFp8E5M2 && std::is_same_v<Element, cutlass::half_t>) {
+
+            __hip_fp8x4_storage_t fp8_data = data.fp8_array[j / 4];
+
+            union Fp8_data_union{
+                __hip_fp8x4_storage_t fp8x4;
+                uint16_t fp16[2];
+            } ;
+            Fp8_data_union first_fp8, last_fp8;
+            first_fp8.fp8x4 = ((fp8_data & 0xff00ff00));
+            last_fp8.fp8x4 = ((fp8_data & 0x00ff00ff) << 8);
+            tCrB(j, 0, k_idx) = cutlass::half_t::bitcast(last_fp8.fp16[0]);
+            tCrB(j + 1, 0, k_idx) = cutlass::half_t::bitcast(first_fp8.fp16[0]);;
+            tCrB(j + 2, 0, k_idx) = cutlass::half_t::bitcast(last_fp8.fp16[1]);;
+            tCrB(j + 3, 0, k_idx) = cutlass::half_t::bitcast(first_fp8.fp16[1]);;;
+        }
+        else if constexpr (KV_DTYPE == Fp8KVCacheDataType::kFp8E4M3 && std::is_same_v<Element, cutlass::half_t>) {
+            auto f1 = fp8e4m3_to_fp32(static_cast<__hip_fp8_storage_t>((fp8x2_low << 8) >> 8));
+            auto f2 = fp8e4m3_to_fp32(static_cast<__hip_fp8_storage_t>((fp8x2_low >> 8)));
+            auto f3 = fp8e4m3_to_fp32(static_cast<__hip_fp8_storage_t>((fp8x2_high << 8) >> 8));
+            auto f4 = fp8e4m3_to_fp32(static_cast<__hip_fp8_storage_t>((fp8x2_high) >> 8));
+
+            if constexpr(!is_scale_equal_one) {
+                f1 *= k_scale;
+                f2 *= k_scale;
+                f3 *= k_scale;
+                f4 *= k_scale;
+            }
+            auto rst0 = __builtin_amdgcn_cvt_pkrtz(f1, f2);
+            auto rst1 = __builtin_amdgcn_cvt_pkrtz(f3, f4);
+            cutlass::Array<half_t, 2> result0 = reinterpret_cast<cutlass::Array<half_t, 2> &>(rst0);
+            cutlass::Array<half_t, 2> result1 = reinterpret_cast<cutlass::Array<half_t, 2> &>(rst1);
+            tCrB(j, 0, k_idx) = result0[0];
+            tCrB(j + 1, 0, k_idx) = result0[1];
+            tCrB(j + 2, 0, k_idx) = result1[0];
+            tCrB(j + 3, 0, k_idx) = result1[1];
+        }
+    }
+    cute::gemm(tiled_mma, tCrA(_, _, k_idx), tCrB(_, _, k_idx), acc);
+}
+
+template <
+        bool Is_even_MN=true, 
+        bool Is_even_K=true, 
+        bool mma_layout = false,
+        bool use_asm = false,
+        class SrcEngine, class SrcLayout
+          >
+CUTE_HOST_DEVICE
+void
+buffer_load_copy_fp8(
+     Tensor<SrcEngine, SrcLayout> const& src,
+    uint32x4_t     & dst,
+     int k_idx_, const int row_stride, 
+     int offset_k, 
+     const int max_MN=0)
+{
+    constexpr int warp_size = 64;
+    int tidx = threadIdx.x;
+    int warp_id = __builtin_amdgcn_readfirstlane(tidx / warp_size);
+    int lane = tidx % warp_size;
+    constexpr int element_size = 1;
+    int k_idx = __builtin_amdgcn_readfirstlane(k_idx_);
+    constexpr int elements_per_thread = 16;
+    if constexpr (mma_layout)
+    {
+        struct PtrWrapper {
+            uint32_t former;
+            uint32_t latter;
+        };
+        PtrWrapper glob_ptr;
+        *(uint64_t*)&glob_ptr = reinterpret_cast<uint64_t>(src.data().get());
+        // glob_ptr.latter |= 0x40000000; // 62 bit: cache swizzle;  48~61: Stride
+    
+        uint32x4_t global_addr = {0};
+        global_addr[0] = __builtin_amdgcn_readfirstlane(glob_ptr.former);
+        global_addr[1] = __builtin_amdgcn_readfirstlane(glob_ptr.latter);
+        global_addr[2] = 0x80000000;
+        global_addr[3] = 0x00020000;
+
+        int mma_k = 32*64;
+        int row = tidx % 16;
+        int col = lane / 16;
+        int row_offset = row +  (warp_id * 16) ;
+        int col_offset = col * elements_per_thread + k_idx * 64;
+        int offset_v = (row_offset * row_stride + col_offset) * element_size; // bytes
+        if (!Is_even_MN && row_offset >= max_MN) offset_v = -1;
+
+
+        if constexpr(use_asm) {
+            asm volatile(
+                "buffer_load_dwordx4 %0, %1, %2 ,0 offen  offset:0 \n" 
+                " \n\t" :"=v"(dst),
+                "+v"(offset_v), "+s"(global_addr)
+            );
+        }
+        else {
+            auto res = __builtin_amdgcn_buffer_load_dwordx4(global_addr, 0, offset_v, false, false);
+
+            dst = *reinterpret_cast<uint32x4_t*>(&res);
+        }
+
+
+    }
+}
+
+template<typename Element, bool is_scale_equal_one, Fp8KVCacheDataType KV_DTYPE, typename Tensor0, typename Tensor1, typename Tensor3, typename Tensor4, 
+         typename TiledMma, typename TiledCopy, typename ThrCopy>
+__forceinline__ __device__ void gemm1_rs_fp8(Tensor0 &acc, Tensor1 &tCrA, Tensor3 &tCrB, Tensor4 const& tCsB,
+                               TiledMma tiled_mma, TiledCopy smem_tiled_copy_B,
+                               ThrCopy smem_thr_copy_B, const float& k_scale ) {
+    typedef  __fp16  __fp16x8_t __attribute__((ext_vector_type(8)));
+    typedef unsigned int __hip_fp8x4_storage_t;
+    typedef unsigned short int __hip_fp8x2_storage_t;
+    typedef unsigned char __hip_fp8_storage_t; 
+
+    auto lds = reinterpret_cast<__fp16 *>(&tCsB(0, 0, 0));
+    auto layout  = tCsB.layout();
+    union {
+        __fp16x8_t data_128;
+        __hip_fp8x4_storage_t fp8_array[4];
+    } data[8];
+    constexpr short offset0 = layout(0, 0, 0) * 2;
+    data[0].data_128 = __builtin_amdgcn_ds_read_m32x16f16((__attribute__((address_space(3))) __fp16*)(lds), offset0);
+    constexpr short offset1 = layout(0, 1, 0) * 2;
+    data[1].data_128 = __builtin_amdgcn_ds_read_m32x16f16((__attribute__((address_space(3))) __fp16*)(lds), offset1);
+    constexpr short offset2 = layout(0, 0, 1) * 2;
+    data[2].data_128 = __builtin_amdgcn_ds_read_m32x16f16((__attribute__((address_space(3))) __fp16*)(lds), offset2);
+    constexpr short offset3 = layout(0, 1, 1) * 2;
+    data[3].data_128 = __builtin_amdgcn_ds_read_m32x16f16((__attribute__((address_space(3))) __fp16*)(lds), offset3);
+
+    constexpr short offset4 = layout(0, 0, 2) * 2;
+    data[4].data_128 = __builtin_amdgcn_ds_read_m32x16f16((__attribute__((address_space(3))) __fp16*)(lds), offset4);
+    constexpr short offset5 = layout(0, 1, 2) * 2;
+    data[5].data_128 = __builtin_amdgcn_ds_read_m32x16f16((__attribute__((address_space(3))) __fp16*)(lds), offset5);
+    constexpr short offset6 = layout(0, 0, 3) * 2;
+    data[6].data_128 = __builtin_amdgcn_ds_read_m32x16f16((__attribute__((address_space(3))) __fp16*)(lds), offset6);
+    constexpr short offset7 = layout(0, 1, 3) * 2;
+    data[7].data_128 = __builtin_amdgcn_ds_read_m32x16f16((__attribute__((address_space(3))) __fp16*)(lds), offset7);
+    
+    #pragma unroll
+    for (int k_idx = 0; k_idx < 4; k_idx++) {
+        #pragma unroll
+        for (int i = 0; i < 2; i++) {
+            #pragma unroll
+            for (int j = 0; j < 16; j+=4) {
+
+                auto fp8x2_low = *reinterpret_cast<__hip_fp8x2_storage_t*>(&data[k_idx * 2 + i].fp8_array[j / 4]);
+                auto fp8x2_high = *(reinterpret_cast<__hip_fp8x2_storage_t*>(&(data[k_idx * 2 + i].fp8_array[j / 4])) + 1);
+
+
+                if constexpr (KV_DTYPE == Fp8KVCacheDataType::kFp8E4M3 && std::is_same_v<Element, cutlass::bfloat16_t>) {
+                    // cutlass::NumericConverter<Element, float, cutlass::FloatRoundStyle::round_toward_zero> convert_;
+                    auto f1 = (static_cast<__hip_fp8_storage_t>((fp8x2_low << 8) >> 8));
+                    auto f2 = (static_cast<__hip_fp8_storage_t>((fp8x2_low >> 8)));
+                    auto f3 = (static_cast<__hip_fp8_storage_t>((fp8x2_high << 8) >> 8));
+                    auto f4 = (static_cast<__hip_fp8_storage_t>((fp8x2_high) >> 8));
+                    auto rst0 = fp8e4m3_to_bf16(f1);
+                    auto rst1 = fp8e4m3_to_bf16(f2);
+                    auto rst2 = fp8e4m3_to_bf16(f3);
+                    auto rst3 = fp8e4m3_to_bf16(f4);
+                    tCrB(j, i, k_idx) = rst0;
+                    tCrB(j + 1, i, k_idx) = rst1;
+                    tCrB(j + 2, i, k_idx) = rst2;
+                    tCrB(j + 3, i, k_idx) = rst3;
+                } else if constexpr (KV_DTYPE == Fp8KVCacheDataType::kFp8E5M2 && std::is_same_v<Element, cutlass::bfloat16_t>) {
+                    auto f1 = fp8e5m2_to_fp32(static_cast<__hip_fp8_storage_t>((fp8x2_low << 8) >> 8));
+                    auto f2 = fp8e5m2_to_fp32(static_cast<__hip_fp8_storage_t>((fp8x2_low >> 8)));
+                    auto f3 = fp8e5m2_to_fp32(static_cast<__hip_fp8_storage_t>((fp8x2_high << 8) >> 8));
+                    auto f4 = fp8e5m2_to_fp32(static_cast<__hip_fp8_storage_t>((fp8x2_high) >> 8));
+                    if constexpr(!is_scale_equal_one) {
+                        f1 *= k_scale;
+                        f2 *= k_scale;
+                        f3 *= k_scale;
+                        f4 *= k_scale;
+                    }
+                    cutlass::NumericConverter<Element, float, cutlass::FloatRoundStyle::round_toward_zero> convert_;
+                    auto rst0 = convert_(f1);
+                    auto rst1 = convert_(f2);
+                    auto rst2 = convert_(f3);
+                    auto rst3 = convert_(f4);
+                    tCrB(j, i, k_idx) = rst0;
+                    tCrB(j + 1, i, k_idx) = rst1;
+                    tCrB(j + 2, i, k_idx) = rst2;
+                    tCrB(j + 3, i, k_idx) = rst3;
+                
+                } else if constexpr (KV_DTYPE == Fp8KVCacheDataType::kFp8E5M2 && std::is_same_v<Element, cutlass::half_t>) {
+                    // auto f1 = fp8e5m2_to_fp16(static_cast<__hip_fp8_storage_t>((fp8x2_low << 8) >> 8));
+                    // auto f2 = fp8e5m2_to_fp16(static_cast<__hip_fp8_storage_t>((fp8x2_low >> 8)));
+                    // auto f3 = fp8e5m2_to_fp16(static_cast<__hip_fp8_storage_t>((fp8x2_high << 8) >> 8));
+                    // auto f4 = fp8e5m2_to_fp16(static_cast<__hip_fp8_storage_t>((fp8x2_high) >> 8));
+
+                    // tCrB(j, i, k_idx) = f1;
+                    // tCrB(j + 1, i, k_idx) = f2;
+                    // tCrB(j + 2, i, k_idx) = f3;
+                    // tCrB(j + 3, i, k_idx) = f4;
+
+                    __hip_fp8x4_storage_t fp8_data = data[k_idx * 2 + i].fp8_array[j / 4];
+
+                    union Fp8_data_union{
+                        __hip_fp8x4_storage_t fp8x4;
+                        uint16_t fp16[2];
+                    } ;
+                    Fp8_data_union first_fp8, last_fp8;
+                    first_fp8.fp8x4 = ((fp8_data & 0xff00ff00));
+                    last_fp8.fp8x4 = ((fp8_data & 0x00ff00ff) << 8);
+                    tCrB(j, i, k_idx) = cutlass::half_t::bitcast(last_fp8.fp16[0]);
+                    tCrB(j + 1, i, k_idx) = cutlass::half_t::bitcast(first_fp8.fp16[0]);;
+                    tCrB(j + 2, i, k_idx) = cutlass::half_t::bitcast(last_fp8.fp16[1]);;
+                    tCrB(j + 3, i, k_idx) = cutlass::half_t::bitcast(first_fp8.fp16[1]);;;
+                
+                } else if constexpr (KV_DTYPE == Fp8KVCacheDataType::kFp8E4M3 && std::is_same_v<Element, cutlass::half_t>){
+                    auto f1 = fp8e4m3_to_fp32(static_cast<__hip_fp8_storage_t>((fp8x2_low << 8) >> 8));
+                    auto f2 = fp8e4m3_to_fp32(static_cast<__hip_fp8_storage_t>((fp8x2_low >> 8)));
+                    auto f3 = fp8e4m3_to_fp32(static_cast<__hip_fp8_storage_t>((fp8x2_high << 8) >> 8));
+                    auto f4 = fp8e4m3_to_fp32(static_cast<__hip_fp8_storage_t>((fp8x2_high) >> 8));
+                    if constexpr(!is_scale_equal_one) {
+                        f1 *= k_scale;
+                        f2 *= k_scale;
+                        f3 *= k_scale;
+                        f4 *= k_scale;
+                    }
+                    auto rst0 = __builtin_amdgcn_cvt_pkrtz(f1, f3);
+                    auto rst1 = __builtin_amdgcn_cvt_pkrtz(f2, f4);
+                    cutlass::Array<half_t, 2> result0 = reinterpret_cast<cutlass::Array<half_t, 2> &>(rst0);
+                    cutlass::Array<half_t, 2> result1 = reinterpret_cast<cutlass::Array<half_t, 2> &>(rst1);
+                    tCrB(j, i, k_idx) = result0[0];
+                    tCrB(j + 1, i, k_idx) = result1[0];
+                    tCrB(j + 2, i, k_idx) = result0[1];
+                    tCrB(j + 3, i, k_idx) = result1[1];
+                }
+            
+            }
+        }
+        cute::gemm(tiled_mma, tCrA(_, _, k_idx), tCrB(_, _, k_idx), acc);
+    }
+
+}
+
+
 
 
 }
