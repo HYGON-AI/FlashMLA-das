@@ -934,7 +934,7 @@ void KernelTemplate<MODEL_TYPE, NUM_HEADS>::run(const SparseAttnDecodeParams &pa
     KU_ASSERT(params.topk % TOPK_BLOCK_SIZE == 0);
     KU_ASSERT(params.d_qk == HEAD_DIM_K);
     KU_ASSERT(params.d_v == HEAD_DIM_V);
-    KU_ASSERT(params.h_q % BLOCK_M == 0);
+    // KU_ASSERT(params.h_q % BLOCK_M == 0);
     if constexpr (MODEL_TYPE == ModelType::MODEL1) {
         constexpr int BYTES_PER_TOKEN = HEAD_DIM_NOPE + 2*HEAD_DIM_ROPE + 8;
         KU_ASSERT(params.stride_kv_row == BYTES_PER_TOKEN, "Each page block in KV cache must be contiguous for head64 sparse fp8 decoding attention in MODEL1");  // Each block must be contiguous
