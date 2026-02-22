@@ -137,7 +137,7 @@ static std::vector<at::Tensor> sparse_attn_prefill_interface(
     };
 
     std::vector<FwdFeatures> required_features;
-    if (h_q == 16) {
+    if (h_q <= 16) {
         required_features.push_back(FwdFeatures::HEAD_16);
     } else if (h_q == 64) {
         required_features.push_back(FwdFeatures::HEAD_64);
