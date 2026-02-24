@@ -29,7 +29,7 @@ def _make_version_file(version, sha, abi, dtk, torch_version, branch):
     sha = "Unknown" if sha is None else sha
     torch_version = '.'.join(torch_version.split('.')[:2])
     # hcu_version = f"{version}+das1.1git{sha}.abi{abi}.dtk{dtk}.torch{torch_version}"
-    hcu_version = f"{version}+das.opt{os.environ['FLASH_ATTN_OPT']}.dtk{dtk}"
+    hcu_version = f"{version}+das.opt{os.environ['FLASH_MLA_OPT']}.dtk{dtk}"
     version_path = ROOT_DIR / "flash_mla" / "version.py"
     with open(version_path, "w") as f:
         f.write(f"version = '{version}'\n")
