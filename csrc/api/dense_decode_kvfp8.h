@@ -6,7 +6,7 @@
 #include "common.h"
 #include "params.h"
 
-#include "sm90/decode/dense_kvfp8/splitkv_mla.h"
+#include "gfx93/decode/dense_kvfp8/splitkv_mla.h"
 #include "smxx/decode/get_decoding_sched_meta/get_decoding_sched_meta.h"
 #include "smxx/decode/combine/combine.h"
 
@@ -188,7 +188,7 @@ dense_attn_decode_kvfp8_interface(
     params.stream = at::cuda::getCurrentCUDAStream().stream();
 
     if (q_dtype == torch::kBFloat16) {
-        sm90::run_flash_splitkv_mla_kvfp8_kernel<cutlass::bfloat16_t>(params);
+        gfx93::run_flash_splitkv_mla_kvfp8_kernel<cutlass::bfloat16_t>(params);
     } else {
         TORCH_CHECK(false, "Unsupported dtype for dense MLA on SM90");
     }
