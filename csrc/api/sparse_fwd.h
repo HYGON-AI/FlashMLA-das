@@ -4,7 +4,7 @@
 
 #include "params.h"
 
-#include "sm90/prefill/sparse/phase1.h"
+#include "gfx93/prefill/sparse/phase1.h"
 
 
 enum class FwdFeatures : int {
@@ -41,7 +41,7 @@ protected:
     void run_(const SparseAttnFwdParams &params, const std::vector<FeatureT> &required_features) override {
         DISPATCH_HEAD_DIM(params.d_qk, HEAD_DIM_QK, [&]() {
             DISPATCH_BOOLEAN_FLAG(params.topk_length != nullptr, HAVE_TOPK_LENGTH, [&]() {
-                sm90::fwd::run_fwd_phase1_kernel<HEAD_DIM_QK, HAVE_TOPK_LENGTH>(params);
+                gfx93::fwd::run_fwd_phase1_kernel<HEAD_DIM_QK, HAVE_TOPK_LENGTH>(params);
             });
         });
     }

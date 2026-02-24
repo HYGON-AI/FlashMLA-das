@@ -4,7 +4,7 @@
 
 #include "params.h"
 
-#include "sm90/decode/sparse_fp8/splitkv_mla.h"
+#include "gfx93/decode/sparse_fp8/splitkv_mla.h"
 #include "smxx/decode/get_decoding_sched_meta/get_decoding_sched_meta.h"
 #include "smxx/decode/combine/combine.h"
 
@@ -76,7 +76,7 @@ protected:
     void run_(const SparseAttnDecodeParams &params, const std::vector<FeatureT> &required_features) override {
         DISPATCH_MODEL_TYPE(params.model_type, MODEL_TYPE, [&]() {
             DISPATCH_NUM_HEADS(params.h_q, NUM_HEADS, [&]() {
-                sm90::decode::sparse_fp8::run_flash_splitkv_mla_fp8_sparse_kernel<MODEL_TYPE, NUM_HEADS>(params);
+                gfx93::decode::sparse_fp8::run_flash_splitkv_mla_fp8_sparse_kernel<MODEL_TYPE, NUM_HEADS>(params);
             });
         });
     }

@@ -55,30 +55,30 @@ ext_modules.append(
             "csrc/smxx/decode/get_decoding_sched_meta/get_decoding_sched_meta.cu",
             "csrc/smxx/decode/combine/combine.cu",
 
-            # # sm90 dense decode
-            "csrc/sm90/decode/dense/instantiations/fp16.cu",
-            "csrc/sm90/decode/dense/instantiations/bf16.cu",
+            # # gfx93 dense decode
+            "csrc/gfx93/decode/dense/instantiations/fp16.cu",
+            "csrc/gfx93/decode/dense/instantiations/bf16.cu",
 
-            ## sm90 dense qkvfp8 decode
-            "csrc/sm90/decode/dense_qkvfp8/instantiations/fp8e4m3.cu",
+            ## gfx93 dense qkvfp8 decode
+            "csrc/gfx93/decode/dense_qkvfp8/instantiations/fp8e4m3.cu",
 
-            ## sm90 dense kvfp8 decode
-            "csrc/sm90/decode/dense_kvfp8/instantiations/kvfp8.cu",
+            ## gfx93 dense kvfp8 decode
+            "csrc/gfx93/decode/dense_kvfp8/instantiations/kvfp8.cu",
             
-            # # sm90 sparse decode
-            "csrc/sm90/decode/sparse_fp8/instantiations/model1_persistent_h16.cu",
-            "csrc/sm90/decode/sparse_fp8/instantiations/model1_persistent_h64.cu",
-            "csrc/sm90/decode/sparse_fp8/instantiations/model1_persistent_h128.cu",
-            "csrc/sm90/decode/sparse_fp8/instantiations/v32_persistent_h16.cu",
-            "csrc/sm90/decode/sparse_fp8/instantiations/v32_persistent_h64.cu",
-            "csrc/sm90/decode/sparse_fp8/instantiations/v32_persistent_h128.cu",
+            # # gfx93 sparse decode
+            "csrc/gfx93/decode/sparse_fp8/instantiations/model1_persistent_h16.cu",
+            "csrc/gfx93/decode/sparse_fp8/instantiations/model1_persistent_h64.cu",
+            "csrc/gfx93/decode/sparse_fp8/instantiations/model1_persistent_h128.cu",
+            "csrc/gfx93/decode/sparse_fp8/instantiations/v32_persistent_h16.cu",
+            "csrc/gfx93/decode/sparse_fp8/instantiations/v32_persistent_h64.cu",
+            "csrc/gfx93/decode/sparse_fp8/instantiations/v32_persistent_h128.cu",
 
-            # # sm90 sparse prefill
-            "csrc/sm90/prefill/sparse/fwd.cu",
-            "csrc/sm90/prefill/sparse/instantiations/phase1_k512.cu",
-            "csrc/sm90/prefill/sparse/instantiations/phase1_k512_topklen.cu",
-            "csrc/sm90/prefill/sparse/instantiations/phase1_k576.cu",
-            "csrc/sm90/prefill/sparse/instantiations/phase1_k576_topklen.cu",
+            # # gfx93 sparse prefill
+            "csrc/gfx93/prefill/sparse/fwd.cu",
+            "csrc/gfx93/prefill/sparse/instantiations/phase1_k512.cu",
+            "csrc/gfx93/prefill/sparse/instantiations/phase1_k512_topklen.cu",
+            "csrc/gfx93/prefill/sparse/instantiations/phase1_k576.cu",
+            "csrc/gfx93/prefill/sparse/instantiations/phase1_k576_topklen.cu",
 
         ],
         extra_compile_args={
@@ -99,7 +99,7 @@ ext_modules.append(
         include_dirs=[
             Path(this_dir) / "csrc",
             Path(this_dir) / "csrc" / "kerutils" / "include",   # TODO Remove me
-            Path(this_dir) / "csrc" / "sm90",
+            Path(this_dir) / "csrc" / "gfx93",
             Path(this_dir) / "csrc" / "cutlass" / "include",
         ],
     )
