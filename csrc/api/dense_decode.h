@@ -7,8 +7,8 @@
 #include "params.h"
 
 #include "gfx93/decode/dense/splitkv_mla.h"
-#include "smxx/decode/get_decoding_sched_meta/get_decoding_sched_meta.h"
-#include "smxx/decode/combine/combine.h"
+#include "gfx9/decode/get_decoding_sched_meta/get_decoding_sched_meta.h"
+#include "gfx9/decode/combine/combine.h"
 
 static std::tuple<at::Tensor, at::Tensor, std::optional<at::Tensor>, std::optional<at::Tensor>>
 dense_attn_decode_interface(
@@ -110,7 +110,7 @@ dense_attn_decode_interface(
             num_sm_parts,
             at::cuda::getCurrentCUDAStream().stream()
         };
-        smxx::decode::run_get_decoding_sched_meta_kernel(get_sched_meta_params);
+        gfx9::decode::run_get_decoding_sched_meta_kernel(get_sched_meta_params);
     } else {
         KU_CHECK_DTYPE(tile_scheduler_metadata, torch::kInt32);
         KU_CHECK_DTYPE(num_splits, torch::kInt32);
@@ -207,10 +207,10 @@ dense_attn_decode_interface(
     };
 
     if (q_dtype == torch::kBFloat16) {
-        smxx::decode::run_flash_mla_combine_kernel<cutlass::bfloat16_t>(combine_params);
+        gfx9::decode::run_flash_mla_combine_kernel<cutlass::bfloat16_t>(combine_params);
     } else if (q_dtype == torch::kHalf) {
 #ifndef FLASH_MLA_DISABLE_FP16
-        smxx::decode::run_flash_mla_combine_kernel<cutlass::half_t>(combine_params);
+        gfx9::decode::run_flash_mla_combine_kernel<cutlass::half_t>(combine_params);
 #endif
     } else {
         TORCH_CHECK(false, "Unsupported tensor dtype for query");

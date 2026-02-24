@@ -7,8 +7,8 @@
 #include "params.h"
 
 #include "gfx93/decode/dense_qkvfp8/splitkv_mla.h"
-#include "smxx/decode/get_decoding_sched_meta/get_decoding_sched_meta.h"
-#include "smxx/decode/combine/combine.h"
+#include "gfx9/decode/get_decoding_sched_meta/get_decoding_sched_meta.h"
+#include "gfx9/decode/combine/combine.h"
 
 static std::tuple<at::Tensor, at::Tensor, std::optional<at::Tensor>, std::optional<at::Tensor>>
 dense_attn_decode_qkvfp8_interface(
@@ -123,7 +123,7 @@ dense_attn_decode_qkvfp8_interface(
             num_sm_parts,
             at::cuda::getCurrentCUDAStream().stream()
         };
-        smxx::decode::run_get_decoding_sched_meta_kernel(get_sched_meta_params);
+        gfx9::decode::run_get_decoding_sched_meta_kernel(get_sched_meta_params);
     } else {
         KU_CHECK_DTYPE(tile_scheduler_metadata, torch::kInt32);
         KU_CHECK_DTYPE(num_splits, torch::kInt32);
@@ -215,7 +215,7 @@ dense_attn_decode_qkvfp8_interface(
         at::cuda::getCurrentCUDAStream().stream()
     };
 
-    smxx::decode::run_flash_mla_combine_kernel<cutlass::bfloat16_t>(combine_params);
+    gfx9::decode::run_flash_mla_combine_kernel<cutlass::bfloat16_t>(combine_params);
 
 
     out = out.view({batch_size, num_heads_k, seqlen_q_ori, num_q_heads_per_hk, head_size_v}).transpose(1, 2)

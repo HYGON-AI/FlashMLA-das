@@ -2,7 +2,7 @@
 
 #include "params.h"
 
-namespace smxx::decode {
+namespace gfx9::decode {
 
 template<typename ElementT>
 void run_flash_mla_combine_kernel(CombineParams &params);

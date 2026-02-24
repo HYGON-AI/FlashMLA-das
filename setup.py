@@ -52,8 +52,8 @@ ext_modules.append(
             "csrc/api/api.cpp",
 
             # # Misc kernels for decoding
-            "csrc/smxx/decode/get_decoding_sched_meta/get_decoding_sched_meta.cu",
-            "csrc/smxx/decode/combine/combine.cu",
+            "csrc/gfx9/decode/get_decoding_sched_meta/get_decoding_sched_meta.cu",
+            "csrc/gfx9/decode/combine/combine.cu",
 
             # # gfx93 dense decode
             "csrc/gfx93/decode/dense/instantiations/fp16.cu",

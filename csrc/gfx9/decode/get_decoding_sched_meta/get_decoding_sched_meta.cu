@@ -6,7 +6,7 @@
 
 #include "utils.h"
 
-namespace smxx::decode {
+namespace gfx9::decode {
 
 __global__ void __launch_bounds__(64, 1)
 get_mla_metadata_kernel(const GetDecodeSchedMetaParams params) {

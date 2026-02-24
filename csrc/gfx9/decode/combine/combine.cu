@@ -14,7 +14,7 @@
 
 using namespace cute;
 
-namespace smxx::decode {
+namespace gfx9::decode {
 
 template<typename ElementT, int HEAD_DIM_V, int BLOCK_SIZE_M, int MAX_SPLITS, int NUM_THREADS>
 __global__ void __launch_bounds__(NUM_THREADS, 1)
