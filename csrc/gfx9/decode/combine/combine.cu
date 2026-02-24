@@ -167,7 +167,12 @@ flash_fwd_mla_combine_kernel(const CombineParams params) {
         // }
         auto float2bf16 = [] (float s) -> uint16_t {
             uint32_t x32 = reinterpret_cast<uint32_t const &>(s);
+            #ifndef FLASH_MLA_BF16_TYPE
+            #define FLASH_MLA_BF16_TYPE 0
+            #endif
+            #if FLASH_MLA_BF16_TYPE == 1
             x32 += 0x8000u;
+            #endif
             return uint16_t(x32 >> 16);
         };
 

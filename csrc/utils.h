@@ -290,7 +290,14 @@ __forceinline__ __device__ auto convert_type(Tensor<Engine, Layout> const &tenso
     #else
         {
             if constexpr (std::is_same_v<To_type, cutlass::bfloat16_t>) {
+                #ifndef FLASH_MLA_BF16_TYPE
+                #define FLASH_MLA_BF16_TYPE 0
+                #endif
+                #if FLASH_MLA_BF16_TYPE == 0
+                cutlass::NumericArrayConverter<To_type, From_type, numel, cutlass::FloatRoundStyle::round_toward_zero> convert_op;
+                #else
                 cutlass::NumericArrayConverter<To_type, From_type, numel, cutlass::FloatRoundStyle::round_half_ulp_truncate> convert_op;
+                #endif
                 *result_ptr = convert_op(*reinterpret_cast<const cutlass::Array<From_type, numel> *>(tensor.data()));
             } else {
                 cutlass::NumericArrayConverter<To_type, From_type, numel> convert_op;
