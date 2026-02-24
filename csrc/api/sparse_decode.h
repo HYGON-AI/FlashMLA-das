@@ -5,8 +5,8 @@
 #include "params.h"
 
 #include "gfx93/decode/sparse_fp8/splitkv_mla.h"
-#include "smxx/decode/get_decoding_sched_meta/get_decoding_sched_meta.h"
-#include "smxx/decode/combine/combine.h"
+#include "gfx9/decode/get_decoding_sched_meta/get_decoding_sched_meta.h"
+#include "gfx9/decode/combine/combine.h"
 
 // Feature set of sparse decoding kernels
 enum class DecodeFeatures : int {
@@ -328,7 +328,7 @@ sparse_attn_decode_interface(
             impl_meta.num_sm_parts,
             at::cuda::getCurrentCUDAStream().stream()
         };
-        smxx::decode::run_get_decoding_sched_meta_kernel(get_sched_meta_params);
+        gfx9::decode::run_get_decoding_sched_meta_kernel(get_sched_meta_params);
     }
     // Stick the metadata pointers to `params`
     KU_CHECK_DEVICE(tile_scheduler_metadata);
@@ -379,7 +379,7 @@ sparse_attn_decode_interface(
         ku::get_optional_tensor_ptr<float>(attn_sink),
         at::cuda::getCurrentCUDAStream().stream()
     };
-    smxx::decode::run_flash_mla_combine_kernel<bf16>(combine_params);
+    gfx9::decode::run_flash_mla_combine_kernel<bf16>(combine_params);
 
     delete impl;
 
