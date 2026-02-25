@@ -164,33 +164,12 @@ def test_flash_mla(b, s_q, mean_sk, h_q, h_kv, d, dv, causal, varlen, is_prof=Fa
     cal_diff(out_flash, out_torch, "out", use_fp8)
     cal_diff(lse_flash, lse_torch, "lse")
     if is_prof: return
-    # t = triton.testing.do_bench(flash_mla)
-    # FLOPS = s_q * total_seqlens * h_q * (d + dv) * 2
-    # bytes = (total_seqlens * h_kv * d + b * s_q * h_q * d) * (torch.finfo(torch_dtype).bits // 8) + (b * s_q * h_q * dv) * (torch.finfo(init_dtype).bits // 8)
-    # print(
-    #     f"{t:.3f} ms, {FLOPS / 10 ** 9 / t:.0f} TFLOPS, {bytes / 10 ** 6 / t:.0f} GB/s"
-    # )
-    time_usage = kk.bench_kineto(flash_mla, 10).get_kernel_time("flash_fwd_splitkv_mla_qkvfp8_kernel")
-
-    mean_attended_seqlens = cache_seqlens.float().mean().item()
-    compute_volume_flop = b * h_q * s_q * sum([
-        2 * d * mean_attended_seqlens,   # Q * K^T
-        2 * mean_attended_seqlens * dv,  # attention * V
-    ])
-    q_elem_size = 1
-    kv_token_size = d * 1
-    memory_volume_B = b * sum([
-        s_q * h_q * (d * q_elem_size),    # Q
-        mean_attended_seqlens * h_kv * kv_token_size,    # K/V
-        s_q * h_q * (dv * 2),   # Output
-    ])
-    achieved_tflops = compute_volume_flop / time_usage / 1e12
-    achieved_gBps = memory_volume_B / time_usage / 1e9
-
-    print(f"{time_usage * 1000:.3f} ms, {achieved_tflops:.0f} TFLOPS, {achieved_gBps:.0f} GB/s")
-
-
-
+    t = triton.testing.do_bench(flash_mla)
+    FLOPS = s_q * total_seqlens * h_q * (d + dv) * 2
+    bytes = (total_seqlens * h_kv * d + b * s_q * h_q * d) * (torch.finfo(torch_dtype).bits // 8) + (b * s_q * h_q * dv) * (torch.finfo(init_dtype).bits // 8)
+    print(
+        f"{t:.3f} ms, {FLOPS / 10 ** 9 / t:.0f} TFLOPS, {bytes / 10 ** 6 / t:.0f} GB/s"
+    )
 
 def main(torch_dtype, is_prof=False):
     device = torch.device("cuda:0")
