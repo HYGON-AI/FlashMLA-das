@@ -55,12 +55,14 @@ __device__ __forceinline__ void warp_allreduce_(Tensor<Engine0, Layout0> &dst, T
         // smem_reduce(row, col) = dst(0);
     }
     __syncthreads();
-    if (tidx < 16)
-    {
-        smem_reduce(row + 64) = op(op(smem_reduce(row * 4), smem_reduce(row * 4 + 1)), op(smem_reduce(row * 4 + 2), smem_reduce(row * 4 + 3)));
-    }
-    __syncthreads();
-    dst(0) = smem_reduce(row + 64);
+    // if (tidx < 16)
+    // {
+    //     smem_reduce(row + 64) = op(op(smem_reduce(row * 4), smem_reduce(row * 4 + 1)), op(smem_reduce(row * 4 + 2), smem_reduce(row * 4 + 3)));
+    // }
+    // __syncthreads();
+    // dst(0) = smem_reduce(row + 64);
+    dst(0) = op(op(smem_reduce(row * 4), smem_reduce(row * 4 + 1)), op(smem_reduce(row * 4 + 2), smem_reduce(row * 4 + 3)));
+
 }
 
 template<typename Engine0, typename Layout0, typename Engine1, typename Layout1, typename Operator>
