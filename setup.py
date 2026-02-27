@@ -85,6 +85,12 @@ ext_modules.append(
             "csrc/gfx93/prefill/sparse/instantiations/phase1_k576.cu",
             "csrc/gfx93/prefill/sparse/instantiations/phase1_k576_topklen.cu",
 
+            "csrc/extension/flash_fwd_mla_bf16_gfx936.cu",
+            "csrc/extension/flash_fwd_mla_fp16_gfx936.cu",
+            "csrc/extension/flash_fwd_mla_fp8_gfx938.cu",
+            "csrc/extension/flash_fwd_mla_fp8_qbf16_gfx938.cu",
+            "csrc/extension/flash_fwd_mla_metadata.cu",
+
         ],
         extra_compile_args={
             "cxx": cxx_args + get_features_args(),
@@ -98,7 +104,9 @@ ext_modules.append(
                 "-Rpass-analysis=kernel-resource-usage",
                 "-DDCU_ASM",
                 "--save-temps",
-                "-w"
+                "-w",
+                "-mllvm",
+                 "-enable-num-vgprs-512=true",
             ] + get_features_args() + get_arch_flags()
         },
         include_dirs=[
@@ -134,5 +142,6 @@ setup(
     version=get_version(ROCM_HOME),
     packages=find_packages(include=['flash_mla']),
     ext_modules=ext_modules,
+    package_data={"flash_mla":["asm/*.co"]},
     cmdclass={"build_ext": BuildExtension},
 )
