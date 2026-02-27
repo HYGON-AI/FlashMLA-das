@@ -77,12 +77,19 @@ __device__ __forceinline__ void warp_allreduce_tp1(Tensor<Engine0, Layout0> &dst
         smem_reduce[row * 2 + (warp_id / 4)] = dst[0];
     }
     __syncthreads();
-    if (col == 0 && warp_id < 4) {
-        // printf("sum  %d %d %d %.2f %.2f \n", row, tidx, warp_id, smem_reduce[row * 2], smem_reduce[row * 2 + warp_id / 4]);
-        smem_reduce[128 + row] = op(smem_reduce[row * 2], smem_reduce[row * 2 + 1]);
+    // if (col == 0 && warp_id < 4) {
+    //     // printf("sum  %d %d %d %.2f %.2f \n", row, tidx, warp_id, smem_reduce[row * 2], smem_reduce[row * 2 + warp_id / 4]);
+    //     smem_reduce[128 + row] = op(smem_reduce[row * 2], smem_reduce[row * 2 + 1]);
+    // }
+    // __syncthreads();
+    // dst(0) = smem_reduce(128 + row);
+    if (warp_id < 4) {
+        dst(0) = op(dst(0), smem_reduce[row * 2 + 1]);
+    } else {
+        dst(0) = op(dst(0), smem_reduce[row * 2]);
     }
-    __syncthreads();
-    dst(0) = smem_reduce(128 + row);
+    // dst(0) = op(smem_reduce[row * 2], smem_reduce[row * 2 + 1]);
+
 }
 template<typename Engine0, typename Layout0, typename Engine1, typename Layout1, typename Operator>
 __device__ __forceinline__ void warp_allreduce_tp4(Tensor<Engine0, Layout0> &dst, Tensor<Engine1, Layout1> &smem_reduce,  Operator &op) {
