@@ -2524,7 +2524,7 @@ void run_flash_splitkv_fwd_mla_fp8_tp1(Flash_fwd_mla_params &params, cudaStream_
     }
     else {
         static char* FLASH_MLA_ASM_DIR = std::getenv("FLASH_MLA_ROOT_DIR"); 
-        static_assert(FLASH_MLA_ASM_DIR);
+        assert(FLASH_MLA_ASM_DIR != nullptr && "FLASH_MLA_ASM_DIR nullptr \n");
         constexpr size_t smem_size = 65536;
         std::string co_file = std::string(FLASH_MLA_ASM_DIR) + 
                 "flash_fwd_mla_fp8_gfx938-hip-amdgcn-amd-amdhsa-gfx938.co";
