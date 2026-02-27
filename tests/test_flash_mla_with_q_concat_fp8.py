@@ -5,7 +5,8 @@ import random
 import torch
 import triton
 
-from flash_mla import flash_mla_with_kvcache_kvfp8, get_mla_metadata
+# from flash_mla import flash_mla_with_kvcache_quantization, get_mla_metadata
+from flash_mla import flash_mla_with_kvcache_quantization, get_mla_decoding_metadata_dense_fp8, flash_mla_with_kvcache_quantization_q_nope_pe
 torch.set_printoptions(precision=4, profile="default", sci_mode=False)
 
 def scaled_dot_product_attention(query, key, value, h_q, h_kv, is_causal=False, k_scale=1.0):
@@ -14,9 +15,6 @@ def scaled_dot_product_attention(query, key, value, h_q, h_kv, is_causal=False, 
     value = value.float() * k_scale
     key = key.repeat_interleave(h_q // h_kv, dim=0)
     value = value.repeat_interleave(h_q // h_kv, dim=0)
-    # tmp = query @ key.transpose(-2, -1)
-    # print("tmp ", tmp.shape, tmp[0, 0, :16])
-    # print("tmp ", tmp.shape, tmp[0, 0, 16:32])
     attn_weight = query @ key.transpose(-2, -1) / math.sqrt(query.size(-1))
     if is_causal:
         s_q = query.shape[-2]
@@ -65,18 +63,7 @@ def test_flash_mla_fp8_e5m2(b, s_q, mean_sk, h_q, h_kv, d, dv, causal, varlen, i
     
     # blocked_k = torch.randint(low=0, high=4, size = (block_table.numel(), block_size, h_kv, d), dtype = torch.int8)
     # blocked_k = torch.ones(size = (block_table.numel(), block_size, h_kv, d), dtype = torch.int8)
-    blocked_k = (torch.randn(block_table.numel(), block_size, h_kv, d))
-    # blocked_k = (torch.zeros(block_table.numel(), block_size, h_kv, d))
-    # blocked_k[:, 1:, :, :] = 0
-    # blocked_k[:, :, :, 1:] = 0
-    # blocked_k[0, 0:16, 0, 0] = 0
-    # blocked_k[0, 32:, 0, 0] = 0
-    # blocked_k[0, 0, 0, 1] = 2
-    # blocked_k[0, 0, 0, 2] = 3
-    # blocked_k[0, 0, 0, 3] = 4
-    # print(" blocked_k ", blocked_k[0, 0, 0, :])
-    blocked_k = blocked_k.to(torch.float8_e5m2)
-    # blocked_k = (torch.ones(block_table.numel(), block_size, h_kv, d)).to(torch.float8_e5m2)
+    blocked_k = (torch.randn(block_table.numel(), block_size, h_kv, d)).to(torch.half).to(torch.float8_e5m2)
     # blocked_k[0, 0, 0, 56] = 1
     # blocked_k[0, 1, 0, 8] = 2
     # blocked_k[0, 2, 0, 8] = 5
@@ -92,7 +79,9 @@ def test_flash_mla_fp8_e5m2(b, s_q, mean_sk, h_q, h_kv, d, dv, causal, varlen, i
     #     )
     blocked_v = blocked_k[..., :dv]
 
-    tile_scheduler_metadata, num_splits = get_mla_metadata()
+    tile_scheduler_metadata, num_splits = get_mla_decoding_metadata_dense_fp8(
+        cache_seqlens, s_q * h_q // h_kv, h_kv
+    )
 
     # print("q:", q.shape, q.dtype, q)
     # print("cache_seqlens:", cache_seqlens.shape, cache_seqlens)
@@ -103,14 +92,15 @@ def test_flash_mla_fp8_e5m2(b, s_q, mean_sk, h_q, h_kv, d, dv, causal, varlen, i
     # print("tile_scheduler_metadata:", tile_scheduler_metadata.shape, tile_scheduler_metadata)
     # torch.set_printoptions(precision=4, profile="default", sci_mode=False)
     # print("num_splits:", num_splits.shape, num_splits)
-    # k_scale = torch.tensor(1.0).to(torch.float32).to("cuda:0")  
-    # k_scale = torch.tensor(2.1).to(torch.float32).to("cuda:0")  
     k_scale = torch.tensor(1.0).to(torch.float32).to("cuda:0")  
-    descale_q = torch.ones((1), dtype=torch.float32)
-    descale_k = torch.ones((1), dtype=torch.float32)
+    # k_scale = torch.tensor(2.1).to(torch.float32).to("cuda:0")  
+    # k_scale = torch.tensor(2.5).to(torch.float32).to("cuda:0")  
+    q_nope = q[:, :, :, :512].contiguous()
+    q_pe = q[:, :, :, 512:].contiguous()
     def flash_mla():
-        return flash_mla_with_kvcache_kvfp8(
-            q,
+        return flash_mla_with_kvcache_quantization_q_nope_pe(
+            q_nope,
+            q_pe,
             blocked_k,
             block_table,
             cache_seqlens,
@@ -118,9 +108,21 @@ def test_flash_mla_fp8_e5m2(b, s_q, mean_sk, h_q, h_kv, d, dv, causal, varlen, i
             tile_scheduler_metadata,
             num_splits,
             causal=causal,
-            descale_q = descale_q,
-            descale_k = descale_k,
+            k_scale = k_scale,
+            kv_cache_dtype = "fp8_e5m2"
         )
+        # return flash_mla_with_kvcache_quantization(
+        #     q,
+        #     blocked_k,
+        #     block_table,
+        #     cache_seqlens,
+        #     dv,
+        #     tile_scheduler_metadata,
+        #     num_splits,
+        #     causal=causal,
+        #     k_scale = k_scale,
+        #     kv_cache_dtype = "fp8_e5m2"
+        # )
 
     def ref_mla():
         out = torch.empty(b, s_q, h_q, dv, dtype=torch.float32)
@@ -150,7 +152,7 @@ def test_flash_mla_fp8_e5m2(b, s_q, mean_sk, h_q, h_kv, d, dv, causal, varlen, i
 
     print("out max_diff ", (out_flash - out_torch).abs().max())
     print("lse max_diff ", (lse_flash - lse_torch).abs().max())
-    # print(" out ", torch.nonzero((out_flash - out_torch).abs() > 0.1))
+    # print(" out ", torch.nonzero((out_flash - out_torch).abs()))
     # print(" out_torch", out_torch)
     cal_diff(lse_flash, lse_torch, "lse")
     cal_diff(out_flash, out_torch, "out")
@@ -198,8 +200,8 @@ def main(torch_dtype, is_prof=False):
     #             for s_q in [1, 2]:  # MTP = 1, 2
     #                 for varlen in [True]:
     #                     test_flash_mla(b, s_q, s, h_q, h_kv, d, dv, causal, varlen)
-    # for b in [32]:
-    #     for s in [16384, 32768, 65536*2]:
+    # for b in [15]:
+    #     for s in [4000]:
     #         for h_q in [16]:
     #             for s_q in [1]:  # MTP = 1, 2
     #                 for varlen in [False]:
@@ -210,22 +212,17 @@ def main(torch_dtype, is_prof=False):
     # '''
     for b in [3, 6, 9, 12, 15, 18, 21, 24]:
         for s in [111, 112, 123, 1234, 432, 4325, 4000, 8192, 11111]:
-            for h_q in [16, 128]:
-                for s_q in [1, 2, 3]:  # MTP = 1, 2
-                    for varlen in [False, True]:
-                        test_flash_mla_fp8_e5m2(b, s_q, s, h_q, h_kv, d, dv, causal, varlen,True)
+            for h_q in [16]:
+                for s_q in [1]:  # MTP = 1, 2
+                    for varlen in [False,True]:
+                        test_flash_mla_fp8_e5m2(b, s_q, s, h_q, h_kv, d, dv, causal, varlen)
+
     for b in [3, 6, 9, 12, 15, 18, 21, 24, 32, 64, 128, 256]:
         for s in [4000]:
-            for h_q in [16, 128]:
+            for h_q in [16]:
                 for s_q in [1]:  # MTP = 1, 2
                     for varlen in [False]:
                         test_flash_mla_fp8_e5m2(b, s_q, s, h_q, h_kv, d, dv, causal, varlen)
-    # for b in [1]:
-    #     for s in [64]:
-    #         for h_q in [16]:
-    #             for s_q in [1]:  # MTP = 1, 2
-    #                 for varlen in [False]:
-    #                     test_flash_mla_fp8_e5m2(b, s_q, s, h_q, h_kv, d, dv, causal, varlen)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()

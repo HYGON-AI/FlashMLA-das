@@ -1081,7 +1081,7 @@ void wait_vmcnt() {
                 "s_barrier; \n\t"                
                 :: "n"(N));
 }
-
+#if 0
 template<typename Element, bool is_scale_equal_one, Fp8KVCacheDataType KV_DTYPE, typename Tensor0, typename Tensor1, typename Tensor2, typename Tensor3, typename Tensor4, 
          typename TiledMma, typename TiledCopy, typename ThrCopy>
 __forceinline__ __device__ void gemm_rs_fp8(Tensor0 &acc, Tensor1 &tCrA, Tensor2 &tCrB_int8, Tensor3 &tCrB, Tensor4 const& tCsB,
@@ -1302,7 +1302,7 @@ __forceinline__ __device__ void gemm_k_rs_fp8(Tensor0 &acc, Tensor1 &tCrA,  Tens
     }
     cute::gemm(tiled_mma, tCrA(_, _, k_idx), tCrB(_, _, k_idx), acc);
 }
-
+#endif
 template <
         bool Is_even_MN=true, 
         bool Is_even_K=true, 
@@ -1367,7 +1367,7 @@ buffer_load_copy_fp8(
 
     }
 }
-
+#if 0
 template<typename Element, bool is_scale_equal_one, Fp8KVCacheDataType KV_DTYPE, typename Tensor0, typename Tensor1, typename Tensor3, typename Tensor4, 
          typename TiledMma, typename TiledCopy, typename ThrCopy>
 __forceinline__ __device__ void gemm1_rs_fp8(Tensor0 &acc, Tensor1 &tCrA, Tensor3 &tCrB, Tensor4 const& tCsB,
@@ -1500,8 +1500,7 @@ __forceinline__ __device__ void gemm1_rs_fp8(Tensor0 &acc, Tensor1 &tCrA, Tensor
     }
 
 }
-
-
+#endif
 
 
 }

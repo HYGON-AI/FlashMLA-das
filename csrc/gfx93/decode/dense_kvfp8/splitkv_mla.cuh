@@ -17,6 +17,7 @@ compute_attn_1rowblock_splitkv_mla_kvfp8(const DenseAttnDecodeParams_fp8 &params
                                         const int n_split_idx, const int seqlen_k,
                                         const int n_block_min, const int n_block_max, const bool NoSplit)
 {
+#if 0
     constexpr static bool Is_causal = T::Is_causal;
     constexpr int kBlockM = T::kBlockM;
     constexpr int kBlockN = T::kBlockN;
@@ -384,9 +385,7 @@ compute_attn_1rowblock_splitkv_mla_kvfp8(const DenseAttnDecodeParams_fp8 &params
             }
         }
     }
-
-
-
+#endif
 }
 
 template<typename T>

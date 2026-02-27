@@ -210,15 +210,276 @@ def flash_mla_sparse_fwd(
     )
     return results
 
+def get_mla_decoding_metadata_dense_fp8(
+    cache_seqlens: torch.Tensor,
+    num_heads_per_head_k: int,
+    num_heads_k: int,
+    num_heads_q : int = 16,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """
+    Arguments:
+        cache_seqlens: (batch_size), dtype torch.int32.
+        num_heads_per_head_k: Equals to seq_len_q * num_heads_q // num_heads_k.
+        num_heads_k: num_heads_k.
 
-def flash_mla_with_kvcache_qkvfp8(
+    Returns:
+        tile_scheduler_metadata: (num_sm_parts, TileSchedulerMetaDataSize), dtype torch.int32.
+        num_splits: (batch_size + 1), dtype torch.int32.
+    """
+    return flash_mla_cuda.get_mla_decoding_metadata_dense_fp8(cache_seqlens, num_heads_per_head_k, num_heads_k, num_heads_q)
+
+
+
+def flash_mla_with_kvcache_quantization(
     q: torch.Tensor,
     k_cache: torch.Tensor,
-    block_table: Optional[torch.Tensor],
-    cache_seqlens: Optional[torch.Tensor],
+    block_table: torch.Tensor,
+    cache_seqlens: torch.Tensor,
     head_dim_v: int,
-    tile_scheduler_metadata: FlashMLASchedMeta,
-    num_splits: None = None,
+    tile_scheduler_metadata: torch.Tensor,
+    num_splits: torch.Tensor,
+    softmax_scale: Optional[float] = None,
+    causal: bool = False,
+    k_scale = None,
+    kv_cache_dtype = None
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """
+    Arguments:
+        q: (batch_size, seq_len_q, num_heads_q, head_dim).
+        k_cache: (num_blocks, page_block_size, num_heads_k, head_dim).
+        block_table: (batch_size, max_num_blocks_per_seq), torch.int32.
+        cache_seqlens: (batch_size), torch.int32.
+        head_dim_v: Head dimension of v.
+        tile_scheduler_metadata: (num_sm_parts, TileSchedulerMetaDataSize), torch.int32, returned by get_mla_metadata.
+        num_splits: (batch_size + 1), torch.int32, returned by get_mla_metadata.
+        softmax_scale: float. The scale of QK^T before applying softmax. Default to 1 / sqrt(head_dim).
+        causal: bool. Whether to apply causal attention mask.
+        k_scale: {1, torch.float32}, tensor shape is 1
+        kv_cache_dtype: "only support fp8_e4m3"
+    Returns:
+        out: (batch_size, seq_len_q, num_heads_q, head_dim_v).
+        softmax_lse: (batch_size, num_heads_q, seq_len_q), torch.float32.
+    """
+    assert k_scale is not None and kv_cache_dtype is not None, "k_scale and kv_cache_dtype is not None"
+    if softmax_scale is None:
+        softmax_scale = q.shape[-1] ** (-0.5)
+    out, softmax_lse = flash_mla_cuda.fwd_kvcache_quantization_mla(
+        q,
+        k_cache,
+        None,
+        head_dim_v,
+        cache_seqlens,
+        block_table,
+        softmax_scale,
+        causal,
+        tile_scheduler_metadata,
+        num_splits,
+        k_scale,
+        kv_cache_dtype
+    )
+    return out, softmax_lse
+
+def flash_mla_with_kvcache_q_nope_pe(
+    q_nope: torch.Tensor,
+    q_pe: torch.Tensor,
+    k_cache: torch.Tensor,
+    block_table: torch.Tensor,
+    cache_seqlens: torch.Tensor,
+    head_dim_v: int,
+    tile_scheduler_metadata: torch.Tensor,
+    num_splits: torch.Tensor,
+    softmax_scale: Optional[float] = None,
+    causal: bool = False
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """
+    Arguments:
+        q: (batch_size, seq_len_q, num_heads_q, head_dim).
+        k_cache: (num_blocks, page_block_size, num_heads_k, head_dim).
+        block_table: (batch_size, max_num_blocks_per_seq), torch.int32.
+        cache_seqlens: (batch_size), torch.int32.
+        head_dim_v: Head dimension of v.
+        tile_scheduler_metadata: (num_sm_parts, TileSchedulerMetaDataSize), torch.int32, returned by get_mla_metadata.
+        num_splits: (batch_size + 1), torch.int32, returned by get_mla_metadata.
+        softmax_scale: float. The scale of QK^T before applying softmax. Default to 1 / sqrt(head_dim).
+        causal: bool. Whether to apply causal attention mask.
+
+    Returns:
+        out: (batch_size, seq_len_q, num_heads_q, head_dim_v).
+        softmax_lse: (batch_size, num_heads_q, seq_len_q), torch.float32.
+    """
+    if softmax_scale is None:
+        softmax_scale = (q_nope.shape[-1] + q_pe.shape[-1]) ** (-0.5)
+    out, softmax_lse = flash_mla_cuda.fwd_kvcache_mla_nope_pe(
+        q_nope,
+        q_pe,
+        k_cache,
+        None,
+        head_dim_v,
+        cache_seqlens,
+        block_table,
+        softmax_scale,
+        causal,
+        tile_scheduler_metadata,
+        num_splits
+    )
+    return out, softmax_lse
+
+def flash_mla_with_kvcache_quantization_q_nope_pe(
+    q_nope: torch.Tensor,
+    q_pe: torch.Tensor,
+    k_cache: torch.Tensor,
+    block_table: torch.Tensor,
+    cache_seqlens: torch.Tensor,
+    head_dim_v: int,
+    tile_scheduler_metadata: torch.Tensor,
+    num_splits: torch.Tensor,
+    softmax_scale: Optional[float] = None,
+    causal: bool = False,
+    k_scale = None,
+    kv_cache_dtype = None
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """
+    Arguments:
+        q: (batch_size, seq_len_q, num_heads_q, head_dim).
+        k_cache: (num_blocks, page_block_size, num_heads_k, head_dim).
+        block_table: (batch_size, max_num_blocks_per_seq), torch.int32.
+        cache_seqlens: (batch_size), torch.int32.
+        head_dim_v: Head dimension of v.
+        tile_scheduler_metadata: (num_sm_parts, TileSchedulerMetaDataSize), torch.int32, returned by get_mla_metadata.
+        num_splits: (batch_size + 1), torch.int32, returned by get_mla_metadata.
+        softmax_scale: float. The scale of QK^T before applying softmax. Default to 1 / sqrt(head_dim).
+        causal: bool. Whether to apply causal attention mask.
+        k_scale: {1, torch.float32}, tensor shape is 1
+        kv_cache_dtype: "only support fp8_e4m3"
+    Returns:
+        out: (batch_size, seq_len_q, num_heads_q, head_dim_v).
+        softmax_lse: (batch_size, num_heads_q, seq_len_q), torch.float32.
+    """
+    assert k_scale is not None and kv_cache_dtype is not None, "k_scale and kv_cache_dtype is not None"
+    if softmax_scale is None:
+        softmax_scale = (q_nope.shape[-1] + q_pe.shape[-1]) ** (-0.5)
+    out, softmax_lse = flash_mla_cuda.fwd_kvcache_quantization_q_nope_pe_mla(
+        q_nope,
+        q_pe,
+        k_cache,
+        None,
+        head_dim_v,
+        cache_seqlens,
+        block_table,
+        softmax_scale,
+        causal,
+        tile_scheduler_metadata,
+        num_splits,
+        k_scale,
+        kv_cache_dtype
+    )
+    return out, softmax_lse
+
+def flash_mla_with_kvcache_q_nope_pe(
+    q_nope: torch.Tensor,
+    q_pe: torch.Tensor,
+    k_cache: torch.Tensor,
+    block_table: torch.Tensor,
+    cache_seqlens: torch.Tensor,
+    head_dim_v: int,
+    tile_scheduler_metadata: torch.Tensor,
+    num_splits: torch.Tensor,
+    softmax_scale: Optional[float] = None,
+    causal: bool = False
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """
+    Arguments:
+        q: (batch_size, seq_len_q, num_heads_q, head_dim).
+        k_cache: (num_blocks, page_block_size, num_heads_k, head_dim).
+        block_table: (batch_size, max_num_blocks_per_seq), torch.int32.
+        cache_seqlens: (batch_size), torch.int32.
+        head_dim_v: Head dimension of v.
+        tile_scheduler_metadata: (num_sm_parts, TileSchedulerMetaDataSize), torch.int32, returned by get_mla_metadata.
+        num_splits: (batch_size + 1), torch.int32, returned by get_mla_metadata.
+        softmax_scale: float. The scale of QK^T before applying softmax. Default to 1 / sqrt(head_dim).
+        causal: bool. Whether to apply causal attention mask.
+
+    Returns:
+        out: (batch_size, seq_len_q, num_heads_q, head_dim_v).
+        softmax_lse: (batch_size, num_heads_q, seq_len_q), torch.float32.
+    """
+    if softmax_scale is None:
+        softmax_scale = (q_nope.shape[-1] + q_pe.shape[-1]) ** (-0.5)
+    out, softmax_lse = flash_mla_cuda.fwd_kvcache_mla_nope_pe(
+        q_nope,
+        q_pe,
+        k_cache,
+        None,
+        head_dim_v,
+        cache_seqlens,
+        block_table,
+        softmax_scale,
+        causal,
+        tile_scheduler_metadata,
+        num_splits
+    )
+    return out, softmax_lse
+
+def flash_mla_with_kvcache_quantization_q_nope_pe(
+    q_nope: torch.Tensor,
+    q_pe: torch.Tensor,
+    k_cache: torch.Tensor,
+    block_table: torch.Tensor,
+    cache_seqlens: torch.Tensor,
+    head_dim_v: int,
+    tile_scheduler_metadata: torch.Tensor,
+    num_splits: torch.Tensor,
+    softmax_scale: Optional[float] = None,
+    causal: bool = False,
+    k_scale = None,
+    kv_cache_dtype = None
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """
+    Arguments:
+        q: (batch_size, seq_len_q, num_heads_q, head_dim).
+        k_cache: (num_blocks, page_block_size, num_heads_k, head_dim).
+        block_table: (batch_size, max_num_blocks_per_seq), torch.int32.
+        cache_seqlens: (batch_size), torch.int32.
+        head_dim_v: Head dimension of v.
+        tile_scheduler_metadata: (num_sm_parts, TileSchedulerMetaDataSize), torch.int32, returned by get_mla_metadata.
+        num_splits: (batch_size + 1), torch.int32, returned by get_mla_metadata.
+        softmax_scale: float. The scale of QK^T before applying softmax. Default to 1 / sqrt(head_dim).
+        causal: bool. Whether to apply causal attention mask.
+        k_scale: {1, torch.float32}, tensor shape is 1
+        kv_cache_dtype: "only support fp8_e4m3"
+    Returns:
+        out: (batch_size, seq_len_q, num_heads_q, head_dim_v).
+        softmax_lse: (batch_size, num_heads_q, seq_len_q), torch.float32.
+    """
+    assert k_scale is not None and kv_cache_dtype is not None, "k_scale and kv_cache_dtype is not None"
+    if softmax_scale is None:
+        softmax_scale = (q_nope.shape[-1] + q_pe.shape[-1]) ** (-0.5)
+    out, softmax_lse = flash_mla_cuda.fwd_kvcache_quantization_q_nope_pe_mla(
+        q_nope,
+        q_pe,
+        k_cache,
+        None,
+        head_dim_v,
+        cache_seqlens,
+        block_table,
+        softmax_scale,
+        causal,
+        tile_scheduler_metadata,
+        num_splits,
+        k_scale,
+        kv_cache_dtype
+    )
+    return out, softmax_lse
+
+
+def flash_mla_with_kvcache_fp8(
+    q: torch.Tensor,
+    k_cache: torch.Tensor,
+    block_table: torch.Tensor,
+    cache_seqlens: torch.Tensor,
+    head_dim_v: int,
+    tile_scheduler_metadata: torch.Tensor,
+    num_splits: torch.Tensor,
     softmax_scale: Optional[float] = None,
     causal: bool = False,
     descale_q: Optional[torch.Tensor] = None,
@@ -228,75 +489,47 @@ def flash_mla_with_kvcache_qkvfp8(
     Arguments:
         q: (batch_size, seq_len_q, num_heads_q, head_dim).
         k_cache: (num_blocks, page_block_size, num_heads_k, head_dim).
-        block_table: (batch_size, max_num_blocks_per_seq), torch.int32. Can be None when sparse attention is used.
-        cache_seqlens: (batch_size), torch.int32. Can be None when sparse attention is used.
-        head_dim_v: Head_dim of v. Must be 512
-        sched_meta: FlashMLASchedMeta, return by get_mla_metadata. You may reuse the same sched_meta across different invocations, but only when the tensor shapes and the values of cache_seqlens, topk_length, and extra_topk_length remain the same.
-        num_splits_placeholder: must be "None" (to be compatible with the old interface).
-        softmax_scale: float. The scaling of QK^T before applying softmax. Default to 1 / sqrt(head_dim_k).
-        causal: bool. Whether to apply causal attention mask. Only valid for dense attention
+        block_table: (batch_size, max_num_blocks_per_seq), torch.int32.
+        cache_seqlens: (batch_size), torch.int32.
+        head_dim_v: Head dimension of v.
+        tile_scheduler_metadata: (num_sm_parts, TileSchedulerMetaDataSize), torch.int32, returned by get_mla_metadata.
+        num_splits: (batch_size + 1), torch.int32, returned by get_mla_metadata.
+        softmax_scale: float. The scale of QK^T before applying softmax. Default to 1 / sqrt(head_dim).
+        causal: bool. Whether to apply causal attention mask.
         descale_q: (batch_size), torch.float32. Descaling factors for Q, used for fp8 quantization.
         descale_k: (batch_size), torch.float32. Descaling factors for K, used for fp8 quantization.
-    Return:
-        out: (batch_size, seq_len_q, num_heads_q, head_dim_v), only support bf16 output
+
+    Returns:
+        out: (batch_size, seq_len_q, num_heads_q, head_dim_v).
         softmax_lse: (batch_size, num_heads_q, seq_len_q), torch.float32.
     """
-    sched_meta = tile_scheduler_metadata
-    assert isinstance(sched_meta, FlashMLASchedMeta), "tile_scheduler_metadata must be of type FlashMLASchedMeta"
-    assert num_splits is None, "num_splits must be None"
-
     if softmax_scale is None:
         softmax_scale = q.shape[-1] ** (-0.5)
-
-    if not sched_meta.have_initialized:
-        # Initialize the tile scheduler metadata during the first invocation.
-        sched_meta.have_initialized = True
-        sched_meta.config = FlashMLASchedMeta.Config(
-            q.shape[0],
-            q.shape[1],
-            q.shape[2],
-            k_cache.shape[1],
-            k_cache.shape[2],
-            causal,
-            False,
-            0,
-            0,
-            0
-        )
-    else:
-        # Check whether the input arguments are consistent with sched_meta
-        helper_msg = " Your input arguments are inconsistent with sched_meta. Please make sure the input arguments are consistent across different invocations of flash_mla_with_kvcache on the same sched_meta."
-        assert sched_meta.config is not None
-        assert sched_meta.config.b == q.shape[0], "sched_meta.config.b must be equal to batch_size." + helper_msg
-        assert sched_meta.config.s_q == q.shape[1], "sched_meta.config.s_q must be equal to seq_len_q." + helper_msg
-        assert sched_meta.config.h_q == q.shape[2], "sched_meta.config.h_q must be equal to num_heads_q." + helper_msg
-        assert sched_meta.config.page_block_size == k_cache.shape[1], "sched_meta.config.page_block_size must be equal to page_block_size." + helper_msg
-        assert sched_meta.config.h_k == k_cache.shape[2], "sched_meta.config.h_k must be equal to num_heads_k." + helper_msg
-        assert sched_meta.config.causal == causal, "sched_meta.config.causal must be equal to causal." + helper_msg
-        assert sched_meta.config.is_fp8_kvcache == False, "sched_meta.config.is_fp8_kvcache must be equal to is_fp8_kvcache." + helper_msg
- 
-
-    # Dense attention
-    assert block_table is not None and cache_seqlens is not None, "block_table and cache_seqlens must be provided when dense attention is used."
-    out, lse, new_tile_scheduler_metadata, new_num_splits = flash_mla_cuda.dense_decode_fwd_qkvfp8(
-        q, k_cache, head_dim_v,
-        cache_seqlens, block_table,
-        softmax_scale, causal,
-        sched_meta.tile_scheduler_metadata, sched_meta.num_splits,
-        descale_q, descale_k
+    out, softmax_lse = flash_mla_cuda.fwd_kvcache_mla_fp8(
+        q,
+        k_cache,
+        None,
+        head_dim_v,
+        cache_seqlens,
+        block_table,
+        softmax_scale,
+        causal,
+        tile_scheduler_metadata,
+        num_splits,
+        descale_q,
+        descale_k
     )
-    sched_meta.tile_scheduler_metadata = new_tile_scheduler_metadata
-    sched_meta.num_splits = new_num_splits
-    return (out, lse)
+    return out, softmax_lse
 
-def flash_mla_with_kvcache_kvfp8(
-    q: torch.Tensor,
+def flash_mla_with_kvcache_fp8_with_cat(
+    q_nope: torch.Tensor,
+    q_pe: torch.Tensor,
     k_cache: torch.Tensor,
-    block_table: Optional[torch.Tensor],
-    cache_seqlens: Optional[torch.Tensor],
+    block_table: torch.Tensor,
+    cache_seqlens: torch.Tensor,
     head_dim_v: int,
-    tile_scheduler_metadata: FlashMLASchedMeta,
-    num_splits: None = None,
+    tile_scheduler_metadata: torch.Tensor,
+    num_splits: torch.Tensor,
     softmax_scale: Optional[float] = None,
     causal: bool = False,
     descale_q: Optional[torch.Tensor] = None,
@@ -304,65 +537,196 @@ def flash_mla_with_kvcache_kvfp8(
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     """
     Arguments:
-        q: (batch_size, seq_len_q, num_heads_q, head_dim).
+        q_nope: (batch_size, seq_len_q, num_heads_q, 512).
+        q_pe: (batch_size, seq_len_q, num_heads_q, 64).
         k_cache: (num_blocks, page_block_size, num_heads_k, head_dim).
-        block_table: (batch_size, max_num_blocks_per_seq), torch.int32. Can be None when sparse attention is used.
-        cache_seqlens: (batch_size), torch.int32. Can be None when sparse attention is used.
-        head_dim_v: Head_dim of v. Must be 512
-        sched_meta: FlashMLASchedMeta, return by get_mla_metadata. You may reuse the same sched_meta across different invocations, but only when the tensor shapes and the values of cache_seqlens, topk_length, and extra_topk_length remain the same.
-        num_splits_placeholder: must be "None" (to be compatible with the old interface).
-        softmax_scale: float. The scaling of QK^T before applying softmax. Default to 1 / sqrt(head_dim_k).
-        causal: bool. Whether to apply causal attention mask. Only valid for dense attention
+        block_table: (batch_size, max_num_blocks_per_seq), torch.int32.
+        cache_seqlens: (batch_size), torch.int32.
+        head_dim_v: Head dimension of v.
+        tile_scheduler_metadata: (num_sm_parts, TileSchedulerMetaDataSize), torch.int32, returned by get_mla_metadata.
+        num_splits: (batch_size + 1), torch.int32, returned by get_mla_metadata.
+        softmax_scale: float. The scale of QK^T before applying softmax. Default to 1 / sqrt(head_dim).
+        causal: bool. Whether to apply causal attention mask.
         descale_q: (batch_size), torch.float32. Descaling factors for Q, used for fp8 quantization.
         descale_k: (batch_size), torch.float32. Descaling factors for K, used for fp8 quantization.
-    Return:
-        out: (batch_size, seq_len_q, num_heads_q, head_dim_v), only support bf16 output
+
+    Returns:
+        out: (batch_size, seq_len_q, num_heads_q, head_dim_v).
         softmax_lse: (batch_size, num_heads_q, seq_len_q), torch.float32.
     """
-    sched_meta = tile_scheduler_metadata
-    assert isinstance(sched_meta, FlashMLASchedMeta), "tile_scheduler_metadata must be of type FlashMLASchedMeta"
-    assert num_splits is None, "num_splits must be None"
-
     if softmax_scale is None:
-        softmax_scale = q.shape[-1] ** (-0.5)
+        softmax_scale = (q_nope.shape[-1] + q_pe.shape[-1]) ** (-0.5)
+    out, softmax_lse = flash_mla_cuda.fwd_kvcache_mla_fp8_with_cat(
+        q_nope,
+        q_pe,
+        k_cache,
+        None,
+        head_dim_v,
+        cache_seqlens,
+        block_table,
+        softmax_scale,
+        causal,
+        tile_scheduler_metadata,
+        num_splits,
+        descale_q,
+        descale_k
+    )
+    return out, softmax_lse
 
-    if not sched_meta.have_initialized:
-        # Initialize the tile scheduler metadata during the first invocation.
-        sched_meta.have_initialized = True
-        sched_meta.config = FlashMLASchedMeta.Config(
-            q.shape[0],
-            q.shape[1],
-            q.shape[2],
-            k_cache.shape[1],
-            k_cache.shape[2],
-            causal,
-            False,
-            0,
-            0,
-            0
-        )
-    else:
-        # Check whether the input arguments are consistent with sched_meta
-        helper_msg = " Your input arguments are inconsistent with sched_meta. Please make sure the input arguments are consistent across different invocations of flash_mla_with_kvcache on the same sched_meta."
-        assert sched_meta.config is not None
-        assert sched_meta.config.b == q.shape[0], "sched_meta.config.b must be equal to batch_size." + helper_msg
-        assert sched_meta.config.s_q == q.shape[1], "sched_meta.config.s_q must be equal to seq_len_q." + helper_msg
-        assert sched_meta.config.h_q == q.shape[2], "sched_meta.config.h_q must be equal to num_heads_q." + helper_msg
-        assert sched_meta.config.page_block_size == k_cache.shape[1], "sched_meta.config.page_block_size must be equal to page_block_size." + helper_msg
-        assert sched_meta.config.h_k == k_cache.shape[2], "sched_meta.config.h_k must be equal to num_heads_k." + helper_msg
-        assert sched_meta.config.causal == causal, "sched_meta.config.causal must be equal to causal." + helper_msg
-        assert sched_meta.config.is_fp8_kvcache == False, "sched_meta.config.is_fp8_kvcache must be equal to is_fp8_kvcache." + helper_msg
+
+
+# def flash_mla_with_kvcache_qkvfp8(
+#     q: torch.Tensor,
+#     k_cache: torch.Tensor,
+#     block_table: Optional[torch.Tensor],
+#     cache_seqlens: Optional[torch.Tensor],
+#     head_dim_v: int,
+#     tile_scheduler_metadata: FlashMLASchedMeta,
+#     num_splits: None = None,
+#     softmax_scale: Optional[float] = None,
+#     causal: bool = False,
+#     descale_q: Optional[torch.Tensor] = None,
+#     descale_k: Optional[torch.Tensor] = None,
+# ) -> Tuple[torch.Tensor, torch.Tensor]:
+#     """
+#     Arguments:
+#         q: (batch_size, seq_len_q, num_heads_q, head_dim).
+#         k_cache: (num_blocks, page_block_size, num_heads_k, head_dim).
+#         block_table: (batch_size, max_num_blocks_per_seq), torch.int32. Can be None when sparse attention is used.
+#         cache_seqlens: (batch_size), torch.int32. Can be None when sparse attention is used.
+#         head_dim_v: Head_dim of v. Must be 512
+#         sched_meta: FlashMLASchedMeta, return by get_mla_metadata. You may reuse the same sched_meta across different invocations, but only when the tensor shapes and the values of cache_seqlens, topk_length, and extra_topk_length remain the same.
+#         num_splits_placeholder: must be "None" (to be compatible with the old interface).
+#         softmax_scale: float. The scaling of QK^T before applying softmax. Default to 1 / sqrt(head_dim_k).
+#         causal: bool. Whether to apply causal attention mask. Only valid for dense attention
+#         descale_q: (batch_size), torch.float32. Descaling factors for Q, used for fp8 quantization.
+#         descale_k: (batch_size), torch.float32. Descaling factors for K, used for fp8 quantization.
+#     Return:
+#         out: (batch_size, seq_len_q, num_heads_q, head_dim_v), only support bf16 output
+#         softmax_lse: (batch_size, num_heads_q, seq_len_q), torch.float32.
+#     """
+#     sched_meta = tile_scheduler_metadata
+#     assert isinstance(sched_meta, FlashMLASchedMeta), "tile_scheduler_metadata must be of type FlashMLASchedMeta"
+#     assert num_splits is None, "num_splits must be None"
+
+#     if softmax_scale is None:
+#         softmax_scale = q.shape[-1] ** (-0.5)
+
+#     if not sched_meta.have_initialized:
+#         # Initialize the tile scheduler metadata during the first invocation.
+#         sched_meta.have_initialized = True
+#         sched_meta.config = FlashMLASchedMeta.Config(
+#             q.shape[0],
+#             q.shape[1],
+#             q.shape[2],
+#             k_cache.shape[1],
+#             k_cache.shape[2],
+#             causal,
+#             False,
+#             0,
+#             0,
+#             0
+#         )
+#     else:
+#         # Check whether the input arguments are consistent with sched_meta
+#         helper_msg = " Your input arguments are inconsistent with sched_meta. Please make sure the input arguments are consistent across different invocations of flash_mla_with_kvcache on the same sched_meta."
+#         assert sched_meta.config is not None
+#         assert sched_meta.config.b == q.shape[0], "sched_meta.config.b must be equal to batch_size." + helper_msg
+#         assert sched_meta.config.s_q == q.shape[1], "sched_meta.config.s_q must be equal to seq_len_q." + helper_msg
+#         assert sched_meta.config.h_q == q.shape[2], "sched_meta.config.h_q must be equal to num_heads_q." + helper_msg
+#         assert sched_meta.config.page_block_size == k_cache.shape[1], "sched_meta.config.page_block_size must be equal to page_block_size." + helper_msg
+#         assert sched_meta.config.h_k == k_cache.shape[2], "sched_meta.config.h_k must be equal to num_heads_k." + helper_msg
+#         assert sched_meta.config.causal == causal, "sched_meta.config.causal must be equal to causal." + helper_msg
+#         assert sched_meta.config.is_fp8_kvcache == False, "sched_meta.config.is_fp8_kvcache must be equal to is_fp8_kvcache." + helper_msg
  
 
-    # Dense attention
-    assert block_table is not None and cache_seqlens is not None, "block_table and cache_seqlens must be provided when dense attention is used."
-    out, lse, new_tile_scheduler_metadata, new_num_splits = flash_mla_cuda.dense_decode_fwd_kvfp8(
-        q, k_cache, head_dim_v,
-        cache_seqlens, block_table,
-        softmax_scale, causal,
-        sched_meta.tile_scheduler_metadata, sched_meta.num_splits,
-        descale_q, descale_k
-    )
-    sched_meta.tile_scheduler_metadata = new_tile_scheduler_metadata
-    sched_meta.num_splits = new_num_splits
-    return (out, lse)
+#     # Dense attention
+#     assert block_table is not None and cache_seqlens is not None, "block_table and cache_seqlens must be provided when dense attention is used."
+#     out, lse, new_tile_scheduler_metadata, new_num_splits = flash_mla_cuda.dense_decode_fwd_qkvfp8(
+#         q, k_cache, head_dim_v,
+#         cache_seqlens, block_table,
+#         softmax_scale, causal,
+#         sched_meta.tile_scheduler_metadata, sched_meta.num_splits,
+#         descale_q, descale_k
+#     )
+#     sched_meta.tile_scheduler_metadata = new_tile_scheduler_metadata
+#     sched_meta.num_splits = new_num_splits
+#     return (out, lse)
+
+# def flash_mla_with_kvcache_kvfp8(
+#     q: torch.Tensor,
+#     k_cache: torch.Tensor,
+#     block_table: Optional[torch.Tensor],
+#     cache_seqlens: Optional[torch.Tensor],
+#     head_dim_v: int,
+#     tile_scheduler_metadata: FlashMLASchedMeta,
+#     num_splits: None = None,
+#     softmax_scale: Optional[float] = None,
+#     causal: bool = False,
+#     descale_q: Optional[torch.Tensor] = None,
+#     descale_k: Optional[torch.Tensor] = None,
+# ) -> Tuple[torch.Tensor, torch.Tensor]:
+#     """
+#     Arguments:
+#         q: (batch_size, seq_len_q, num_heads_q, head_dim).
+#         k_cache: (num_blocks, page_block_size, num_heads_k, head_dim).
+#         block_table: (batch_size, max_num_blocks_per_seq), torch.int32. Can be None when sparse attention is used.
+#         cache_seqlens: (batch_size), torch.int32. Can be None when sparse attention is used.
+#         head_dim_v: Head_dim of v. Must be 512
+#         sched_meta: FlashMLASchedMeta, return by get_mla_metadata. You may reuse the same sched_meta across different invocations, but only when the tensor shapes and the values of cache_seqlens, topk_length, and extra_topk_length remain the same.
+#         num_splits_placeholder: must be "None" (to be compatible with the old interface).
+#         softmax_scale: float. The scaling of QK^T before applying softmax. Default to 1 / sqrt(head_dim_k).
+#         causal: bool. Whether to apply causal attention mask. Only valid for dense attention
+#         descale_q: (batch_size), torch.float32. Descaling factors for Q, used for fp8 quantization.
+#         descale_k: (batch_size), torch.float32. Descaling factors for K, used for fp8 quantization.
+#     Return:
+#         out: (batch_size, seq_len_q, num_heads_q, head_dim_v), only support bf16 output
+#         softmax_lse: (batch_size, num_heads_q, seq_len_q), torch.float32.
+#     """
+#     sched_meta = tile_scheduler_metadata
+#     assert isinstance(sched_meta, FlashMLASchedMeta), "tile_scheduler_metadata must be of type FlashMLASchedMeta"
+#     assert num_splits is None, "num_splits must be None"
+
+#     if softmax_scale is None:
+#         softmax_scale = q.shape[-1] ** (-0.5)
+
+#     if not sched_meta.have_initialized:
+#         # Initialize the tile scheduler metadata during the first invocation.
+#         sched_meta.have_initialized = True
+#         sched_meta.config = FlashMLASchedMeta.Config(
+#             q.shape[0],
+#             q.shape[1],
+#             q.shape[2],
+#             k_cache.shape[1],
+#             k_cache.shape[2],
+#             causal,
+#             False,
+#             0,
+#             0,
+#             0
+#         )
+#     else:
+#         # Check whether the input arguments are consistent with sched_meta
+#         helper_msg = " Your input arguments are inconsistent with sched_meta. Please make sure the input arguments are consistent across different invocations of flash_mla_with_kvcache on the same sched_meta."
+#         assert sched_meta.config is not None
+#         assert sched_meta.config.b == q.shape[0], "sched_meta.config.b must be equal to batch_size." + helper_msg
+#         assert sched_meta.config.s_q == q.shape[1], "sched_meta.config.s_q must be equal to seq_len_q." + helper_msg
+#         assert sched_meta.config.h_q == q.shape[2], "sched_meta.config.h_q must be equal to num_heads_q." + helper_msg
+#         assert sched_meta.config.page_block_size == k_cache.shape[1], "sched_meta.config.page_block_size must be equal to page_block_size." + helper_msg
+#         assert sched_meta.config.h_k == k_cache.shape[2], "sched_meta.config.h_k must be equal to num_heads_k." + helper_msg
+#         assert sched_meta.config.causal == causal, "sched_meta.config.causal must be equal to causal." + helper_msg
+#         assert sched_meta.config.is_fp8_kvcache == False, "sched_meta.config.is_fp8_kvcache must be equal to is_fp8_kvcache." + helper_msg
+ 
+
+#     # Dense attention
+#     assert block_table is not None and cache_seqlens is not None, "block_table and cache_seqlens must be provided when dense attention is used."
+#     out, lse, new_tile_scheduler_metadata, new_num_splits = flash_mla_cuda.dense_decode_fwd_kvfp8(
+#         q, k_cache, head_dim_v,
+#         cache_seqlens, block_table,
+#         softmax_scale, causal,
+#         sched_meta.tile_scheduler_metadata, sched_meta.num_splits,
+#         descale_q, descale_k
+#     )
+#     sched_meta.tile_scheduler_metadata = new_tile_scheduler_metadata
+#     sched_meta.num_splits = new_num_splits
+#     return (out, lse)

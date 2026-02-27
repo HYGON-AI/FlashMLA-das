@@ -4,9 +4,8 @@ import random
 
 import torch
 import triton
-import kernelkit as kk
 
-from flash_mla import flash_mla_with_kvcache_qkvfp8, get_mla_metadata
+from flash_mla import flash_mla_with_kvcache_fp8, get_mla_decoding_metadata_dense_fp8
 torch.set_printoptions(precision=4, profile="default", sci_mode=False)
 
 def scaled_dot_product_attention(query, key, value, h_q, h_kv, is_causal=False, k_scale=1.0):
@@ -88,7 +87,9 @@ def test_flash_mla(b, s_q, mean_sk, h_q, h_kv, d, dv, causal, varlen, is_prof=Fa
         )
     blocked_v = blocked_k[..., :dv]
 
-    tile_scheduler_metadata, num_splits = get_mla_metadata()
+    tile_scheduler_metadata, num_splits = get_mla_decoding_metadata_dense_fp8(
+        cache_seqlens, s_q * h_q // h_kv, h_kv, h_q
+    )
 
     init_dtype = q.dtype
     def prepare_fp8_input():
@@ -116,7 +117,7 @@ def test_flash_mla(b, s_q, mean_sk, h_q, h_kv, d, dv, causal, varlen, is_prof=Fa
     # print(" descale_q  ", descale_q.shape, descale_q.stride())
     # print(" blocked_k ", blocked_k.shape)
     def flash_mla():
-        return flash_mla_with_kvcache_qkvfp8(
+        return flash_mla_with_kvcache_fp8(
             q,
             blocked_k,
             block_table,
@@ -159,7 +160,10 @@ def test_flash_mla(b, s_q, mean_sk, h_q, h_kv, d, dv, causal, varlen, is_prof=Fa
 
     # print(" diff ", torch.nonzero((lse_flash - lse_torch).abs() > 0.1))
     # print(" diff ", torch.nonzero((out_flash - out_torch).abs() > 0.1))
-
+    # print(" out_torch ", out_torch[0, 0, 0, 0:10])
+    # print(" out_flash ", out_flash[0, 0, 0,  0:10])
+    # print(" lse_flash ", lse_flash[0,  0:3, :1])
+    # print(" lse_torch ", lse_torch[0,  0:3, :1])
     # print(" nan ", torch.nonzero(torch.isnan(out_flash)))
     cal_diff(out_flash, out_torch, "out", use_fp8)
     cal_diff(lse_flash, lse_torch, "lse")
@@ -170,6 +174,8 @@ def test_flash_mla(b, s_q, mean_sk, h_q, h_kv, d, dv, causal, varlen, is_prof=Fa
     print(
         f"{t:.3f} ms, {FLOPS / 10 ** 9 / t:.0f} TFLOPS, {bytes / 10 ** 6 / t:.0f} GB/s"
     )
+
+
 
 def main(torch_dtype, is_prof=False):
     device = torch.device("cuda:0")
@@ -210,14 +216,14 @@ def main(torch_dtype, is_prof=False):
     # 压测
     for b in [3, 6, 9, 12, 15, 18, 21, 24, 40, 41, 79, 80]:
         for s in [111, 112, 123, 1234, 432, 4325, 4000, 8192, 12345, 45321]:
-            for h_q in [16]:
+            for h_q in [32, 16, 64, 128]:
                 for s_q in [1, 2, 3]:  # MTP = 1, 2
                     for varlen in [False, True]:
                         test_flash_mla(b, s_q, s, h_q, h_kv, d, dv, causal, varlen,True,torch_dtype)
 
     for b in [3, 6, 9, 12, 15, 18, 21, 24, 32, 64, 128, 256]:
         for s in [4000]:
-            for h_q in [16]:
+            for h_q in [32, 16, 64, 128]:
                 for s_q in [1]:  # MTP = 1, 2
                     for varlen in [False]:
                         test_flash_mla(b, s_q, s, h_q, h_kv, d, dv, causal, varlen,False,torch_dtype)
