@@ -683,9 +683,9 @@ mha_fwd_kvcache_mla_fp8(
     // auto dprops = at::cuda::getCurrentDeviceProperties();
     // bool is_sm90 = dprops->major == 9 && dprops->minor == 0;
     // TORCH_CHECK(is_sm90);
-    static std::string FLASH_MLA_ROOT_DIR = execCommand("python -c 'import site; print(site.getsitepackages()[0])'");
+    // static std::string FLASH_MLA_ROOT_DIR = execCommand("python -c 'import site; print(site.getsitepackages()[0])'");
 
-    setenv("FLASH_MLA_ROOT_DIR", (FLASH_MLA_ROOT_DIR + "/flash_mla/asm/").c_str(), 1);
+    // setenv("FLASH_MLA_ROOT_DIR", (FLASH_MLA_ROOT_DIR + "/flash_mla/asm/").c_str(), 1);
     // std::cout << FLASH_MLA_ROOT_DIR << "\n";
     // exit(-1);
     at::Tensor vcache = vcache_.has_value() ? vcache_.value() : kcache;
