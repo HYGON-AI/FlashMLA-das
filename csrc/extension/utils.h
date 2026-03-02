@@ -642,8 +642,8 @@ buffer_load_copy_qkvfp8(
         global_addr[3] = 0x00020000;
 
         int mma_k = 32*64;
-        int row = lane % 16;
-        int col = lane / 16;
+        int row = lane / 4;
+        int col = lane % 4;
         int row_offset = row +  (warp_id * 16);
         int col_offset = col * elements_per_thread + k_idx * 64;
         int offset_v = (row_offset * row_stride + col_offset) * element_size; // bytes
