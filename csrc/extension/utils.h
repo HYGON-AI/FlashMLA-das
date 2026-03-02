@@ -570,7 +570,7 @@ CUTE_HOST_DEVICE
 void
 buffer_load_copy_qkvfp8(
      Tensor<SrcEngine, SrcLayout> const& src,
-        uint128_t     & dst,
+        intx4_t     & dst,
      int k_idx_, const int row_stride, 
      int offset_k, 
      const int max_MN=0)
@@ -615,11 +615,41 @@ buffer_load_copy_qkvfp8(
             );
         }
         else {
-            auto res = __builtin_amdgcn_buffer_load_dwordx4(global_addr, 0, offset_v, false, false);
-
-            dst = *reinterpret_cast<uint128_t*>(&res);
+            dst = __builtin_amdgcn_buffer_load_dwordx4(global_addr, 0, offset_v, false, false);
         }
+    } else {
 
+        constexpr int warp_size = 64;
+        int tidx = threadIdx.x;//0-256
+        int warp_id = __builtin_amdgcn_readfirstlane(tidx / warp_size);
+        int lane = tidx % warp_size;//0-63
+        constexpr int element_size = 1;
+        int k_idx = __builtin_amdgcn_readfirstlane(k_idx_);//576
+        const int offset_s = 0;
+
+        struct PtrWrapper {
+            uint32_t former;
+            uint32_t latter;
+        };
+        PtrWrapper glob_ptr;
+        *(uint64_t*)&glob_ptr = reinterpret_cast<uint64_t>(src.data().get());
+        // glob_ptr.latter |= 0x40000000; // 62 bit: cache swizzle;  48~61: Stride
+        constexpr int elements_per_thread = 16;
+        uint32x4_t global_addr = {0};
+        global_addr[0] = __builtin_amdgcn_readfirstlane(glob_ptr.former);
+        global_addr[1] = __builtin_amdgcn_readfirstlane(glob_ptr.latter);
+        global_addr[2] = 0x80000000;
+        global_addr[3] = 0x00020000;
+
+        int mma_k = 32*64;
+        int row = lane % 16;
+        int col = lane / 16;
+        int row_offset = row +  (warp_id * 16);
+        int col_offset = col * elements_per_thread + k_idx * 64;
+        int offset_v = (row_offset * row_stride + col_offset) * element_size; // bytes
+        
+        if (!Is_even_MN && row_offset >= max_MN) offset_v = -1;
+        dst = __builtin_amdgcn_buffer_load_dwordx4(global_addr, 0, offset_v, false, false);
 
     }
 }
