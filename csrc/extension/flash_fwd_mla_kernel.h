@@ -4314,7 +4314,7 @@ void run_mha_fwd_splitkv_mla(Flash_fwd_mla_params &params, const std::string& kv
 
     if (kv_cache_dtype == "auto") {
         // printf(" seqlen_q %d \n", params.seqlen_q);
-        if (params.ngroups >= 64) {
+        if (params.seqlen_q > 32) {
             using Kernel_traits = Flash_fwd_kernel_traits_mla_tp1<576, 64, 64, 8, T, 512>;
             run_flash_splitkv_fwd_mla_tp1<Kernel_traits, flash::SharedStorageMLATP1<Kernel_traits>, Fp8KVCacheDataType::kAuto>(params, stream);
         } else {
@@ -4325,7 +4325,7 @@ void run_mha_fwd_splitkv_mla(Flash_fwd_mla_params &params, const std::string& kv
         using Kernel_traits = Flash_fwd_kernel_traits_mla_kvfp8<576, 16, 64, 4, T, 512>;
         run_flash_splitkv_fwd_mla<Kernel_traits, flash::SharedStorageMLAFp8<Kernel_traits>, Fp8KVCacheDataType::kFp8E4M3>(params, stream);
     } else if (kv_cache_dtype == "fp8_e5m2") {
-        if (params.ngroups >= 64) {
+        if (params.seqlen_q > 32) {
             using Kernel_traits = Flash_fwd_kernel_traits_mla_kvfp8_TP1<576, 64, 64, 8, T, 512>;
             run_flash_splitkv_fwd_mla_tp1<Kernel_traits, flash::SharedStorageMLAFp8_TP1<Kernel_traits>, Fp8KVCacheDataType::kFp8E5M2>(params, stream);
         } else {

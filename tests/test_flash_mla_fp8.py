@@ -206,6 +206,12 @@ def main(torch_dtype, is_prof=False):
                 for s_q in [1]:  # MTP = 1, 2
                     for varlen in [False]:
                         test_flash_mla_fp8_e5m2(b, s_q, s, h_q, h_kv, d, dv, causal, varlen)
+    for b in [3, 6, 9, 12, 15, 18, 21, 24, 32, 64, 128, 256]:
+        for s in [4000]:
+            for h_q in [16]:
+                for s_q in [1, 2, 3, 4]:  # MTP = 1, 2
+                    for varlen in [False]:
+                        test_flash_mla_fp8_e5m2(b, s_q, s, h_q, h_kv, d, dv, causal, varlen)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
