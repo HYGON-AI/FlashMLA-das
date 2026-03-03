@@ -271,13 +271,12 @@ get_mla_decoding_metadata_dense_fp8(
     // This should match the logic in the MLA kernel.
     int block_size_m = 16;
     static constexpr int block_size_n = 64;
-    if (h_q.has_value()) {
-        if (h_q.value() >= 64) {
-            block_size_m = 64;
-        } else if (h_q.value() > 16) {
-            block_size_m = 32;
-        }
+    if (num_heads_per_head_k > 32) {
+        block_size_m = 64;
+    } else if (num_heads_per_head_k > 16) {
+        block_size_m = 32;
     }
+    
     static constexpr int fixed_overhead_num_blocks = 5;
 
     CHECK_DEVICE(seqlens_k);

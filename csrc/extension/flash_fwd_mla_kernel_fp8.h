@@ -2781,10 +2781,10 @@ void run_mha_fwd_splitkv_mla_fp8(Flash_fwd_mla_params &params,  cudaStream_t str
         return;
     }
     if constexpr (std::is_same_v<T, cutlass::float_e4m3_t>) {
-        if (params.ngroups >= 64) {
+        if (params.seqlen_q > 32) {
             using Kernel_traits = Flash_fwd_kernel_traits_mla_qkvfp8_TP1<576, 64, 64, 8, T, To, 512>;
             run_flash_splitkv_fwd_mla_fp8_tp1<Kernel_traits, flash::SharedStorageMLAFloat8_TP1<Kernel_traits>>(params, stream);
-        } else if (params.ngroups > 16) {
+        } else if (params.seqlen_q > 16) {
             using Kernel_traits = Flash_fwd_kernel_traits_mla_qkvfp8_TP4<576, 32, 64, 4, T, To, 512>;
             run_flash_splitkv_fwd_mla_fp8_tp4<Kernel_traits, flash::SharedStorageMLAFloat8_TP4<Kernel_traits>>(params, stream);
         } else {
