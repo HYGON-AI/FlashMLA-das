@@ -265,9 +265,7 @@ std::vector<at::Tensor>
 get_mla_decoding_metadata_dense_fp8(
     at::Tensor &seqlens_k,
     const int num_heads_per_head_k,
-    const int num_heads_k,
-    const std::optional<int> h_q
-) {
+    const int num_heads_k) {
     // This should match the logic in the MLA kernel.
     int block_size_m = 16;
     static constexpr int block_size_n = 64;

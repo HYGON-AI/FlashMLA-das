@@ -213,9 +213,8 @@ def flash_mla_sparse_fwd(
 def get_mla_decoding_metadata_dense_fp8(
     cache_seqlens: torch.Tensor,
     num_heads_per_head_k: int,
-    num_heads_k: int,
-    num_heads_q : int = 16,
-) -> Tuple[torch.Tensor, torch.Tensor]:
+    num_heads_k: int
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
     """
     Arguments:
         cache_seqlens: (batch_size), dtype torch.int32.
@@ -226,7 +225,7 @@ def get_mla_decoding_metadata_dense_fp8(
         tile_scheduler_metadata: (num_sm_parts, TileSchedulerMetaDataSize), dtype torch.int32.
         num_splits: (batch_size + 1), dtype torch.int32.
     """
-    return flash_mla_cuda.get_mla_decoding_metadata_dense_fp8(cache_seqlens, num_heads_per_head_k, num_heads_k, num_heads_q)
+    return flash_mla_cuda.get_mla_decoding_metadata_dense_fp8(cache_seqlens, num_heads_per_head_k, num_heads_k)
 
 
 
