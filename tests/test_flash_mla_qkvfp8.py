@@ -88,7 +88,7 @@ def test_flash_mla(b, s_q, mean_sk, h_q, h_kv, d, dv, causal, varlen, is_prof=Fa
     blocked_v = blocked_k[..., :dv]
 
     tile_scheduler_metadata, num_splits = get_mla_decoding_metadata_dense_fp8(
-        cache_seqlens, s_q * h_q // h_kv, h_kv, h_q
+        cache_seqlens, s_q * h_q // h_kv, h_kv
     )
 
     init_dtype = q.dtype
