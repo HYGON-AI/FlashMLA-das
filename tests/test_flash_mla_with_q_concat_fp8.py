@@ -6,7 +6,7 @@ import torch
 import triton
 
 # from flash_mla import flash_mla_with_kvcache_quantization, get_mla_metadata
-from flash_mla import flash_mla_with_kvcache_quantization, get_mla_decoding_metadata_dense_fp8, flash_mla_with_kvcache_quantization_q_nope_pe
+from flash_mla import flash_mla_with_kvcache_fp8_with_cat, get_mla_decoding_metadata_dense_fp8, flash_mla_with_kvcache_quantization_q_nope_pe
 torch.set_printoptions(precision=4, profile="default", sci_mode=False)
 
 def scaled_dot_product_attention(query, key, value, h_q, h_kv, is_causal=False, k_scale=1.0):
@@ -97,8 +97,10 @@ def test_flash_mla_fp8_e5m2(b, s_q, mean_sk, h_q, h_kv, d, dv, causal, varlen, i
     # k_scale = torch.tensor(2.5).to(torch.float32).to("cuda:0")  
     q_nope = q[:, :, :, :512].contiguous()
     q_pe = q[:, :, :, 512:].contiguous()
+    descale_q = torch.ones((1), dtype=torch.float32)
+    descale_k = torch.ones((1), dtype=torch.float32)
     def flash_mla():
-        return flash_mla_with_kvcache_quantization_q_nope_pe(
+        return flash_mla_with_kvcache_fp8_with_cat(
             q_nope,
             q_pe,
             blocked_k,
@@ -108,8 +110,8 @@ def test_flash_mla_fp8_e5m2(b, s_q, mean_sk, h_q, h_kv, d, dv, causal, varlen, i
             tile_scheduler_metadata,
             num_splits,
             causal=causal,
-            k_scale = k_scale,
-            kv_cache_dtype = "fp8_e5m2"
+            descale_q=descale_q,
+            descale_k=descale_k,
         )
         # return flash_mla_with_kvcache_quantization(
         #     q,
