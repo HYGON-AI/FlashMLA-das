@@ -485,6 +485,8 @@ def flash_mla_with_kvcache_fp8(
     descale_k: Optional[torch.Tensor] = None,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     """
+    support 1) qkv fp8 e4m3 gfx938
+            2) q bf16/fp16 kv fp8 e5m2 gfx936 gfx938
     Arguments:
         q: (batch_size, seq_len_q, num_heads_q, head_dim).
         k_cache: (num_blocks, page_block_size, num_heads_k, head_dim).

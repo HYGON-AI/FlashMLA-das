@@ -5,7 +5,7 @@ import random
 import torch
 import triton
 
-from flash_mla import flash_mla_with_kvcache_quantization, get_mla_decoding_metadata_dense_fp8
+from flash_mla import flash_mla_with_kvcache_fp8, get_mla_decoding_metadata_dense_fp8
 torch.set_printoptions(precision=4, profile="default", sci_mode=False)
 
 def scaled_dot_product_attention(query, key, value, h_q, h_kv, is_causal=False, k_scale=1.0):
@@ -62,7 +62,7 @@ def test_flash_mla_fp8_e5m2(b, s_q, mean_sk, h_q, h_kv, d, dv, causal, varlen, i
     
     # blocked_k = torch.randint(low=0, high=4, size = (block_table.numel(), block_size, h_kv, d), dtype = torch.int8)
     # blocked_k = torch.ones(size = (block_table.numel(), block_size, h_kv, d), dtype = torch.int8)
-    blocked_k = (torch.randn(block_table.numel(), block_size, h_kv, d)).to(torch.half).to(torch.float8_e5m2)
+    blocked_k = (torch.randn(block_table.numel(), block_size, h_kv, d)).to(torch.float8_e5m2)
     # blocked_k[0, 0, 0, 56] = 1
     # blocked_k[0, 1, 0, 8] = 2
     # blocked_k[0, 2, 0, 8] = 5
@@ -93,9 +93,10 @@ def test_flash_mla_fp8_e5m2(b, s_q, mean_sk, h_q, h_kv, d, dv, causal, varlen, i
     # print("num_splits:", num_splits.shape, num_splits)
     # k_scale = torch.tensor(1.0).to(torch.float32).to("cuda:0")  
     # k_scale = torch.tensor(2.1).to(torch.float32).to("cuda:0")  
-    k_scale = torch.tensor(1.0).to(torch.float32).to("cuda:0")  
+    descale_q = torch.ones((1), dtype=torch.float32)
+    descale_k = torch.ones((1), dtype=torch.float32)
     def flash_mla():
-        return flash_mla_with_kvcache_quantization(
+        return flash_mla_with_kvcache_fp8(
             q,
             blocked_k,
             block_table,
@@ -104,8 +105,8 @@ def test_flash_mla_fp8_e5m2(b, s_q, mean_sk, h_q, h_kv, d, dv, causal, varlen, i
             tile_scheduler_metadata,
             num_splits,
             causal=causal,
-            k_scale = k_scale,
-            kv_cache_dtype = "fp8_e5m2"
+            descale_q = descale_q,
+            descale_k = descale_k,
         )
 
     def ref_mla():

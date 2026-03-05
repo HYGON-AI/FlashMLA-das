@@ -271,3 +271,9 @@ public:
     }
 };
 
+std::string getDtypeString(const torch::Tensor& tensor) {
+    std::string dtype_str = c10::toString(tensor.scalar_type());
+    return dtype_str;
+}
+
+
