@@ -12,6 +12,7 @@
 #include <cstdlib>
 #include "flash_mla.h"
 #include "static_switch.h"
+#include "../api/common.h"
 #define CHECK_DEVICE(x) TORCH_CHECK(x.is_cuda(), #x " must be on CUDA")
 #define CHECK_SHAPE(x, ...) TORCH_CHECK(x.sizes() == torch::IntArrayRef({__VA_ARGS__}), #x " must have shape (" #__VA_ARGS__ ")")
 #define CHECK_CONTIGUOUS(x) TORCH_CHECK(x.is_contiguous(), #x " must be contiguous")
@@ -677,18 +678,14 @@ mha_fwd_kvcache_mla_fp8(
     const std::optional<at::Tensor> &descale_q,  // None or batch_size
     const std::optional<at::Tensor> &descale_k   // None or batch_size
 ) {
-    // auto dprops = at::cuda::getCurrentDeviceProperties();
-    // bool is_sm90 = dprops->major == 9 && dprops->minor == 0;
-    // TORCH_CHECK(is_sm90);
-    // static std::string FLASH_MLA_ROOT_DIR = execCommand("python -c 'import site; print(site.getsitepackages()[0])'");
-
-    // setenv("FLASH_MLA_ROOT_DIR", (FLASH_MLA_ROOT_DIR + "/flash_mla/asm/").c_str(), 1);
-    // std::cout << FLASH_MLA_ROOT_DIR << "\n";
-    // exit(-1);
+    Arch arch = Arch();
+    if (!arch.is_gfx93x()) {
+        TORCH_CHECK(false, "Dense decode MLA is only supported on gfx936 or gfx938 architecture");
+    }
     at::Tensor vcache = vcache_.has_value() ? vcache_.value() : kcache;
 
     auto q_dtype = q.dtype();
-    TORCH_CHECK(kcache.dtype() == q_dtype, "query and key must have the same dtype");
+    // TORCH_CHECK(kcache.dtype() == q_dtype, "query and key must have the same dtype");
 
     CHECK_DEVICE(q); CHECK_DEVICE(kcache); CHECK_DEVICE(vcache);
 
@@ -796,6 +793,7 @@ mha_fwd_kvcache_mla_fp8(
 
     params.descale_q_ptr = reinterpret_cast<float *>(descale_q.value().data_ptr());
     params.descale_k_ptr = reinterpret_cast<float *>(descale_k.value().data_ptr());
+    params.k_scale_ptr = descale_k_.data_ptr();
 
     TORCH_CHECK(tile_scheduler_metadata.dtype() == torch::kInt32, "tile_scheduler_metadata must have dtype int32");
     TORCH_CHECK(tile_scheduler_metadata.size(1) == TileSchedulerMetaDataSize);
@@ -821,11 +819,19 @@ mha_fwd_kvcache_mla_fp8(
             batch_size, seqlen_q_ori, num_heads_ori, head_size, batch_size, max_num_blocks_per_seq,
             num_blocks, page_block_size, num_heads_k, head_size_k, is_causal, softmax_scale);
     }
-    if (q_dtype == torch::kFloat8_e4m3fn) {
+    if (q_dtype == torch::kFloat8_e4m3fn && kcache.dtype() == q_dtype) {
+        if (!arch.is_gfx938()) {
+            TORCH_CHECK(false, "Dense decode MLA is only supported on gfx938 architecture");
+        }
         run_mha_fwd_splitkv_mla_fp8<cutlass::float_e4m3_t,cutlass::bfloat16_t, 576>(params,stream,false);
-    }
-    else {
-        TORCH_CHECK(false, "Unsupported tensor dtype for query");
+    } else if ((q_dtype == torch::kBFloat16 || q_dtype == torch::kHalf) && kcache.dtype() == torch::kFloat8_e5m2) {
+        if (q_dtype == torch::kBFloat16) {
+            run_mha_fwd_splitkv_mla<cutlass::bfloat16_t, 576>(params, "fp8_e5m2", stream);
+        } else {
+            run_mha_fwd_splitkv_mla<cutlass::half_t, 576>(params, "fp8_e5m2", stream);
+        }
+    } else {
+        TORCH_CHECK(false, "Unsupported tensor dtype, q dtype " + getDtypeString(q) + " kvcache " + getDtypeString(kcache));
     }
 
     out = out.view({batch_size, seqlen_q_ori, ngroups, num_heads_k, head_size_v}).transpose(2, 3)
