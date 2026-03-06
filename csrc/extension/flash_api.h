@@ -337,7 +337,7 @@ mha_fwd_kvcache_mla_nope_pe(
     // bool is_sm90 = dprops->major == 9 && dprops->minor == 0;
     // TORCH_CHECK(is_sm90);
     Arch arch = Arch();
-    if (!arch.is_gfx93x()) {
+    if (!arch.is_gfx93x() || !arch.is_gfx928()) {
         TORCH_CHECK(false, "Dense decode MLA is only supported on gfx936 or gfx938 architecture");
     }
     at::Tensor vcache = vcache_.has_value() ? vcache_.value() : kcache;
