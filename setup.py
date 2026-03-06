@@ -45,7 +45,7 @@ this_dir = os.path.dirname(os.path.abspath(__file__))
 if False:
     cxx_args = ["/O2", "/std:c++20", "/DNDEBUG", "/W0"]
 else:
-    cxx_args = ["-O3", "-std=c++17", "-DNDEBUG", "-Wno-deprecated-declarations", "-DDCU_ASM", "-Wno-return-type", ]
+    cxx_args = ["-O3", "-std=c++20", "-DNDEBUG", "-Wno-deprecated-declarations", "-DDCU_ASM", "-Wno-return-type", ]
 
 
 ext_modules = []
@@ -96,7 +96,7 @@ ext_modules.append(
             "cxx": cxx_args + get_features_args(),
             "nvcc": [
                 "-O3",
-                "-std=c++17",
+                "-std=c++20",
                 "-DNDEBUG",
                 "-DHIP_ENABLE_WARP_SYNC_BUILTINS",
                 "-ffast-math",
@@ -105,8 +105,9 @@ ext_modules.append(
                 "-DDCU_ASM",
                 "--save-temps",
                 "-w",
-                "-mllvm",
-                 "-enable-num-vgprs-512=true",
+                "-mllvm -enable-num-vgprs-512=true",
+                "-mllvm -allow-cse-cross-bb-convergent-call=true",
+                "-mllvm -full-vectorize-slp=true",
             ] + get_features_args() + get_arch_flags()
         },
         include_dirs=[
