@@ -6,7 +6,7 @@ import torch
 import triton
 
 # from flash_mla import flash_mla_with_kvcache_quantization, get_mla_metadata
-from flash_mla import flash_mla_with_kvcache_fp8_with_cat, get_mla_decoding_metadata_dense_fp8, flash_mla_with_kvcache_quantization_q_nope_pe
+from flash_mla import flash_mla_with_kvcache_fp8_with_cat, get_mla_decoding_metadata_dense_fp8
 torch.set_printoptions(precision=4, profile="default", sci_mode=False)
 
 def scaled_dot_product_attention(query, key, value, h_q, h_kv, is_causal=False, k_scale=1.0):

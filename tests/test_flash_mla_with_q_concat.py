@@ -5,7 +5,7 @@ import random
 import torch
 import triton
 
-from flash_mla import flash_mla_with_kvcache, get_mla_metadata, flash_mla_with_kvcache_q_nope_pe
+from flash_mla import get_mla_decoding_metadata_dense_fp8, flash_mla_with_kvcache_q_nope_pe
 # from flash_mla import flash_mla_with_kvcache, get_mla_metadata
 torch.set_printoptions(precision=4, profile="default", sci_mode=False)
 
@@ -67,7 +67,7 @@ def test_flash_mla(b, s_q, mean_sk, h_q, h_kv, d, dv, causal, varlen, is_prof=Fa
         )
     blocked_v = blocked_k[..., :dv]
 
-    tile_scheduler_metadata, num_splits = get_mla_metadata(
+    tile_scheduler_metadata, num_splits = get_mla_decoding_metadata_dense_fp8(
         cache_seqlens, s_q * h_q // h_kv, h_kv
     )
 
@@ -141,113 +141,6 @@ def test_flash_mla(b, s_q, mean_sk, h_q, h_kv, d, dv, causal, varlen, is_prof=Fa
         f"{t:.3f} ms, {FLOPS / 10 ** 9 / t:.0f} TFLOPS, {bytes / 10 ** 6 / t:.0f} GB/s"
     )
 
-@torch.inference_mode()
-def test_flash_mla_fp8(b, s_q, mean_sk, h_q, h_kv, d, dv, causal, varlen, is_prof=False):
-    print(
-        f"{b=}, {s_q=}, {mean_sk=}, {h_q=}, {h_kv=}, {d=}, {dv=}, {causal=}, {varlen=}"
-    )
-
-    cache_seqlens = torch.full((b,), mean_sk, dtype=torch.int32)
-    if varlen:
-        for i in range(b):
-            cache_seqlens[i] = max(random.normalvariate(mean_sk, mean_sk / 2), s_q)
-    total_seqlens = cache_seqlens.sum().item()
-    mean_seqlens = cache_seqlens.float().mean().int().item()
-    max_seqlen = cache_seqlens.max().item()
-    max_seqlen_pad = triton.cdiv(max_seqlen, 256) * 256
-    print(f"{total_seqlens=}, {mean_seqlens=}, {max_seqlen=}, {max_seqlen_pad=}")
-
-    q = torch.randn(b, s_q, h_q, d)
-    # q = torch.ones(b, s_q, h_q, d)
-    block_size = 64
-    block_table = torch.arange(
-        b * max_seqlen_pad // block_size, dtype=torch.int32
-    ).view(b, max_seqlen_pad // block_size)
-    
-    # blocked_k = torch.randint(low=0, high=4, size = (block_table.numel(), block_size, h_kv, d), dtype = torch.int8)
-    # blocked_k = torch.ones(size = (block_table.numel(), block_size, h_kv, d), dtype = torch.int8)
-    blocked_k = (torch.randn(block_table.numel(), block_size, h_kv, d)).to(torch.half).to(torch.float8_e4m3fn)
-    # blocked_k[0, 0, 0, 56] = 1
-    # blocked_k[0, 1, 0, 8] = 2
-    # blocked_k[0, 2, 0, 8] = 5
-    # blocked_k[0, 3, 0, 8] = 4
-    # for i in range(64):
-    #     for j in range(64):
-    #         blocked_k[0, i, 0, j] = j
-            # blocked_k[0, i, 0, j] = (i * 50 + j) % 128
-
-    # for i in range(b):
-    #     blocked_k.view(b, max_seqlen_pad, h_kv, d)[i, cache_seqlens[i].item():] = (
-    #         -128
-    #     )
-    blocked_v = blocked_k[..., :dv]
-
-    tile_scheduler_metadata, num_splits = get_mla_metadata(
-        cache_seqlens, s_q * h_q // h_kv, h_kv
-    )
-
-    # print("q:", q.shape, q.dtype, q)
-    # print("cache_seqlens:", cache_seqlens.shape, cache_seqlens)
-    # print("block_table:", block_table.shape, block_table)
-    # print("blocked_k:", blocked_k.shape, blocked_k[0])
-    # print("blocked_v:", blocked_v.shape)
-    # torch.set_printoptions(precision=4, profile="full", sci_mode=False)
-    # print("tile_scheduler_metadata:", tile_scheduler_metadata.shape, tile_scheduler_metadata)
-    # torch.set_printoptions(precision=4, profile="default", sci_mode=False)
-    # print("num_splits:", num_splits.shape, num_splits)
-    k_scale = torch.tensor(0.17).to(torch.float32).to("cuda:0")  
-    def flash_mla():
-        return flash_mla_with_kvcache(
-            q,
-            blocked_k,
-            block_table,
-            cache_seqlens,
-            dv,
-            tile_scheduler_metadata,
-            num_splits,
-            causal=causal,
-            k_scale = k_scale,
-            kv_cache_dtype = "fp8_e4m3"
-        )
-
-    def ref_mla():
-        out = torch.empty(b, s_q, h_q, dv, dtype=torch.float32)
-        lse = torch.empty(b, h_q, s_q, dtype=torch.float32)
-        for i in range(b):
-            begin = i * max_seqlen_pad
-            end = begin + cache_seqlens[i]
-            O, LSE = scaled_dot_product_attention(
-                q[i].transpose(0, 1),
-                blocked_k.view(-1, h_kv, d)[begin:end].transpose(0, 1),
-                blocked_v.view(-1, h_kv, dv)[begin:end].transpose(0, 1),
-                h_q=h_q,
-                h_kv=h_kv,
-                is_causal=causal,
-                k_scale = k_scale
-            )
-            out[i] = O.transpose(0, 1)
-            lse[i] = LSE
-        return out, lse
-    out_flash, lse_flash = flash_mla()
-    out_torch, lse_torch = ref_mla()
-
-    print("out_flash ", out_flash[0, 0, 0, 0:14])
-    print("out_torch ", out_torch[0, 0, 0, 0:14])
-    print("lse_flash ", lse_flash[0, 0, 0:10])
-    print("lse_torch ", lse_torch[0, 0, 0:10])
-    cal_diff(out_flash, out_torch, "out")
-    cal_diff(lse_flash, lse_torch, "lse")
-    print("out max_diff ", (out_flash - out_torch).abs().max())
-    print("lse max_diff ", (lse_flash - lse_torch).abs().max())
-
-    t = triton.testing.do_bench(flash_mla)
-    FLOPS = s_q * total_seqlens * h_q * (d + dv) * 2
-    bytes = (total_seqlens * h_kv * d + b * s_q * h_q * d + b * s_q * h_q * dv) * (
-        torch.finfo(q.dtype).bits // 8
-    )
-    print(
-        f"{t:.3f} ms, {FLOPS / 10 ** 9 / t:.0f} TFLOPS, {bytes / 10 ** 6 / t:.0f} GB/s"
-    )
 
 def main(torch_dtype, is_prof=False):
     device = torch.device("cuda:0")
