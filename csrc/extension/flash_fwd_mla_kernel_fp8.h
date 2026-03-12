@@ -1555,7 +1555,8 @@ __forceinline__ __device__ void compute_attn_1rowblock_splitkv_mla_fp8_gfx938_TP
             buffer_load_copy_fp8_tp1<true, true, 1>(gK, kv_data[1].data, params.k_row_stride, seqlen_k - block_idx * kBlockN);
             buffer_load_copy_fp8_tp1<true, true, 2>(gK, kv_data[2].data, params.k_row_stride, seqlen_k - block_idx * kBlockN);
             buffer_load_copy_fp8_tp1<true, true, 3>(gK, kv_data[3].data, params.k_row_stride, seqlen_k - block_idx * kBlockN);
-            buffer_load_copy_fp8_tp1<true, false, 4>(gK, kv_data[4].data, params.k_row_stride, seqlen_k - block_idx * kBlockN);
+            if (warp_id < 4)
+                buffer_load_copy_fp8_tp1<true, false, 4>(gK, kv_data[4].data, params.k_row_stride, seqlen_k - block_idx * kBlockN);
         }
 
         for (int n = 0; n < 4; n++)
@@ -1598,7 +1599,8 @@ __forceinline__ __device__ void compute_attn_1rowblock_splitkv_mla_fp8_gfx938_TP
             kv_lds_write_ptr += 64 * 128;
             *(reinterpret_cast<intx4_t*>(kv_lds_write_ptr)) = kv_data[3].data;
             kv_lds_write_ptr += 64 * 128;
-            *(reinterpret_cast<intx4_t*>(kv_lds_write_ptr)) = kv_data[4].data;
+            if (warp_id < 4)
+                *(reinterpret_cast<intx4_t*>(kv_lds_write_ptr)) = kv_data[4].data;
         }
         // asm volatile("s_barrier \n\t");
     };
