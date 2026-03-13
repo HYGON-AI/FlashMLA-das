@@ -1,6 +1,7 @@
 #pragma once
 
 #include "common.h"
+#include <cutlass/fast_math.h>
 
 #include "params.h"
 
@@ -60,13 +61,13 @@ public:
         Arch arch = Arch();
         if (h_q <= 16) {
             return {
-                std::max(arch.num_sms * 2 / s_q / (h_q/16), 1),
+                std::max(arch.num_sms * 2 / s_q / cutlass::ceil_div(h_q, 16), 1),
                 5,
                 64
             };
         }
         return {
-            std::max(arch.num_sms / s_q / (h_q/64), 1),
+            std::max(arch.num_sms / s_q / cutlass::ceil_div(h_q, 64), 1),
             5,
             64
         };
