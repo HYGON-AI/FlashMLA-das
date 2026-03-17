@@ -2709,13 +2709,20 @@ __forceinline__ __device__  void __ds_read_m32x32_row_col_rrow(Tensor0& src, Ten
 template<int row, int col, int r_row, typename Tensor0>
 __forceinline__ __device__  void __ds_read_m32x32_row_col_rrow(Tensor0& src, intx4_t& dst)
 {
-
+#if 0
     auto lds = reinterpret_cast<int *>(src.data().get());
     auto layout  = src.layout();
     constexpr short offset = layout(0, row, col) * 1;
 
     auto d = __builtin_amdgcn_ds_read_m32x32u8((__attribute__((address_space(3))) int*)(lds), offset);
     dst = d;
+#else
+    auto lds = reinterpret_cast<uint8_t *>(src.data().get());
+    auto layout  = src.layout();
+    constexpr short offset = layout(0, row, col) * 1;
+    lds += offset;
+    dst = __builtin_hcu_ds_read_m32x32_i8_alt2((__attribute__((address_space(3))) int*)(lds));
+#endif
 }
 #endif
 /*
