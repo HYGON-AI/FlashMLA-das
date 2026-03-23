@@ -113,7 +113,19 @@ static std::vector<at::Tensor> sparse_attn_prefill_interface(
     KU_CHECK_CONTIGUOUS(out);
     KU_CHECK_CONTIGUOUS(lse);
     KU_CHECK_CONTIGUOUS(max_logits);
-
+    bool print_param = false;
+    if (const char* val = std::getenv("FLASH_MLA_PRINT_PARAM")) {
+        print_param = (std::string(val) == "1");
+    }
+    if (print_param) {
+        fprintf(stderr, "[FlashMLA] [sparse_attn_prefill_interface] [%s] "
+            "s_q = %d s_kv = %d h_q = %d h_kv = %d d_qk = %d "
+            "topk = %d have_topk_length = %d \n",
+            arch.archName.c_str(), 
+            s_q, s_kv, h_q, h_kv, d_qk,
+            topk, have_topk_length
+        );
+    }
     SparseAttnFwdParams params = {
         s_q, s_kv, h_q, h_kv, d_qk, d_v, topk,
         sm_scale, sm_scale * LOG_2_E,
