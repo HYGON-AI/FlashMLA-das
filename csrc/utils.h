@@ -211,6 +211,28 @@ __forceinline__ __device__  void __ds_read_m32x16_row_col_rrow(Tensor0& src, Ten
     dst_ptr[6] = d_ptr[6];
     dst_ptr[7] = d_ptr[7];
 }
+template<int row, int col, int r_row, typename Tensor0, typename Tensor1>
+__forceinline__ __device__  void __ds_read_m32x16_row_col_rrow_alt(Tensor0& src, Tensor1& dst)
+{
+
+    auto lds = reinterpret_cast<__fp16 *>(src.data().get());
+    auto layout  = src.layout();
+    constexpr short offset = layout(0, row, col) * 2;
+
+    auto d = __builtin_amdgcn_ds_read_m32x16f16_alt((__attribute__((address_space(3))) __fp16*)(lds), offset);
+
+    uint16_t * d_ptr = reinterpret_cast<uint16_t*>(&d);
+    uint16_t * dst_ptr = reinterpret_cast<uint16_t*>(&(dst(0, r_row, col)));
+
+    dst_ptr[0] = d_ptr[0];
+    dst_ptr[1] = d_ptr[1];
+    dst_ptr[2] = d_ptr[2];
+    dst_ptr[3] = d_ptr[3];
+    dst_ptr[4] = d_ptr[4];
+    dst_ptr[5] = d_ptr[5];
+    dst_ptr[6] = d_ptr[6];
+    dst_ptr[7] = d_ptr[7];
+}
 
 template<int row, int col, typename Tensor0, typename Tensor1>
 __forceinline__ __device__  void __ds_read_m32x16_row_col(Tensor0& src, Tensor1& dst)
