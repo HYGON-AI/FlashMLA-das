@@ -121,7 +121,10 @@ dense_attn_decode_interface(
         KU_CHECK_SHAPE(tile_scheduler_metadata, num_sm_parts, sizeof(DecodingSchedMeta)/sizeof(int));
         KU_CHECK_SHAPE(num_splits, batch_size+1);
     }
-    bool print_param = (std::getenv("FLASH_MLA_PRINT_PARAM") != nullptr);
+    bool print_param = false;
+    if (const char* val = std::getenv("FLASH_MLA_PRINT_PARAM")) {
+        print_param = (std::string(val) == "1");
+    }
     if (print_param) {
         fprintf(stderr, "[FlashMLA] [dense_attn_decode_interface] [%s] batch_size = %d seqlen_q_ori = %d "
             "num_heads_q = %d head_size_k = %d max_num_blocks_per_seq = %d num_blocks %d page_block_size = %d num_heads_k = %d \n",

@@ -228,11 +228,15 @@ sparse_attn_decode_interface(
     } else {
         TORCH_CHECK(false, "Unsupported d_qk: ", d_qk);
     }
-    bool print_param = (std::getenv("FLASH_MLA_PRINT_PARAM") != nullptr);
+    bool print_param = false;
+    if (const char* val = std::getenv("FLASH_MLA_PRINT_PARAM")) {
+        print_param = (std::string(val) == "1");
+    }
     if (print_param) {
-        fprintf(stderr, "[FlashMLA] [sparse_attn_decode_interface] b = %d s_q = %d  h_q = %d d_qk = %d num_blocks = %d page_block_size = %d h_kv = %d topk = %d " 
+        fprintf(stderr, "[FlashMLA] [sparse_attn_decode_interface] [%s] b = %d s_q = %d  h_q = %d d_qk = %d num_blocks = %d page_block_size = %d h_kv = %d topk = %d " 
             "bytes_per_token = %ld have_topk_length = %d "
             "have_extra_kcache = %d have_extra_topk_length = %d have_attn_sink = %d \n", 
+            arch.archName.c_str(), 
             b, s_q, h_q, d_qk, num_blocks, page_block_size, h_kv, topk, kv.stride(1),
             have_topk_length,
             have_extra_kcache,
