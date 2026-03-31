@@ -138,6 +138,10 @@ def _find_rocm_home() -> Optional[str]:
     return rocm_home
 ROCM_HOME = _find_rocm_home()
 
+pytorch_dep = 'torch'
+if os.getenv('PYTORCH_VERSION'):
+    pytorch_dep += "==" + os.getenv('PYTORCH_VERSION')
+
 setup(
     name="flash_mla",   
     version=get_version(ROCM_HOME),
@@ -145,4 +149,6 @@ setup(
     ext_modules=ext_modules,
     package_data={"flash_mla":["asm/*.co"]},
     cmdclass={"build_ext": BuildExtension},
+    install_requires=[pytorch_dep],
 )
+
