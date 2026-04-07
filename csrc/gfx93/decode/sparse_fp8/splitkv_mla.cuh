@@ -120,6 +120,7 @@ __device__ void KernelTemplate<MODEL_TYPE, NUM_HEADS>::compute_attn_1rowblock_sp
                 + offset_k * 3 * bytes_per_block;
             asm volatile(
                 "s_mov_b32 m0, %1 \n\t"
+                "s_nop 0 \n\t"
                 "buffer_load_dwordx4 %0, %2, %3 ,offen  offset:0, lds \n" ::"v"(offset_v),
                 "s"(ldsAddrPerWave), "s"(global_addr), "s"(offset_s)
             :);  
@@ -137,6 +138,7 @@ __device__ void KernelTemplate<MODEL_TYPE, NUM_HEADS>::compute_attn_1rowblock_sp
                 + offset_k * 2 * bytes_per_block;
             asm volatile(
                 "s_mov_b32 m0, %1 \n\t"
+                "s_nop 0 \n\t"
                 "buffer_load_dwordx4 %0, %2, %3 ,offen  offset:0, lds \n" ::"v"(offset_v),
                 "s"(ldsAddrPerWave), "s"(global_addr), "s"(offset_s)
             :);  
