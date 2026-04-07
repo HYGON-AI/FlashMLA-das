@@ -1523,6 +1523,91 @@ __forceinline__ __device__ void gemm1_rs_fp8(Tensor0 &acc, Tensor1 &tCrA, Tensor
 
 }
 #endif
+typedef  __bf16  __fp16x8_t __attribute__((ext_vector_type(8)));
 
+template<typename Element, int k_idx>
+__forceinline__ __device__ void qk_gemm(const __fp16x8_t& q_data, Element* k_lds_read_ptr, v4f* accs_f32)
+{    
+    typedef  __bf16  __fp16x8_t __attribute__((ext_vector_type(8)));
+    typedef  __bf16  __fp16x4_t __attribute__((ext_vector_type(4)));
+    union Bf16_storage {
+        __fp16x8_t data_128;
+        __fp16x4_t data_64[2];
+        uint16_t data_array[8];
+    };
+    constexpr int k_idx_even = k_idx % 4;
+    constexpr int n_offset = 16 * 32;
+    constexpr int k_offset = k_idx_even * 64 * 32;
+    Bf16_storage q_reg;
+    Bf16_storage k_reg;
+    q_reg.data_128 = q_data;
+    k_reg.data_128 = *reinterpret_cast<__fp16x8_t*>(k_lds_read_ptr + k_offset);
+    // q_reg.data_128 =  __builtin_hcu_ds_read_matrix_trans_format_bf16((__attribute__((address_space(3))) short*)(q_lds_read_ptr), k_offset, 2, 1, 0);
+    // k_reg.data_128 = __builtin_hcu_ds_read_matrix_trans_format_bf16((__attribute__((address_space(3))) short*)(k_lds_read_ptr), 0 * n_offset + k_offset, 2, 1, 0);
+#if defined(__gfx938__)
+    accs_f32[0] = __builtin_hcu_mmac_f32_16x16x16_bf16_lit_lts(q_reg.data_64[0], k_reg.data_64[0], accs_f32[0], true,false);
+    accs_f32[0] = __builtin_hcu_mmac_f32_16x16x16_bf16_lit_lts(q_reg.data_64[1], k_reg.data_64[1], accs_f32[0], true,false);
+#else
+    accs_f32[0] = __builtin_amdgcn_mmac_f32_16x16x16bf16(q_reg.data_64[0], k_reg.data_64[0], accs_f32[0]);
+    accs_f32[0] = __builtin_amdgcn_mmac_f32_16x16x16bf16(q_reg.data_64[1], k_reg.data_64[1], accs_f32[0]);
+#endif
+
+    k_reg.data_128 = *reinterpret_cast<__fp16x8_t*>(k_lds_read_ptr + k_offset + 1 * n_offset);
+#if defined(__gfx938__)
+    accs_f32[1] = __builtin_hcu_mmac_f32_16x16x16_bf16_lit_lts(q_reg.data_64[0], k_reg.data_64[0], accs_f32[1], true,false);
+    accs_f32[1] = __builtin_hcu_mmac_f32_16x16x16_bf16_lit_lts(q_reg.data_64[1], k_reg.data_64[1], accs_f32[1], true,false);
+#else
+    accs_f32[1] = __builtin_amdgcn_mmac_f32_16x16x16bf16(q_reg.data_64[0], k_reg.data_64[0], accs_f32[1]);
+    accs_f32[1] = __builtin_amdgcn_mmac_f32_16x16x16bf16(q_reg.data_64[1], k_reg.data_64[1], accs_f32[1]);
+#endif
+    // k_reg.data_128 = __builtin_hcu_ds_read_matrix_trans_format_bf16((__attribute__((address_space(3))) short*)(k_lds_read_ptr), 1 * n_offset + k_offset, 2, 1, 0);
+
+    
+    k_reg.data_128 = *reinterpret_cast<__fp16x8_t*>(k_lds_read_ptr + k_offset + 2 * n_offset);
+    // k_reg.data_128 = __builtin_hcu_ds_read_matrix_trans_format_bf16((__attribute__((address_space(3))) short*)(k_lds_read_ptr), 2 * n_offset + k_offset, 2, 1, 0);
+#if defined(__gfx938__)
+    accs_f32[2] = __builtin_hcu_mmac_f32_16x16x16_bf16_lit_lts(q_reg.data_64[0], k_reg.data_64[0], accs_f32[2], true,false);
+    accs_f32[2] = __builtin_hcu_mmac_f32_16x16x16_bf16_lit_lts(q_reg.data_64[1], k_reg.data_64[1], accs_f32[2], true,false);
+#else
+    accs_f32[2] = __builtin_amdgcn_mmac_f32_16x16x16bf16(q_reg.data_64[0], k_reg.data_64[0], accs_f32[2]);
+    accs_f32[2] = __builtin_amdgcn_mmac_f32_16x16x16bf16(q_reg.data_64[1], k_reg.data_64[1], accs_f32[2]);
+#endif
+    k_reg.data_128 = *reinterpret_cast<__fp16x8_t*>(k_lds_read_ptr + k_offset + 3 * n_offset);
+    // k_reg.data_128 = __builtin_hcu_ds_read_matrix_trans_format_bf16((__attribute__((address_space(3))) short*)(k_lds_read_ptr), 3 * n_offset + k_offset, 2, 1, 0);
+#if defined(__gfx938__)
+    accs_f32[3] = __builtin_hcu_mmac_f32_16x16x16_bf16_lit_lts(q_reg.data_64[0], k_reg.data_64[0], accs_f32[3], true,false);
+    accs_f32[3] = __builtin_hcu_mmac_f32_16x16x16_bf16_lit_lts(q_reg.data_64[1], k_reg.data_64[1], accs_f32[3], true,false);
+#else
+    accs_f32[3] = __builtin_amdgcn_mmac_f32_16x16x16bf16(q_reg.data_64[0], k_reg.data_64[0], accs_f32[3]);
+    accs_f32[3] = __builtin_amdgcn_mmac_f32_16x16x16bf16(q_reg.data_64[1], k_reg.data_64[1], accs_f32[3]);
+#endif
+}
+
+typedef  __bf16  __fp16x4_t __attribute__((ext_vector_type(4)));
+
+template<int k_idx, int n_idx_val>
+__forceinline__ __device__ void pv_gemm(const __fp16x4_t& p, int v_lds_read_ptr, v4f* acco_f32)
+{
+    constexpr int k_idx_even = k_idx % 1;
+    constexpr int n_offset = 16 * 32 * 2;
+    typedef  __bf16  __fp16x8_t __attribute__((ext_vector_type(8)));
+    union Bf16_storage {
+        __fp16x8_t data_128;
+        __fp16x4_t data_64[2];
+        uint16_t data_array[8];
+    };
+    constexpr int k_offset = k_idx_even * 16 * 512 * 2;
+    // #if 1
+    Bf16_storage v_reg;
+
+    v_reg.data_128 = __builtin_amdgcn_ds_read_m32x16f16_alt((__attribute__((address_space(3))) __fp16*)(v_lds_read_ptr), k_offset + n_idx_val * n_offset); 
+#if defined(__gfx938__)
+    acco_f32[n_idx_val * 2] = __builtin_hcu_mmac_f32_16x16x16_bf16_lit_lts(p, v_reg.data_64[0], acco_f32[n_idx_val * 2], true, false); 
+    acco_f32[n_idx_val * 2 + 1] = __builtin_hcu_mmac_f32_16x16x16_bf16_lit_lts(p, v_reg.data_64[1], acco_f32[n_idx_val * 2 + 1], true, false); 
+#else
+    acco_f32[n_idx_val * 2] = __builtin_amdgcn_mmac_f32_16x16x16bf16(p, v_reg.data_64[0], acco_f32[n_idx_val * 2]); 
+    acco_f32[n_idx_val * 2 + 1] = __builtin_amdgcn_mmac_f32_16x16x16bf16(p, v_reg.data_64[1], acco_f32[n_idx_val * 2 + 1]); 
+#endif
+}
 
 }
