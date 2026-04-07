@@ -602,6 +602,95 @@ struct Softmax {
         }
         return lse;
     };
+
+    template<bool Is_first, bool Check_inf=false, typename Tensor0>
+    __forceinline__ __device__ void softmax_rescale_o_prefill_4x1(Tensor0& scores, v4f* acc_o, float softmax_scale_log2) {
+        // Reshape acc_s from (MMA=4, MMA_M, MMA_N) to (nrow=(2, MMA_M), ncol=(2, MMA_N))
+        MaxOp<float> max_op;
+        // Tensor scores = make_tensor(acc_s.data(), flash::convert_layout_acc_rowcol(acc_s.layout()));
+        static_assert(decltype(size<0>(scores))::value == kNRows);
+        if constexpr(Is_first) {
+            flash::template reduce_max</*zero_init=*/true>(scores, row_max);
+            flash::scale_apply_exp2(scores, row_max, softmax_scale_log2);
+            flash::reduce_sum</*zero_init=*/true>(scores, row_sum);
+        } else {
+            Tensor scores_max_prev = make_fragment_like(row_max);
+            cute::copy(row_max, scores_max_prev);
+            flash::template reduce_max</*zero_init=*/false>(scores, row_max);
+            // Reshape acc_o from (MMA=4, MMA_M, MMA_K) to (nrow=(2, MMA_M), ncol=(2, MMA_K))
+            // static_assert(decltype(size<0>(acc_o_rowcol))::value == kNRows);
+            #pragma unroll
+            for (int mi = 0; mi < size(row_max); ++mi) {
+                float scores_max_cur = !true
+                    ? row_max(mi)
+                    : (row_max(mi) == -INFINITY ? 0.0f : row_max(mi));
+                    
+
+#if 0
+                float scores_scale = exp2f((scores_max_prev(mi) - scores_max_cur) * softmax_scale_log2);
+#else
+                float scores_scale = __builtin_amdgcn_exp2f((scores_max_prev(mi) - scores_max_cur) * softmax_scale_log2);
+#endif
+                    // if (blockIdx.x == 0 && threadIdx.x == 0)
+                    // {
+                    //     printf("threadIdx.x  %.2f,  scores_scale = %.4f\n",row_sum(mi), scores_scale );
+                    // }
+                row_sum(mi) *= scores_scale;
+                for (int i = 0; i < 32; i++)
+                {
+                    acc_o[i].x *= scores_scale;
+                    acc_o[i].y *= scores_scale;
+                    acc_o[i].z *= scores_scale;
+                    acc_o[i].w *= scores_scale;
+                }
+            }
+
+            // if (blockIdx.x == 2)
+            // {
+            //     printf("threadIdx.x  %.2f \n",row_sum(mi)  );
+            // }
+
+            flash::scale_apply_exp2(scores, row_max, softmax_scale_log2);
+            // We don't do the reduce across threads here since we don't need to use the row_sum.
+            // We do that reduce at the end when we need to normalize the softmax.
+            flash::reduce_sum</*zero_init=*/false>(scores, row_sum);
+
+        }
+        // if (thread0())
+        // {
+        //     printf("max sum %.3f %.3f  \n", row_max(0), row_sum(0));
+        // }
+    };
+
+    template<bool Is_dropout=false, bool Split=false>
+    __forceinline__ __device__ TensorT normalize_softmax_lse_prefill_4x1(v4f *acc_o, float softmax_scale, float rp_dropout=1.0) {
+        SumOp<float> sum_op;
+        quad_allreduce_(row_sum, row_sum, sum_op);
+        // flash::template warp_allreduce_(row_sum, sRow_sum_reduce_buffer, sum_op);
+        TensorT lse = make_fragment_like(row_sum);
+        // Tensor acc_o_rowcol = make_tensor(acc_o.data(), flash::convert_layout_acc_rowcol(acc_o.layout()));
+        // static_assert(decltype(size<0>(acc_o_rowcol))::value == kNRows);
+        // if (thread0())
+        // {
+        //     printf(" %.3f %.3f  \n", row_max(0), row_sum(0));
+        // }
+        #pragma unroll
+        for (int mi = 0; mi < 1; ++mi) {
+            float sum = row_sum(mi);
+            float inv_sum = (sum == 0.f || sum != sum) ? 1.f : 1.f / sum;
+            lse(mi) = (sum == 0.f || sum != sum) ? (Split ? -INFINITY : INFINITY) : row_max(mi) * softmax_scale + __logf(sum);
+            float scale = !Is_dropout ? inv_sum : inv_sum * rp_dropout;
+            for (int i = 0; i < 32; i++)
+            {
+                acc_o[i].x *= scale;
+                acc_o[i].y *= scale;
+                acc_o[i].z *= scale;
+                acc_o[i].w *= scale;
+            }        
+        }
+        return lse;
+    };
+
 };
 
 
