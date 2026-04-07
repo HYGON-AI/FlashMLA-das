@@ -124,5 +124,35 @@ static void run(const SparseAttnFwdParams &params);
 
 };
 
+template<int D_QK, bool HAVE_TOPK_LENGTH, bool IS_TOPK_2048>
+class KernelTemplate_B_H_64
+{
+public:
+
+static constexpr int D_Q = D_QK;
+static constexpr int D_K = D_QK;
+static constexpr int D_V = 512;
+
+static constexpr int kNWarps = 4;
+static constexpr int B_H = 64;
+static constexpr int B_TOPK = 64;    // TopK block size
+static constexpr int NUM_THREADS = kNWarps * 64;
+static constexpr float MAX_INIT_VAL = -1e30;    // We use this number as the initial value for mi (max logits)
+
+using Element = cutlass::bfloat16_t;
+using elem_type = Element;
+using ElementAccum = float;
+using index_t = int64_t;
+static constexpr int kBlockM = B_H;
+static constexpr int kBlockN = B_TOPK;
+static constexpr int kHeadDim = D_QK;
+static constexpr int kHeadDimV = D_V;
+
+static __device__ __forceinline__ void
+devfunc(const SparseAttnFwdParams &params);
+
+static void run(const SparseAttnFwdParams &params);
+
+};
 
 };

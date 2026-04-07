@@ -77,7 +77,7 @@ if __name__ == '__main__':
             (1840, 256),
             (1592, 384),
             (1521, 512),
-
+            (3000, 2048),
             # Irregular shapes with OOB TopK
             (95, 128),
             (153, 256),
@@ -146,6 +146,7 @@ if __name__ == '__main__':
     performance_case_templates = [
         # V3.2
         (576, 128, 2048, [8192, 32768, 65536, 98304, 131072]),
+        (576, 64, 2048, [8192, 32768, 65536, 98304, 131072]),
         # MODEL1 CONFIG1
         (512, 64, 512, [8192, 32768, 49152, 65536]),
         # MODEL1 CONFIG2
@@ -154,9 +155,10 @@ if __name__ == '__main__':
     ]
 
     performance_cases = [
-        TestParam(s_q, s_kv, topk, h_q=h_q, d_qk=d_qk, have_attn_sink=True)
+        TestParam(s_q, s_kv, topk, h_q=h_q, d_qk=d_qk, have_attn_sink=have_attn_sink)
         for (d_qk, h_q, topk, s_kv_list) in performance_case_templates
         for s_q in [4096]
+        for have_attn_sink in [False, True]
         for s_kv in s_kv_list
     ]
 
