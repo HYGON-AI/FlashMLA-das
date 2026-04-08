@@ -458,6 +458,7 @@ lds_direct_copy(
     
             asm volatile(
                 "s_mov_b32 m0, %1 \n\t"
+                "s_nop 0 \n\t"
                 "buffer_load_dwordx4 %0, %2, %3 ,offen  offset:0, lds \n" ::"v"(offset_v),
                 "s"(ldsAddrPerWave), "s"(global_addr), "s"(offset_s)
             :);    
@@ -521,6 +522,7 @@ lds_direct_copy(
     
             asm volatile(
                 "s_mov_b32 m0, %1 \n\t"
+                "s_nop 0 \n\t"
                 "buffer_load_dwordx4 %0, %2, %3 ,offen  offset:0, lds \n" ::"v"(offset_v),
                 "s"(ldsAddrPerWave), "s"(global_addr), "s"(offset_s)
             :);    
@@ -591,6 +593,7 @@ lds_direct_copy_for_prefill_sparse_mla(
     index_offset[1] = offset_v;
     asm volatile(
         "s_mov_b32 m0, %1 \n\t"
+        "s_nop 0 \n\t"
         "buffer_load_dwordx4 %0, %2, %3 , idxen offen  offset:0, lds \n" ::"v"(index_offset),
         "s"(ldsAddrPerWave), "s"(global_addr), "s"(offset_s)
     :);    
@@ -818,6 +821,7 @@ lds_direct_copy_qkvfp8(
 
         asm volatile(
             "s_mov_b32 m0, %1 \n\t"
+            "s_nop 0 \n\t"
             "buffer_load_dwordx4 %0, %2, %3 ,offen  offset:0, lds \n" ::"v"(offset_v),
             "s"(ldsAddrPerWave), "s"(global_addr), "s"(offset_s)
         :);  
@@ -884,6 +888,7 @@ lds_direct_copy_qkvfp8(
         #if defined(__gfx938__)
         asm volatile(
             "s_mov_b32 m0, %1 \n\t"
+            "s_nop 0 \n\t"
             "buffer_load_dwordx4 %0, %2, %3 ,offen  offset:0, lds \n" ::"v"(offset_v),
             "s"(ldsAddrPerWave), "s"(global_addr), "s"(offset_s)
         :);   
@@ -1041,6 +1046,7 @@ lds_direct_copy_fp8(
         #if defined(__gfx936__) ||  defined(__gfx938__)
         asm volatile(
             "s_mov_b32 m0, %1 \n\t"
+            "s_nop 0 \n\t"
             "buffer_load_dwordx4 %0, %2, %3 ,offen  offset:0, lds \n" ::"v"(offset_v),
             "s"(ldsAddrPerWave), "s"(global_addr), "s"(offset_s)
         :);   

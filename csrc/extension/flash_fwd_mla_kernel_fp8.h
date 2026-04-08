@@ -710,6 +710,7 @@ __forceinline__ __device__ void compute_attn_1rowblock_splitkv_mla_fp8_gfx938(co
                 + offset_k * 3 * bytes_per_block;
                 asm volatile(
                     "s_mov_b32 m0, %1 \n\t"
+                    "s_nop 0 \n\t"
                     "buffer_load_dwordx4 %0, %2, %3 ,offen  offset:0, lds \n" ::"v"(offset_v),
                     "s"(ldsAddrPerWave), "s"(global_addr), "s"(offset_s)
                 :);  
