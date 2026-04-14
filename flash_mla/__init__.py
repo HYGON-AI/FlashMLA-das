@@ -1,4 +1,4 @@
-__version__ = "1.0.0"
+__version__ = "1.2.0"
 
 from flash_mla.flash_mla_interface import (
     get_mla_metadata,
