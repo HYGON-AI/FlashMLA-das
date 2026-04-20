@@ -58,6 +58,10 @@ struct DenseAttnDecodeParams { // TODO Change name to DenseAttnDecodeParams
     float *__restrict__ oaccum_ptr;
 
     cudaStream_t stream;
+
+    bool use_split_kv;
+    int partition_block_nums;
+
 };
 
 struct DenseAttnDecodeParams_fp8 : public DenseAttnDecodeParams {
@@ -127,6 +131,12 @@ struct CombineParams {
     float* attn_sink;  // [h_q], may be nullptr
 
     cudaStream_t stream;
+
+    
+    bool use_split_kv;
+    int num_splits;
+    int *__restrict__ seqlens_k_ptr; 
+    int partition_block_nums;
 };
 
 struct GetDecodeSchedMetaParams {

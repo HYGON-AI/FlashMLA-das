@@ -236,7 +236,7 @@ __device__ void KernelTemplate_B_H_64<D_QK, HAVE_TOPK_LENGTH, IS_TOPK_2048>::dev
         // int v_idx = row_offset;
         int offset_v = col_offset * 2;
 
-        int ldsAddrPerWave = reinterpret_cast<size_t>(v_lds) + warp_idx * 16 * 32 * 2 + (k_idx % 1) * 512 * 16 * 2 + n_idx * 128 * 16 * 2;
+        int ldsAddrPerWave = reinterpret_cast<size_t>(v_lds) + warp_idx * 16 * 32 * 2 + (k_idx) * 128 * 16 * 2;
         typedef uint32_t uint32x2_t __attribute__((ext_vector_type(2)));
         uint32x2_t index_offset = {0};
         index_offset[0] = row_offset;
@@ -474,7 +474,7 @@ __device__ void KernelTemplate_B_H_64<D_QK, HAVE_TOPK_LENGTH, IS_TOPK_2048>::dev
             #endif
         }   
 
-        softmax.template softmax_rescale_o_prefill_4x1</*Is_first=*/IS_FIRST_BLOCK, /*Check_inf=*//*Is_local=*/false>(scores, acco_f32, params.sm_scale_div_log2);
+        softmax.template softmax_rescale_o_prefill_4x1</*Is_first=*/IS_FIRST_BLOCK, /*Check_inf=*//*Is_local=*/true>(scores, acco_f32, params.sm_scale_div_log2);
         
         Bf16_storage_x4 p[4];
         for (int i = 0; i < 4; i++)
@@ -500,121 +500,123 @@ __device__ void KernelTemplate_B_H_64<D_QK, HAVE_TOPK_LENGTH, IS_TOPK_2048>::dev
         {
             constexpr int k_val = (0);   
             buffer_load_lds_v(row_offset_v[k_val], col_offset_v, k_val, 0); 
-            buffer_load_lds_v(row_offset_v[k_val], col_offset_v, k_val, 1); 
-            buffer_load_lds_v(row_offset_v[k_val], col_offset_v, k_val, 2); 
-            buffer_load_lds_v(row_offset_v[k_val], col_offset_v, k_val, 3); 
-                __builtin_amdgcn_sched_barrier(0); 
+            buffer_load_lds_v(row_offset_v[k_val + 1], col_offset_v, k_val + 1, 0); 
+            buffer_load_lds_v(row_offset_v[k_val + 2], col_offset_v, k_val + 2, 0); 
+            buffer_load_lds_v(row_offset_v[k_val + 3], col_offset_v, k_val + 3, 0);   
+                            __builtin_amdgcn_sched_barrier(0); 
             asm volatile("s_waitcnt vmcnt(3) \n\t s_barrier\n\t");  
                 __builtin_amdgcn_sched_barrier(0); 
             flash::pv_gemm<k_val, 0>(p[k_val + 0].data_64, v_lds_read_ptr, acco_f32);  
             flash::pv_gemm<k_val, 1>(p[k_val + 0].data_64, v_lds_read_ptr, acco_f32);  
             flash::pv_gemm<k_val, 2>(p[k_val + 0].data_64, v_lds_read_ptr, acco_f32);  
             flash::pv_gemm<k_val, 3>(p[k_val + 0].data_64, v_lds_read_ptr, acco_f32);  
-                __builtin_amdgcn_sched_barrier(0); 
+                            __builtin_amdgcn_sched_barrier(0); 
             asm volatile("s_waitcnt vmcnt(2) \n\t s_barrier\n\t");  
                 __builtin_amdgcn_sched_barrier(0); 
-            buffer_load_lds_v(row_offset_v[k_val + 1], col_offset_v, k_val + 1, 0); 
-    
-            flash::pv_gemm<k_val, 4>(p[k_val + 0].data_64, v_lds_read_ptr, acco_f32);  
-            flash::pv_gemm<k_val, 5>(p[k_val + 0].data_64, v_lds_read_ptr, acco_f32);  
-            flash::pv_gemm<k_val, 6>(p[k_val + 0].data_64, v_lds_read_ptr, acco_f32);  
-            flash::pv_gemm<k_val, 7>(p[k_val + 0].data_64, v_lds_read_ptr, acco_f32);  
+            buffer_load_lds_v(row_offset_v[k_val], col_offset_v, k_val, 1); 
+
+            flash::pv_gemm<k_val + 1, 0>(p[k_val + 1].data_64, v_lds_read_ptr, acco_f32);  
+            flash::pv_gemm<k_val + 1, 1>(p[k_val + 1].data_64, v_lds_read_ptr, acco_f32);  
+            flash::pv_gemm<k_val + 1, 2>(p[k_val + 1].data_64, v_lds_read_ptr, acco_f32);  
+            flash::pv_gemm<k_val + 1, 3>(p[k_val + 1].data_64, v_lds_read_ptr, acco_f32);  
                 __builtin_amdgcn_sched_barrier(0); 
             asm volatile("s_waitcnt vmcnt(2) \n\t s_barrier\n\t");  
                 __builtin_amdgcn_sched_barrier(0); 
             buffer_load_lds_v(row_offset_v[k_val + 1], col_offset_v, k_val + 1, 1); 
 
-            flash::pv_gemm<k_val, 8>(p[k_val + 0].data_64, v_lds_read_ptr, acco_f32);  
-            flash::pv_gemm<k_val, 9>(p[k_val + 0].data_64, v_lds_read_ptr, acco_f32);  
-            flash::pv_gemm<k_val, 10>(p[k_val + 0].data_64, v_lds_read_ptr, acco_f32);  
-            flash::pv_gemm<k_val, 11>(p[k_val + 0].data_64, v_lds_read_ptr, acco_f32);  
+            flash::pv_gemm<k_val + 2, 0>(p[k_val + 2].data_64, v_lds_read_ptr, acco_f32);  
+            flash::pv_gemm<k_val + 2, 1>(p[k_val + 2].data_64, v_lds_read_ptr, acco_f32);  
+            flash::pv_gemm<k_val + 2, 2>(p[k_val + 2].data_64, v_lds_read_ptr, acco_f32);  
+            flash::pv_gemm<k_val + 2, 3>(p[k_val + 2].data_64, v_lds_read_ptr, acco_f32);  
                 __builtin_amdgcn_sched_barrier(0); 
             asm volatile("s_waitcnt vmcnt(2) \n\t s_barrier\n\t");  
                 __builtin_amdgcn_sched_barrier(0); 
-            buffer_load_lds_v(row_offset_v[k_val + 1], col_offset_v, k_val + 1, 2); 
+            buffer_load_lds_v(row_offset_v[k_val + 2], col_offset_v, k_val + 2, 1); 
 
-            flash::pv_gemm<k_val, 12>(p[k_val + 0].data_64, v_lds_read_ptr, acco_f32);  
-            flash::pv_gemm<k_val, 13>(p[k_val + 0].data_64, v_lds_read_ptr, acco_f32);  
-            flash::pv_gemm<k_val, 14>(p[k_val + 0].data_64, v_lds_read_ptr, acco_f32);  
-            flash::pv_gemm<k_val, 15>(p[k_val + 0].data_64, v_lds_read_ptr, acco_f32);  
+            flash::pv_gemm<k_val + 3, 0>(p[k_val + 3].data_64, v_lds_read_ptr, acco_f32);  
+            flash::pv_gemm<k_val + 3, 1>(p[k_val + 3].data_64, v_lds_read_ptr, acco_f32);  
+            flash::pv_gemm<k_val + 3, 2>(p[k_val + 3].data_64, v_lds_read_ptr, acco_f32);  
+            flash::pv_gemm<k_val + 3, 3>(p[k_val + 3].data_64, v_lds_read_ptr, acco_f32);  
                 __builtin_amdgcn_sched_barrier(0); 
             asm volatile("s_waitcnt vmcnt(2) \n\t s_barrier\n\t");  
                 __builtin_amdgcn_sched_barrier(0); 
-            buffer_load_lds_v(row_offset_v[k_val + 1], col_offset_v, k_val + 1, 3); 
+            buffer_load_lds_v(row_offset_v[k_val + 3], col_offset_v, k_val + 3, 1); 
+            
         }
-
-        #define LOAD_V_AND_PV_GEMM(k) \
+        #define LOAD_V_AND_PV_GEMM(n) \
         {                                   \
-            constexpr int k_val = (k);   \
-            flash::pv_gemm<k_val, 0>(p[k_val + 0].data_64, v_lds_read_ptr, acco_f32);  \
-            flash::pv_gemm<k_val, 1>(p[k_val + 0].data_64, v_lds_read_ptr, acco_f32);  \
-            flash::pv_gemm<k_val, 2>(p[k_val + 0].data_64, v_lds_read_ptr, acco_f32);  \
-            flash::pv_gemm<k_val, 3>(p[k_val + 0].data_64, v_lds_read_ptr, acco_f32);  \
+            constexpr int k_val = (0);   \
+            constexpr int n_val = (n);   \
+            flash::pv_gemm<k_val, n_val * 4>(p[k_val + 0].data_64, v_lds_read_ptr, acco_f32);  \
+            flash::pv_gemm<k_val, n_val * 4 + 1>(p[k_val + 0].data_64, v_lds_read_ptr, acco_f32);  \
+            flash::pv_gemm<k_val, n_val * 4 + 2>(p[k_val + 0].data_64, v_lds_read_ptr, acco_f32);  \
+            flash::pv_gemm<k_val, n_val * 4 + 3>(p[k_val + 0].data_64, v_lds_read_ptr, acco_f32);  \
                 __builtin_amdgcn_sched_barrier(0); \
             asm volatile("s_waitcnt vmcnt(2) \n\t s_barrier\n\t");  \
                 __builtin_amdgcn_sched_barrier(0); \
-            buffer_load_lds_v(row_offset_v[k_val + 1], col_offset_v, k_val + 1, 0); \
-            flash::pv_gemm<k_val, 4>(p[k_val + 0].data_64, v_lds_read_ptr, acco_f32);  \
-            flash::pv_gemm<k_val, 5>(p[k_val + 0].data_64, v_lds_read_ptr, acco_f32);  \
-            flash::pv_gemm<k_val, 6>(p[k_val + 0].data_64, v_lds_read_ptr, acco_f32);  \
-            flash::pv_gemm<k_val, 7>(p[k_val + 0].data_64, v_lds_read_ptr, acco_f32);  \
+            buffer_load_lds_v(row_offset_v[k_val], col_offset_v, k_val, n_val + 1); \
+            flash::pv_gemm<k_val + 1, n_val * 4>(p[k_val + 1].data_64, v_lds_read_ptr, acco_f32);  \
+            flash::pv_gemm<k_val + 1, n_val * 4 + 1>(p[k_val + 1].data_64, v_lds_read_ptr, acco_f32);  \
+            flash::pv_gemm<k_val + 1, n_val * 4 + 2>(p[k_val + 1].data_64, v_lds_read_ptr, acco_f32);  \
+            flash::pv_gemm<k_val + 1, n_val * 4 + 3>(p[k_val + 1].data_64, v_lds_read_ptr, acco_f32);  \
                 __builtin_amdgcn_sched_barrier(0); \
             asm volatile("s_waitcnt vmcnt(2) \n\t s_barrier\n\t");  \
                 __builtin_amdgcn_sched_barrier(0); \
-                buffer_load_lds_v(row_offset_v[k_val + 1], col_offset_v, k_val + 1, 1); \
-            flash::pv_gemm<k_val, 8>(p[k_val + 0].data_64, v_lds_read_ptr, acco_f32);  \
-            flash::pv_gemm<k_val, 9>(p[k_val + 0].data_64, v_lds_read_ptr, acco_f32);  \
-            flash::pv_gemm<k_val, 10>(p[k_val + 0].data_64, v_lds_read_ptr, acco_f32);  \
-            flash::pv_gemm<k_val, 11>(p[k_val + 0].data_64, v_lds_read_ptr, acco_f32);  \
+                buffer_load_lds_v(row_offset_v[k_val + 1], col_offset_v, k_val + 1, n_val + 1); \
+            flash::pv_gemm<k_val + 2, n_val * 4>(p[k_val + 2].data_64, v_lds_read_ptr, acco_f32);  \
+            flash::pv_gemm<k_val + 2, n_val * 4 + 1>(p[k_val + 2].data_64, v_lds_read_ptr, acco_f32);  \
+            flash::pv_gemm<k_val + 2, n_val * 4 + 2>(p[k_val + 2].data_64, v_lds_read_ptr, acco_f32);  \
+            flash::pv_gemm<k_val + 2, n_val * 4 + 3>(p[k_val + 2].data_64, v_lds_read_ptr, acco_f32);  \
                 __builtin_amdgcn_sched_barrier(0); \
             asm volatile("s_waitcnt vmcnt(2) \n\t s_barrier\n\t");  \
                 __builtin_amdgcn_sched_barrier(0); \
-                            buffer_load_lds_v(row_offset_v[k_val + 1], col_offset_v, k_val + 1, 2); \
-            flash::pv_gemm<k_val, 12>(p[k_val + 0].data_64, v_lds_read_ptr, acco_f32);  \
-            flash::pv_gemm<k_val, 13>(p[k_val + 0].data_64, v_lds_read_ptr, acco_f32);  \
-            flash::pv_gemm<k_val, 14>(p[k_val + 0].data_64, v_lds_read_ptr, acco_f32);  \
-            flash::pv_gemm<k_val, 15>(p[k_val + 0].data_64, v_lds_read_ptr, acco_f32);  \
+                            buffer_load_lds_v(row_offset_v[k_val + 2], col_offset_v, k_val + 2, n_val + 1); \
+            flash::pv_gemm<k_val + 3, n_val * 4>(p[k_val + 3].data_64, v_lds_read_ptr, acco_f32);  \
+            flash::pv_gemm<k_val + 3, n_val * 4 + 1>(p[k_val + 3].data_64, v_lds_read_ptr, acco_f32);  \
+            flash::pv_gemm<k_val + 3, n_val * 4 + 2>(p[k_val + 3].data_64, v_lds_read_ptr, acco_f32);  \
+            flash::pv_gemm<k_val + 3, n_val * 4 + 3>(p[k_val + 3].data_64, v_lds_read_ptr, acco_f32);  \
                 __builtin_amdgcn_sched_barrier(0); \
             asm volatile("s_waitcnt vmcnt(2) \n\t s_barrier\n\t");  \
                 __builtin_amdgcn_sched_barrier(0); \
-            buffer_load_lds_v(row_offset_v[k_val + 1], col_offset_v, k_val + 1, 3); \
+            buffer_load_lds_v(row_offset_v[k_val + 3], col_offset_v, k_val + 3, n_val + 1); \
         }  
         LOAD_V_AND_PV_GEMM(1);
         LOAD_V_AND_PV_GEMM(2);
         {
-            constexpr int k_val = (3);   
-            flash::pv_gemm<k_val, 0>(p[k_val + 0].data_64, v_lds_read_ptr, acco_f32);  
-            flash::pv_gemm<k_val, 1>(p[k_val + 0].data_64, v_lds_read_ptr, acco_f32);  
-            flash::pv_gemm<k_val, 2>(p[k_val + 0].data_64, v_lds_read_ptr, acco_f32);  
-            flash::pv_gemm<k_val, 3>(p[k_val + 0].data_64, v_lds_read_ptr, acco_f32);  
+            constexpr int n_val = (3);  
+            flash::pv_gemm<0, 12>(p[0].data_64, v_lds_read_ptr, acco_f32);  
+            flash::pv_gemm<0, 13>(p[0].data_64, v_lds_read_ptr, acco_f32);  
+            flash::pv_gemm<0, 14>(p[0].data_64, v_lds_read_ptr, acco_f32);  
+            flash::pv_gemm<0, 15>(p[0].data_64, v_lds_read_ptr, acco_f32);  
                 __builtin_amdgcn_sched_barrier(0); 
             asm volatile("s_waitcnt vmcnt(2) \n\t s_barrier\n\t");  
                 __builtin_amdgcn_sched_barrier(0); 
     
-            flash::pv_gemm<k_val, 4>(p[k_val + 0].data_64, v_lds_read_ptr, acco_f32);  
-            flash::pv_gemm<k_val, 5>(p[k_val + 0].data_64, v_lds_read_ptr, acco_f32);  
-            flash::pv_gemm<k_val, 6>(p[k_val + 0].data_64, v_lds_read_ptr, acco_f32);  
-            flash::pv_gemm<k_val, 7>(p[k_val + 0].data_64, v_lds_read_ptr, acco_f32);  
+            flash::pv_gemm<1, 12>(p[1].data_64, v_lds_read_ptr, acco_f32);  
+            flash::pv_gemm<1, 13>(p[1].data_64, v_lds_read_ptr, acco_f32);  
+            flash::pv_gemm<1, 14>(p[1].data_64, v_lds_read_ptr, acco_f32);  
+            flash::pv_gemm<1, 15>(p[1].data_64, v_lds_read_ptr, acco_f32);  
                 __builtin_amdgcn_sched_barrier(0); 
             asm volatile("s_waitcnt vmcnt(1) \n\t s_barrier\n\t");  
                 __builtin_amdgcn_sched_barrier(0); 
 
-            flash::pv_gemm<k_val, 8>(p[k_val + 0].data_64, v_lds_read_ptr, acco_f32);  
-            flash::pv_gemm<k_val, 9>(p[k_val + 0].data_64, v_lds_read_ptr, acco_f32);  
-            flash::pv_gemm<k_val, 10>(p[k_val + 0].data_64, v_lds_read_ptr, acco_f32);  
-            flash::pv_gemm<k_val, 11>(p[k_val + 0].data_64, v_lds_read_ptr, acco_f32);  
+            flash::pv_gemm<2, 12>(p[2].data_64, v_lds_read_ptr, acco_f32);  
+            flash::pv_gemm<2, 13>(p[2].data_64, v_lds_read_ptr, acco_f32);  
+            flash::pv_gemm<2, 14>(p[2].data_64, v_lds_read_ptr, acco_f32);  
+            flash::pv_gemm<2, 15>(p[2].data_64, v_lds_read_ptr, acco_f32);  
                 __builtin_amdgcn_sched_barrier(0); 
             asm volatile("s_waitcnt vmcnt(0) \n\t s_barrier\n\t");  
                 __builtin_amdgcn_sched_barrier(0); 
 
-            flash::pv_gemm<k_val, 12>(p[k_val + 0].data_64, v_lds_read_ptr, acco_f32);  
-            flash::pv_gemm<k_val, 13>(p[k_val + 0].data_64, v_lds_read_ptr, acco_f32);  
-            flash::pv_gemm<k_val, 14>(p[k_val + 0].data_64, v_lds_read_ptr, acco_f32);  
-            flash::pv_gemm<k_val, 15>(p[k_val + 0].data_64, v_lds_read_ptr, acco_f32);  
+            flash::pv_gemm<3, 12>(p[3].data_64, v_lds_read_ptr, acco_f32);  
+            flash::pv_gemm<3, 13>(p[3].data_64, v_lds_read_ptr, acco_f32);  
+            flash::pv_gemm<3, 14>(p[3].data_64, v_lds_read_ptr, acco_f32);  
+            flash::pv_gemm<3, 15>(p[3].data_64, v_lds_read_ptr, acco_f32);   
                 __builtin_amdgcn_sched_barrier(0); 
             asm volatile("s_barrier\n\t");  
                 __builtin_amdgcn_sched_barrier(0); 
         }
+       
 
         #else
         #define LOAD_V_AND_PV_GEMM(k) \
