@@ -1553,7 +1553,7 @@ __forceinline__ __device__ void gemm1_rs_fp8(Tensor0 &acc, Tensor1 &tCrA, Tensor
 #endif
 typedef  __bf16  __fp16x8_t __attribute__((ext_vector_type(8)));
 
-template<typename Element, int k_idx>
+template<typename Element, int k_idx, int k_mod = 4>
 __forceinline__ __device__ void qk_gemm(const __fp16x8_t& q_data, Element* k_lds_read_ptr, v4f* accs_f32)
 {    
     typedef  __bf16  __fp16x8_t __attribute__((ext_vector_type(8)));
@@ -1563,7 +1563,7 @@ __forceinline__ __device__ void qk_gemm(const __fp16x8_t& q_data, Element* k_lds
         __fp16x4_t data_64[2];
         uint16_t data_array[8];
     };
-    constexpr int k_idx_even = k_idx % 4;
+    constexpr int k_idx_even = k_idx % k_mod;
     constexpr int n_offset = 16 * 32;
     constexpr int k_offset = k_idx_even * 64 * 32;
     Bf16_storage q_reg;
@@ -1616,7 +1616,7 @@ typedef  __bf16  __fp16x4_t __attribute__((ext_vector_type(4)));
 template<int k_idx, int n_idx_val>
 __forceinline__ __device__ void pv_gemm(const __fp16x4_t& p, int v_lds_read_ptr, v4f* acco_f32)
 {
-    constexpr int k_idx_even = k_idx % 1;
+    constexpr int k_idx_even = k_idx;
     constexpr int n_offset = 16 * 32 * 2;
     typedef  __bf16  __fp16x8_t __attribute__((ext_vector_type(8)));
     union Bf16_storage {
@@ -1624,11 +1624,11 @@ __forceinline__ __device__ void pv_gemm(const __fp16x4_t& p, int v_lds_read_ptr,
         __fp16x4_t data_64[2];
         uint16_t data_array[8];
     };
-    constexpr int k_offset = k_idx_even * 16 * 512 * 2;
+    constexpr int k_offset = k_idx_even * 16 * 128 * 2;
     // #if 1
     Bf16_storage v_reg;
 
-    v_reg.data_128 = __builtin_amdgcn_ds_read_m32x16f16_alt((__attribute__((address_space(3))) __fp16*)(v_lds_read_ptr), k_offset + n_idx_val * n_offset); 
+    v_reg.data_128 = __builtin_amdgcn_ds_read_m32x16f16_alt((__attribute__((address_space(3))) __fp16*)(v_lds_read_ptr), k_offset + (n_idx_val % 4) * n_offset); 
 #if defined(__gfx938__)
     acco_f32[n_idx_val * 2] = __builtin_hcu_mmac_f32_16x16x16_bf16_lit_lts(p, v_reg.data_64[0], acco_f32[n_idx_val * 2], true, false); 
     acco_f32[n_idx_val * 2 + 1] = __builtin_hcu_mmac_f32_16x16x16_bf16_lit_lts(p, v_reg.data_64[1], acco_f32[n_idx_val * 2 + 1], true, false); 

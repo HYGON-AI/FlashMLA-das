@@ -92,7 +92,7 @@ dense_attn_decode_interface(
     KU_CHECK_CONTIGUOUS(out);
     KU_CHECK_CONTIGUOUS(lse);
 
-    if (!tile_scheduler_metadata.has_value()) {
+    if (!tile_scheduler_metadata.has_value() && ((num_heads_q < 64 && num_heads_k == 1) || num_heads_k > 1)) {
         tile_scheduler_metadata = torch::empty({num_sm_parts, sizeof(DecodingSchedMeta)/4}, opts.dtype(torch::kInt32));
         num_splits = torch::empty({batch_size+1}, opts.dtype(torch::kInt32));
         KU_CHECK_CONTIGUOUS(tile_scheduler_metadata);
@@ -124,20 +124,6 @@ dense_attn_decode_interface(
     bool print_param = false;
     if (const char* val = std::getenv("FLASH_MLA_PRINT_PARAM")) {
         print_param = (std::string(val) == "1");
-    }
-    if (print_param) {
-        fprintf(stderr, "[FlashMLA] [dense_attn_decode_interface] [%s] batch_size = %d seqlen_q_ori = %d "
-            "num_heads_q = %d head_size_k = %d max_num_blocks_per_seq = %d num_blocks %d page_block_size = %d num_heads_k = %d \n",
-            arch.archName.c_str(), 
-            batch_size,
-            seqlen_q_ori,
-            num_heads_q,
-            head_size_k,
-            max_num_blocks_per_seq,
-            num_blocks,
-            page_block_size,
-            num_heads_k
-        );
     }
     // Set the sizes
     DenseAttnDecodeParams params;
@@ -173,20 +159,78 @@ dense_attn_decode_interface(
     params.block_table = block_table.data_ptr<int>();
     params.block_table_batch_stride = block_table.stride(0);
     params.page_block_size = page_block_size;
-    
-    params.tile_scheduler_metadata_ptr = (DecodingSchedMeta*)tile_scheduler_metadata->data_ptr();
-    params.num_sm_parts = num_sm_parts;
-    params.num_splits_ptr = num_splits->data_ptr<int>();
 
-    const int total_num_splits = batch_size + params.num_sm_parts;
-    at::Tensor lse_accum = torch::empty({total_num_splits, num_heads, q_seq_per_hk}, opts.dtype(at::kFloat));
-    at::Tensor out_accum = torch::empty({total_num_splits, num_heads, q_seq_per_hk, head_size_v}, opts.dtype(at::kFloat));
-    KU_CHECK_CONTIGUOUS(lse_accum);
-    KU_CHECK_CONTIGUOUS(out_accum);
-    params.total_num_splits = total_num_splits;
-    params.softmax_lseaccum_ptr = lse_accum.data_ptr<float>();
-    params.oaccum_ptr = out_accum.data_ptr<float>();
+    if ((num_heads_q < 64 && num_heads_k == 1) || num_heads_k > 1) {
+        params.tile_scheduler_metadata_ptr = (DecodingSchedMeta*)tile_scheduler_metadata->data_ptr();
+        params.num_sm_parts = num_sm_parts;
+        params.num_splits_ptr = num_splits->data_ptr<int>();
+        const int total_num_splits = batch_size + params.num_sm_parts;
+        at::Tensor lse_accum = torch::empty({total_num_splits, num_heads, q_seq_per_hk}, opts.dtype(at::kFloat));
+        at::Tensor out_accum = torch::empty({total_num_splits, num_heads, q_seq_per_hk, head_size_v}, opts.dtype(at::kFloat));
+        KU_CHECK_CONTIGUOUS(lse_accum);
+        KU_CHECK_CONTIGUOUS(out_accum);
+        params.total_num_splits = total_num_splits;
+        params.softmax_lseaccum_ptr = lse_accum.data_ptr<float>();
+        params.oaccum_ptr = out_accum.data_ptr<float>();
+        params.use_split_kv = false;
+    } else {
+        bool use_split_kv = true;
+        int num_m_blocks = (params.q_seq_per_hk + 64 - 1) / 64;
+        int num_sms = arch.num_sms;
+        int num_splits = num_sms * 3 / (num_m_blocks * params.b);
+        if (max_num_blocks_per_seq >= 32768 / 64) {
+            num_splits = 32;
+        } else if (max_num_blocks_per_seq >= 16384 / 64) {
+            num_splits = 32;
+        } else if (max_num_blocks_per_seq >= 8192 / 64) {
+            num_splits = 16;
+        } else if (max_num_blocks_per_seq >= 4096 / 64) {
+            num_splits = 8;
+        } else if (max_num_blocks_per_seq >= 2048 / 64) {
+            num_splits = 4;
+        } else {
+            num_splits = 1;
+        }
+        if (params.b >= 128) {
+            num_splits = 1;
+        }
+        if (num_splits <= 1) {
+            use_split_kv = false;
+        }
+        else {
+            num_splits = std::min(num_splits, 240);
+            params.partition_block_nums = max_num_blocks_per_seq / num_splits;
+        }
+        if (params.partition_block_nums <= 4) {
+            use_split_kv = false;
+        }
+        params.use_split_kv = use_split_kv;
+        params.total_num_splits = params.b * num_splits;
+        at::Tensor lse_accum = torch::empty({params.total_num_splits, num_heads, q_seq_per_hk}, opts.dtype(at::kFloat));
+        at::Tensor out_accum = torch::empty({params.total_num_splits, num_heads, q_seq_per_hk, head_size_v}, opts.dtype(at::kFloat));
+        KU_CHECK_CONTIGUOUS(lse_accum);
+        KU_CHECK_CONTIGUOUS(out_accum);
+        params.softmax_lseaccum_ptr = lse_accum.data_ptr<float>();
+        params.oaccum_ptr = out_accum.data_ptr<float>();
+    }
 
+    if (print_param) {
+        fprintf(stderr, "[FlashMLA] [dense_attn_decode_interface] [%s] batch_size = %d seqlen_q_ori = %d "
+            "num_heads_q = %d head_size_k = %d max_num_blocks_per_seq = %d num_blocks %d page_block_size = %d num_heads_k = %d use_split_kv = %d num_splits %d params.partition_block_nums = %d \n",
+            arch.archName.c_str(), 
+            batch_size,
+            seqlen_q_ori,
+            num_heads_q,
+            head_size_k,
+            max_num_blocks_per_seq,
+            num_blocks,
+            page_block_size,
+            num_heads_k,
+            params.use_split_kv,
+            params.total_num_splits / params.b,
+            params.partition_block_nums
+        );
+    }
     params.stream = at::cuda::getCurrentCUDAStream().stream();
 
     if (q_dtype == torch::kBFloat16) {
@@ -220,17 +264,23 @@ dense_attn_decode_interface(
         params.num_sm_parts,
 
         nullptr,
-        at::cuda::getCurrentCUDAStream().stream()
+        at::cuda::getCurrentCUDAStream().stream(),
+        params.use_split_kv,
+        params.total_num_splits / params.b,
+        params.seqlens_k_ptr,
+        params.partition_block_nums
     };
-
-    if (q_dtype == torch::kBFloat16) {
-        gfx9::decode::run_flash_mla_combine_kernel<cutlass::bfloat16_t>(combine_params);
-    } else if (q_dtype == torch::kHalf) {
-#ifndef FLASH_MLA_DISABLE_FP16
-        gfx9::decode::run_flash_mla_combine_kernel<cutlass::half_t>(combine_params);
-#endif
-    } else {
-        TORCH_CHECK(false, "Unsupported tensor dtype for query");
+    
+    if ((num_heads_q < 64 && num_heads_k == 1) || num_heads_k > 1 || params.use_split_kv) {
+        if (q_dtype == torch::kBFloat16) {
+            gfx9::decode::run_flash_mla_combine_kernel<cutlass::bfloat16_t>(combine_params);
+        } else if (q_dtype == torch::kHalf) {
+    #ifndef FLASH_MLA_DISABLE_FP16
+            gfx9::decode::run_flash_mla_combine_kernel<cutlass::half_t>(combine_params);
+    #endif
+        } else {
+            TORCH_CHECK(false, "Unsupported tensor dtype for query");
+        }
     }
 
     out = out.view({batch_size, num_heads_k, seqlen_q_ori, num_q_heads_per_hk, head_size_v}).transpose(1, 2)
