@@ -16,7 +16,7 @@ using namespace cute;
 
 namespace gfx9::decode {
 
-template<typename ElementT, int HEAD_DIM_V, int BLOCK_SIZE_M, int MAX_SPLITS, int NUM_THREADS>
+template<typename ElementT, int HEAD_DIM_V, int BLOCK_SIZE_M, int MAX_SPLITS, int NUM_THREADS, bool USE_SPLIT_KV=false>
 __global__ void __launch_bounds__(NUM_THREADS, 1)
 flash_fwd_mla_combine_kernel(const CombineParams params) {
     // grid_shape: [batch_size, s_q, h_q/BLOCK_SIZE_M]
@@ -32,13 +32,37 @@ flash_fwd_mla_combine_kernel(const CombineParams params) {
     if (warp_idx >= num_valid_heads) {
         return;
     }
-
-    const int start_split_idx = __ldg(params.num_splits_ptr + batch_idx);
-    const int end_split_idx = __ldg(params.num_splits_ptr + batch_idx + 1);
-    const int my_num_splits = end_split_idx - start_split_idx;
-    if (my_num_splits == 1) {
-        return;
+    
+    int start_split_idx;
+    int end_split_idx;
+    int my_num_splits;
+    if constexpr (USE_SPLIT_KV)
+    {
+        start_split_idx = batch_idx * params.num_splits; 
+        end_split_idx = (batch_idx + 1) * params.num_splits;
+        int seqlen_k = __ldg(params.seqlens_k_ptr + batch_idx);
+        end_split_idx = std::min(cute::ceil_div(cute::ceil_div(seqlen_k, 64), params.partition_block_nums), params.num_splits) + start_split_idx;
+        // if (lane_idx == 0 && batch_idx == 61)
+        // {
+        //     printf(" batch_idx = %d start_split_idx = %d end_split_idx = %d seqlen_k = %d \n",batch_idx, start_split_idx, end_split_idx, seqlen_k);
+        // }
+        my_num_splits = end_split_idx - start_split_idx;
+        if (my_num_splits == 1) {
+            return;
+        }
     }
+    else
+    {
+        start_split_idx = __ldg(params.num_splits_ptr + batch_idx);
+        end_split_idx = __ldg(params.num_splits_ptr + batch_idx + 1);
+        my_num_splits = end_split_idx - start_split_idx;
+        if (my_num_splits == 1) {
+            return;
+        }
+    }
+    
+
+
     
     // FLASH_DEVICE_ASSERT(my_num_splits <= MAX_SPLITS);
     
@@ -245,6 +269,9 @@ flash_fwd_mla_combine_kernel(const CombineParams params) {
         } else if (NUM_SPLITS <= 160) {                    \
             constexpr static int NAME = 160;               \
             return __VA_ARGS__();                          \
+        } else if (NUM_SPLITS <= 240) {                    \
+            constexpr static int NAME = 240;               \
+            return __VA_ARGS__();                          \
         } else {                                           \
             FLASH_ASSERT(false);                           \
         }                                                  \
@@ -255,29 +282,33 @@ template<typename ElementT>
 void run_flash_mla_combine_kernel(CombineParams &params) {
     static constexpr int HEAD_DIM_V = 512;  // Since only this head dimension is supported by Flash MLA
     FLASH_ASSERT(params.d_v == HEAD_DIM_V);
-    MLA_NUM_SPLITS_SWITCH(params.num_sm_parts, NUM_SPLITS, [&] {
-        constexpr int BLOCK_SIZE_M = 4;
-        constexpr int NUM_THREADS = BLOCK_SIZE_M*64;
-        constexpr size_t smem_size = BLOCK_SIZE_M*(NUM_SPLITS+1)*sizeof(float);
-        auto combine_kernel = &flash_fwd_mla_combine_kernel<ElementT, HEAD_DIM_V, BLOCK_SIZE_M, NUM_SPLITS, NUM_THREADS>;
-        // CHECK_CUDA(cudaFuncSetAttribute(combine_kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, smem_size));
-        // // Use cudaLaunchKernelEx to enable PDL (Programmatic Dependent Launch)
-        // cudaLaunchAttribute attribute[1];
-        // attribute[0].id = cudaLaunchAttributeProgrammaticStreamSerialization;
-        // attribute[0].val.programmaticStreamSerializationAllowed = 1;
-        // cudaLaunchConfig_t combine_kernel_config = {
-        //     dim3(params.b, params.s_q, ku::ceil_div(params.h_q, BLOCK_SIZE_M)),
-        //     dim3(NUM_THREADS, 1, 1),
-        //     0,
-        //     params.stream,
-        //     attribute,
-        //     1
-        // };
-        combine_kernel<<<dim3(params.b, params.s_q, ku::ceil_div(params.h_q, BLOCK_SIZE_M)),
-            NUM_THREADS,
-            smem_size,
-            params.stream>>>(params);
-    });
+    if (params.use_split_kv)
+    {
+        MLA_NUM_SPLITS_SWITCH(params.num_splits, NUM_SPLITS, [&] {
+            constexpr int BLOCK_SIZE_M = 4;
+            constexpr int NUM_THREADS = BLOCK_SIZE_M*64;
+            constexpr size_t smem_size = BLOCK_SIZE_M*(NUM_SPLITS+1)*sizeof(float);
+            auto combine_kernel = &flash_fwd_mla_combine_kernel<ElementT, HEAD_DIM_V, BLOCK_SIZE_M, NUM_SPLITS, NUM_THREADS, true>;
+            combine_kernel<<<dim3(params.b, params.s_q, ku::ceil_div(params.h_q, BLOCK_SIZE_M)),
+                NUM_THREADS,
+                smem_size,
+                params.stream>>>(params);
+        });
+    }
+    else
+    {
+        MLA_NUM_SPLITS_SWITCH(params.num_sm_parts, NUM_SPLITS, [&] {
+            constexpr int BLOCK_SIZE_M = 4;
+            constexpr int NUM_THREADS = BLOCK_SIZE_M*64;
+            constexpr size_t smem_size = BLOCK_SIZE_M*(NUM_SPLITS+1)*sizeof(float);
+            auto combine_kernel = &flash_fwd_mla_combine_kernel<ElementT, HEAD_DIM_V, BLOCK_SIZE_M, NUM_SPLITS, NUM_THREADS>;
+            combine_kernel<<<dim3(params.b, params.s_q, ku::ceil_div(params.h_q, BLOCK_SIZE_M)),
+                NUM_THREADS,
+                smem_size,
+                params.stream>>>(params);
+        });
+    }
+
     CHECK_CUDA_KERNEL_LAUNCH();
 }
 

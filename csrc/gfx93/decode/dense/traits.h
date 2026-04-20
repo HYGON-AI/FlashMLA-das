@@ -127,3 +127,26 @@ struct Traits {
 
 
 
+template<typename InputT_, bool Is_causal_>
+struct Traits_Block_M_64 {
+    using InputT = InputT_;
+    static constexpr bool Is_causal = Is_causal_;
+    static constexpr int BLOCK_SIZE_M = 64;
+    static constexpr int PAGE_BLOCK_SIZE = 64;
+    static constexpr int HEAD_DIM_K = 576;
+    static constexpr int HEAD_DIM_V = 512;
+
+    static constexpr int NUM_THREADS = 256;
+
+    static_assert(std::is_same_v<InputT, cutlass::bfloat16_t> || std::is_same_v<InputT, cutlass::half_t>);
+
+    static constexpr int kBlockM = BLOCK_SIZE_M;
+    static constexpr int kBlockN = PAGE_BLOCK_SIZE;
+    static constexpr int kHeadDim = HEAD_DIM_K;
+    static constexpr int kHeadDimV = HEAD_DIM_V;
+    static constexpr int kNWarps = 4;
+
+    using Element = InputT;
+    using elem_type = Element;
+    using ElementAccum = float;
+};
