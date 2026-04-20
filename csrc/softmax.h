@@ -621,7 +621,7 @@ struct Softmax {
             // static_assert(decltype(size<0>(acc_o_rowcol))::value == kNRows);
             #pragma unroll
             for (int mi = 0; mi < size(row_max); ++mi) {
-                float scores_max_cur = !true
+                float scores_max_cur = !Check_inf
                     ? row_max(mi)
                     : (row_max(mi) == -INFINITY ? 0.0f : row_max(mi));
                     

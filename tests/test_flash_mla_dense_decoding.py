@@ -172,7 +172,7 @@ def test_flash_mla(t: TestParam):
     assert is_correct
 
     if t.test_performance:
-        time_usage = kk.bench_kineto(run_flash_mla, 10).get_kernel_time("flash_fwd_splitkv_mla_kernel")
+        time_usage = kk.bench_kineto(run_flash_mla, 10).get_kernel_time("flash_fwd_splitkv_mla")
 
         mean_attended_seqlens = cache_seqlens.float().mean().item()
         compute_volume_flop = t.b * t.h_q * t.s_q * sum([
@@ -226,7 +226,7 @@ def main(torch_dtype):
         TestParam(128, s_q, s_k, is_varlen=True, is_causal=is_causal, h_q = h_q, test_performance=True)
         for is_causal in [False, True]
         for s_q in [1, 2]
-        for h_q in [16, 128]
+        for h_q in [16, 64, 128]
         for s_k in [4096, 8192, 16384, 32768]
     ]
 
