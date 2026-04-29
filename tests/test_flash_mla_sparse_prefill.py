@@ -51,8 +51,14 @@ def run_test(p: TestParam) -> bool:
     else:
         return True
 
+def get_gcn_arch_name() -> str:
+    GPU_ARCH = torch.cuda.get_device_properties("cuda").gcnArchName
+    return GPU_ARCH.split(':')[0]
 
 if __name__ == '__main__':
+    if get_gcn_arch_name() == "gfx928":
+        print("[WARNING] gfx928 architecture is not supported.")
+        exit(0) 
     device = torch.device("cuda:0")
     torch.set_default_dtype(torch.bfloat16)
     torch.set_default_device(device)

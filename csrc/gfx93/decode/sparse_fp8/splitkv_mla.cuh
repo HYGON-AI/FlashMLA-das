@@ -969,7 +969,9 @@ __device__ void KernelTemplate<MODEL_TYPE, NUM_HEADS>::devfunc(const SparseAttnD
 template<typename Kernel>
 __global__ void __launch_bounds__(Kernel::NUM_THREADS, 1)
 flash_fwd_splitkv_mla_fp8_sparse_kernel(const SparseAttnDecodeParams params) {
+#if defined(__gfx936__) || defined(__gfx938__)
     Kernel::devfunc(params);
+#endif
 }
 
 template<ModelType MODEL_TYPE, int NUM_HEADS>

@@ -24,9 +24,9 @@ dense_attn_decode_interface(
 ) {
     // Check arch
     Arch arch = Arch();
-    if (!arch.is_gfx93x()) {
-        TORCH_CHECK(false, "Dense decode MLA is only supported on gfx936 or gfx938 architecture");
-    }
+    // if (!arch.is_gfx93x()) {
+    //     TORCH_CHECK(false, "Dense decode MLA is only supported on gfx936 or gfx938 architecture");
+    // }
 
     // Check data types
     auto q_dtype = q.dtype();
@@ -92,7 +92,7 @@ dense_attn_decode_interface(
     KU_CHECK_CONTIGUOUS(out);
     KU_CHECK_CONTIGUOUS(lse);
 
-    if (!tile_scheduler_metadata.has_value() && ((num_heads_q < 64 && num_heads_k == 1) || num_heads_k > 1)) {
+    if (!tile_scheduler_metadata.has_value() && (arch.is_gfx928() || (num_heads_q < 64 && num_heads_k == 1) || num_heads_k > 1)) {
         tile_scheduler_metadata = torch::empty({num_sm_parts, sizeof(DecodingSchedMeta)/4}, opts.dtype(torch::kInt32));
         num_splits = torch::empty({batch_size+1}, opts.dtype(torch::kInt32));
         KU_CHECK_CONTIGUOUS(tile_scheduler_metadata);
@@ -159,8 +159,8 @@ dense_attn_decode_interface(
     params.block_table = block_table.data_ptr<int>();
     params.block_table_batch_stride = block_table.stride(0);
     params.page_block_size = page_block_size;
-
-    if ((num_heads_q < 64 && num_heads_k == 1) || num_heads_k > 1) {
+    params.is_gfx928 = arch.is_gfx928();
+    if ((num_heads_q < 64 && num_heads_k == 1) || num_heads_k > 1 || arch.is_gfx928()) {
         params.tile_scheduler_metadata_ptr = (DecodingSchedMeta*)tile_scheduler_metadata->data_ptr();
         params.num_sm_parts = num_sm_parts;
         params.num_splits_ptr = num_splits->data_ptr<int>();
@@ -271,7 +271,7 @@ dense_attn_decode_interface(
         params.partition_block_nums
     };
     
-    if ((num_heads_q < 64 && num_heads_k == 1) || num_heads_k > 1 || params.use_split_kv) {
+    if ((num_heads_q < 64 && num_heads_k == 1) || num_heads_k > 1 || params.use_split_kv || arch.is_gfx928()) {
         if (q_dtype == torch::kBFloat16) {
             gfx9::decode::run_flash_mla_combine_kernel<cutlass::bfloat16_t>(combine_params);
         } else if (q_dtype == torch::kHalf) {
