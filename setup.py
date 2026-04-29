@@ -31,7 +31,7 @@ def get_features_args():
 
 def get_arch_flags():
     arch_flags = []
-    arch_flags.append("--offload-arch=gfx938;gfx936")
+    arch_flags.append("--offload-arch=gfx938;gfx936;gfx928")
     return arch_flags
 
 # def get_nvcc_thread_args():

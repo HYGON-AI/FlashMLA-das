@@ -232,8 +232,14 @@ def test_flash_mla(p: TestParam) -> Result:
     performance_result.is_correct = is_correct
     return performance_result
 
+def get_gcn_arch_name() -> str:
+    GPU_ARCH = torch.cuda.get_device_properties("cuda").gcnArchName
+    return GPU_ARCH.split(':')[0]
 
 def main():
+    if get_gcn_arch_name() == "gfx928":
+        print("[WARNING] gfx928 architecture is not supported.")
+        exit(0) 
     dtype = torch.bfloat16
     device = torch.device("cuda:0")
     torch.set_default_dtype(dtype)
