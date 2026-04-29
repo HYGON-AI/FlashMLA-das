@@ -621,7 +621,17 @@ lds_direct_copy_for_prefill_sparse_mla(
     :);    
 
 }
+template<
+class SrcEngine, class SrcLayout>
+CUTE_HOST_DEVICE
+void
+asm_ds_write(const uint128_t & src,  Tensor<SrcEngine, SrcLayout> & dst, int k_idx)
+{
 
+    uint128_t* d = reinterpret_cast<uint128_t*>(&dst(0, 0, k_idx));
+    d[0] = src;
+
+}
 template <
         bool Is_even_MN=true, 
         bool Is_even_K=true, 

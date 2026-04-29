@@ -252,8 +252,14 @@ def main(torch_dtype, is_prof=False):
 
 
     # '''
+def get_gcn_arch_name() -> str:
+    GPU_ARCH = torch.cuda.get_device_properties("cuda").gcnArchName
+    return GPU_ARCH.split(':')[0]
 
 if __name__ == "__main__":
+    if get_gcn_arch_name() != "gfx938":
+        print("[WARNING] The architecture is not supported.")
+        exit(0) 
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--dtype",

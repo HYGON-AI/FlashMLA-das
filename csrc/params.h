@@ -61,7 +61,7 @@ struct DenseAttnDecodeParams { // TODO Change name to DenseAttnDecodeParams
 
     bool use_split_kv;
     int partition_block_nums;
-
+    bool is_gfx928;
 };
 
 struct DenseAttnDecodeParams_fp8 : public DenseAttnDecodeParams {
