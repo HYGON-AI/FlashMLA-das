@@ -102,6 +102,14 @@ struct Traits {
             GmemLayoutAtomQ{},
             Layout<Shape<_1, _8>>{})); 
 
+    using GmemLayoutAtomK = Layout<Shape <_64, _4>,  
+            Stride< _4, _1>>;
+    using GmemTiledCopyK = decltype(
+        make_tiled_copy(Copy_Atom<DefaultCopy, Element>{},
+            GmemLayoutAtomK{},
+            Layout<Shape<_1, _8>>{})); 
+    using GmemTiledCopyV = GmemTiledCopyK;
+
 
 
     struct SharedMemoryPlan {

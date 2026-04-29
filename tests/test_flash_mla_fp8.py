@@ -214,7 +214,14 @@ def main(torch_dtype, is_prof=False):
                     for varlen in [False]:
                         test_flash_mla_fp8_e5m2(b, s_q, s, h_q, h_kv, d, dv, causal, varlen)
 
+def get_gcn_arch_name() -> str:
+    GPU_ARCH = torch.cuda.get_device_properties("cuda").gcnArchName
+    return GPU_ARCH.split(':')[0]
+
 if __name__ == "__main__":
+    if get_gcn_arch_name() == "gfx928":
+        print("[WARNING] gfx928 architecture is not supported.")
+        exit(0) 
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--dtype",

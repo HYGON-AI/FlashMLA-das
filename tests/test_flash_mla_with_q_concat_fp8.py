@@ -168,7 +168,14 @@ def test_flash_mla_fp8_e5m2(b, s_q, mean_sk, h_q, h_kv, d, dv, causal, varlen, i
         f"{t:.3f} ms, {FLOPS / 10 ** 9 / t:.0f} TFLOPS, {bytes / 10 ** 6 / t:.0f} GB/s"
     )
 
+def get_gcn_arch_name() -> str:
+    GPU_ARCH = torch.cuda.get_device_properties("cuda").gcnArchName
+    return GPU_ARCH.split(':')[0]
+
 def main(torch_dtype, is_prof=False):
+    if get_gcn_arch_name() == "gfx928":
+        print("[WARNING] gfx928 architecture is not supported.")
+        exit(0) 
     device = torch.device("cuda:0")
     torch.set_default_dtype(torch_dtype)
     torch.set_default_device(device)

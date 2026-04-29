@@ -1287,9 +1287,9 @@ __device__ void KernelTemplate<D_QK, HAVE_TOPK_LENGTH>::devfunc(const SparseAttn
 template<typename Kernel>
 __global__ void __launch_bounds__(Kernel::NUM_THREADS, 1)
 sparse_attn_fwd_kernel(const SparseAttnFwdParams params) {
-// #if defined(__gfx936__)
+#if defined(__gfx936__) || defined(__gfx938__)
     Kernel::devfunc(params);
-// #endif
+#endif
 }
 
 template<int D_QK, bool HAVE_TOPK_LENGTH>
