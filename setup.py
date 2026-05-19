@@ -31,7 +31,7 @@ def get_features_args():
 
 def get_arch_flags():
     arch_flags = []
-    arch_flags.append("--offload-arch=gfx938;gfx936;gfx928")
+    arch_flags.append("--offload-arch=gfx938,gfx936,gfx928")
     return arch_flags
 
 # def get_nvcc_thread_args():
@@ -41,11 +41,27 @@ def get_arch_flags():
 # subprocess.run(["git", "submodule", "update", "--init", "csrc/cutlass"])
 
 this_dir = os.path.dirname(os.path.abspath(__file__))
+os.environ['PYTORCH_NVCC'] = 'aicc'
 
 if False:
     cxx_args = ["/O2", "/std:c++20", "/DNDEBUG", "/W0"]
 else:
     cxx_args = ["-O3", "-std=c++20", "-DNDEBUG", "-Wno-deprecated-declarations", "-DDCU_ASM", "-Wno-return-type", ]
+
+aicc_flags = [
+    "-mcode-object-version=5",
+    "-mllvm=-support-768-vgprs=true",
+    "-mllvm=-disable-machine-sink",
+    "-mllvm=-disable-code-sink",
+    "-mllvm=-amdgpu-enable-rewrite-partial-reg-uses=false",
+    "-mllvm=-allow-gvn-convergent-call=true",
+    "-mllvm=-disallow-uniform-vmed3-combine=true",
+    "-mllvm=-hcu-pre-emit-load-store-opt=false",
+    "-mllvm=-amdgpu-early-inline-all=true",
+    "-mllvm=-amdgpu-function-calls=false",
+    "-fno-finite-math-only",
+    "--gpu-max-threads-per-block=256"
+]
 
 
 ext_modules = []
@@ -103,11 +119,11 @@ ext_modules.append(
                 "-ftemplate-backtrace-limit=0",
                 "-Rpass-analysis=kernel-resource-usage",
                 "-DDCU_ASM",
-                "--save-temps",
+                # "--save-temps",
                 "-w",
-                "-mllvm -enable-num-vgprs-512=true",
-                "-mllvm -allow-cse-cross-bb-convergent-call=true",
-                "-mllvm -full-vectorize-slp=true",
+                # "-mllvm -enable-num-vgprs-512=true",
+                # "-mllvm -allow-cse-cross-bb-convergent-call=true",
+                # "-mllvm -full-vectorize-slp=true",
             ] + get_features_args() + get_arch_flags()
         },
         include_dirs=[
