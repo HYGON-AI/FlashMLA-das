@@ -61,9 +61,9 @@ mha_fwd_kvcache_quantization_mla(
     auto q_dtype = q.dtype();
     if (kv_cache_dtype == "fp8_e4m3" || kv_cache_dtype == "fp8_e5m2")
     {
-        TORCH_CHECK(kcache.dtype() != q_dtype, "非量化情况下, query and key must have not the same dtype");
+        TORCH_CHECK(kcache.dtype() != q_dtype, "mha_fwd_kvcache_quantization_mla, query and key must have not the same dtype");
         CHECK_DEVICE(k_scale);
-        TORCH_CHECK(k_scale.dtype() == torch::kFloat32, "非量化情况下, query and key must have the same dtype");
+        TORCH_CHECK(k_scale.dtype() == torch::kFloat32, "k_scale, dtype error");
         // TORCH_CHECK(is_gfx936, "fp8_e4m3 and fp8_e5m2 Attention Forward Kernel (mha_fwd_kvcache_quantization_mla) is only supported on gfx936 architectures");
     }
     else
@@ -516,9 +516,9 @@ mha_fwd_kvcache_quantization_q_nope_pe_mla(
     auto q_dtype = q_nope.dtype();
     if (kv_cache_dtype == "fp8_e5m2")
     {
-        TORCH_CHECK(kcache.dtype() != q_dtype, "非量化情况下, query and key must have not the same dtype");
+        TORCH_CHECK(kcache.dtype() != q_dtype, "mha_fwd_kvcache_quantization_q_nope_pe_mla, query and key must have not the same dtype");
         CHECK_DEVICE(k_scale);
-        TORCH_CHECK(k_scale.dtype() == torch::kFloat32, "非量化情况下, query and key must have the same dtype");
+        TORCH_CHECK(k_scale.dtype() == torch::kFloat32, "mha_fwd_kvcache_quantization_q_nope_pe_mla, k_scale dtype error");
     }
     else
     {
