@@ -132,39 +132,36 @@ __device__ void KernelTemplate_B_H_64<D_QK, HAVE_TOPK_LENGTH, IS_TOPK_2048>::dev
     global_addr_q[2] = 64;
     global_addr_q[3] = 0x00020000;
 
-    PtrWrapper glob_ptr_indices;
-    *(uint64_t*)&glob_ptr_indices = reinterpret_cast<uint64_t>(gIndices);
-    // glob_ptr_indices.latter |= ((params.stride_indices_s_q * 4) << 16); 
-    // *(uint64_t*)&glob_ptr_indices = reinterpret_cast<uint64_t>(params.indices);
-    // glob_ptr_indices.latter |= ((params.stride_indices_s_q * 4) << 16); 
-    glob_ptr_indices.latter |= 0x40000000; 
-    uint32x4_t global_addr_indices = {0};
-    global_addr_indices[0] = (glob_ptr_indices.former);
-    global_addr_indices[1] = (glob_ptr_indices.latter);
-    global_addr_indices[2] = 0x80000000;
-    global_addr_indices[3] = 0x00020000;
     auto buffer_load_lds_indices = [&] (int n) {
-        constexpr int element_size = 4;
-        int ldsAddrPerWave = reinterpret_cast<size_t>(sIndices) + warp_idx * 64 * 4 * 4;
-        typedef uint32_t uint32x2_t __attribute__((ext_vector_type(2)));
-        // uint32x2_t index_offset = {0};
-        // index_offset[0] = s_q_idx;
-        // index_offset[1] = lane_idx * 4 * 4 + warp_idx * 64 * 4 * 4;
-        const int offset_v = lane_idx * 4 * 4 + warp_idx * 64 * 4 * 4;
-        const int offset_s = n * 1024 * 4;
-        __builtin_amdgcn_sched_barrier(0);
-        asm volatile(
-            "s_mov_b32 m0, %1 \n\t"
-            "s_nop 0 \n\t"
-            "buffer_load_dwordx4 %0, %2, %3  offen  offset:0, lds \n" ::"v"(offset_v),
-            "s"(ldsAddrPerWave), "s"(global_addr_indices), "s"(offset_s)
-        :);  
-        __builtin_amdgcn_sched_barrier(0);
+        if constexpr (IS_TOPK_2048) {
+            PtrWrapper glob_ptr_indices;
+            *(uint64_t*)&glob_ptr_indices = reinterpret_cast<uint64_t>(gIndices);
+            glob_ptr_indices.latter |= 0x40000000;
+            uint32x4_t global_addr_indices = {0};
+            global_addr_indices[0] = (glob_ptr_indices.former);
+            global_addr_indices[1] = (glob_ptr_indices.latter);
+            global_addr_indices[2] = 0x80000000;
+            global_addr_indices[3] = 0x00020000;
+
+            int ldsAddrPerWave = reinterpret_cast<size_t>(sIndices) + warp_idx * 64 * 4 * 4;
+            const int offset_v = lane_idx * 4 * 4 + warp_idx * 64 * 4 * 4;
+            const int offset_s = n * 1024 * 4;
+            __builtin_amdgcn_sched_barrier(0);
+            asm volatile(
+                "s_mov_b32 m0, %1 \n\t"
+                "s_nop 0 \n\t"
+                "buffer_load_dwordx4 %0, %2, %3  offen  offset:0, lds \n" ::"v"(offset_v),
+                "s"(ldsAddrPerWave), "s"(global_addr_indices), "s"(offset_s)
+            :);
+            __builtin_amdgcn_sched_barrier(0);
+        }
     };
-    buffer_load_lds_indices(0);
-    __builtin_amdgcn_sched_barrier(0); 
-    asm volatile("s_waitcnt vmcnt(0) \n\t s_barrier\n\t");         
-    __builtin_amdgcn_sched_barrier(0);  
+    if constexpr (IS_TOPK_2048) {
+        buffer_load_lds_indices(0);
+        __builtin_amdgcn_sched_barrier(0);
+        asm volatile("s_waitcnt vmcnt(0) \n\t s_barrier\n\t");
+        __builtin_amdgcn_sched_barrier(0);
+    }
 
     PtrWrapper glob_ptr_k;
     *(uint64_t*)&glob_ptr_k = reinterpret_cast<uint64_t>(gK.data().get());
@@ -276,7 +273,8 @@ __device__ void KernelTemplate_B_H_64<D_QK, HAVE_TOPK_LENGTH, IS_TOPK_2048>::dev
     Element* q_lds_read_ptr = (q_lds + warp_idx * 16 * 32 + lane_idx * 8);
     Element* k_lds_read_ptr = (k_lds + k_lds_read_offset());
     Bf16_storage q_reg[18];
-    for (int i = 0; i < 18; i++)
+    static constexpr int kQkChunks = D_QK / 32;
+    for (int i = 0; i < kQkChunks; i++)
     {
         constexpr int elements_per_thread = 8;
         int row = lane_idx % 16;
@@ -325,6 +323,59 @@ __device__ void KernelTemplate_B_H_64<D_QK, HAVE_TOPK_LENGTH, IS_TOPK_2048>::dev
         auto [row_offset, col] = calc_row_and_col_k(block_idx);
         row_offset = row_offset == -1 ? params.s_kv : row_offset;
         #if 1
+        if constexpr (D_QK == 512) {
+        #define LOAD_K_AND_QK_GEMM_512(k)     \
+        { \
+            constexpr int k_val = (k);  \
+            buffer_load_lds_k(row_offset, col, k_val - 3); \
+            flash::qk_gemm<Element, k_val>(q_reg[k_val].data_128, k_lds_read_ptr, accs_f32); \
+            __builtin_amdgcn_sched_barrier(0);                          \
+            asm volatile("s_waitcnt vmcnt(2) \n\t s_barrier\n\t");       \
+            __builtin_amdgcn_sched_barrier(0);                  \
+        }
+
+            constexpr int k_val = 15;
+            buffer_load_lds_k(row_offset, col, k_val);
+            buffer_load_lds_k(row_offset, col, k_val - 1);
+            buffer_load_lds_k(row_offset, col, k_val - 2);
+            buffer_load_lds_k(row_offset, col, k_val - 3);
+            __builtin_amdgcn_sched_barrier(0);
+            asm volatile("s_waitcnt vmcnt(3) \n\t s_barrier\n\t");
+            __builtin_amdgcn_sched_barrier(0);
+            flash::qk_gemm<Element, k_val>(q_reg[k_val].data_128, k_lds_read_ptr, accs_f32);
+            __builtin_amdgcn_sched_barrier(0);
+            asm volatile("s_waitcnt vmcnt(2) \n\t s_barrier\n\t");
+            __builtin_amdgcn_sched_barrier(0);
+
+            LOAD_K_AND_QK_GEMM_512(14);
+            LOAD_K_AND_QK_GEMM_512(13);
+            LOAD_K_AND_QK_GEMM_512(12);
+            LOAD_K_AND_QK_GEMM_512(11);
+            LOAD_K_AND_QK_GEMM_512(10);
+            LOAD_K_AND_QK_GEMM_512(9);
+            LOAD_K_AND_QK_GEMM_512(8);
+            LOAD_K_AND_QK_GEMM_512(7);
+            LOAD_K_AND_QK_GEMM_512(6);
+            LOAD_K_AND_QK_GEMM_512(5);
+            LOAD_K_AND_QK_GEMM_512(4);
+            LOAD_K_AND_QK_GEMM_512(3);
+
+            flash::qk_gemm<Element, 2>(q_reg[2].data_128, k_lds_read_ptr, accs_f32);
+            __builtin_amdgcn_sched_barrier(0);
+            asm volatile("s_waitcnt vmcnt(1) \n\t s_barrier\n\t");
+            __builtin_amdgcn_sched_barrier(0);
+
+            flash::qk_gemm<Element, 1>(q_reg[1].data_128, k_lds_read_ptr, accs_f32);
+            __builtin_amdgcn_sched_barrier(0);
+            asm volatile("s_waitcnt vmcnt(0) \n\t s_barrier\n\t");
+            __builtin_amdgcn_sched_barrier(0);
+
+            flash::qk_gemm<Element, 0>(q_reg[0].data_128, k_lds_read_ptr, accs_f32);
+            __builtin_amdgcn_sched_barrier(0);
+            asm volatile("s_barrier\n\t");
+            __builtin_amdgcn_sched_barrier(0);
+        #undef LOAD_K_AND_QK_GEMM_512
+        } else {
         #define LOAD_K_AND_QK_GEMM(k)     \
         { \
             constexpr int k_val = (k);  \
@@ -378,6 +429,8 @@ __device__ void KernelTemplate_B_H_64<D_QK, HAVE_TOPK_LENGTH, IS_TOPK_2048>::dev
             __builtin_amdgcn_sched_barrier(0); 
             asm volatile("s_barrier\n\t");         
             __builtin_amdgcn_sched_barrier(0);  
+        }
+        #undef LOAD_K_AND_QK_GEMM
         }
         #else
         #define LOAD_K_AND_QK_GEMM(k)     \
@@ -710,6 +763,20 @@ __device__ void KernelTemplate_B_H_64<D_QK, HAVE_TOPK_LENGTH, IS_TOPK_2048>::dev
     float* gLSE = reinterpret_cast<float *>(params.lse) + row_offset_lse;
     // const index_t row_offset_lse = m_block * params.h_q;
     float* gMax_logits = reinterpret_cast<float *>(params.max_logits) + row_offset_lse;
+
+    float attn_sink_o_scale = 1.0f;
+    if constexpr (D_QK == 512 && HAVE_TOPK_LENGTH) {
+        if (params.attn_sink != nullptr) {
+            float rAttn_sink = __ldg((float*)params.attn_sink + bidh * kBlockM + lane_idx % 16 + warp_idx * 16);
+            if (flash::is_positive_infinity(rAttn_sink)) {
+                attn_sink_o_scale = 0.0f;
+            } else if (!flash::is_positive_infinity(lse(0))) {
+                float lse_exp2 = __builtin_amdgcn_exp2f(lse[0] * CUDART_L2E_F);
+                float rAttn_sink_exp2 = __builtin_amdgcn_exp2f(rAttn_sink * CUDART_L2E_F);
+                attn_sink_o_scale = lse_exp2 / (lse_exp2 + rAttn_sink_exp2);
+            }
+        }
+    }
     
     {
         // store O and gLSE
@@ -725,13 +792,13 @@ __device__ void KernelTemplate_B_H_64<D_QK, HAVE_TOPK_LENGTH, IS_TOPK_2048>::dev
                     #if defined(__gfx938__)
                     Bf16_storage res;
                     col = (lane_idx / 16) * 8 + ni * 32 ;
-                    res.data_32[0] =  __builtin_hcu_cvt_pk_bf16_f32(0, acco_f32[ni * 2][0], 0, acco_f32[ni * 2 + 1][0], 0);
+                    res.data_32[0] =  __builtin_hcu_cvt_pk_bf16_f32(0, acco_f32[ni * 2][0] * attn_sink_o_scale, 0, acco_f32[ni * 2 + 1][0] * attn_sink_o_scale, 0);
 
-                    res.data_32[1] =  __builtin_hcu_cvt_pk_bf16_f32(0, acco_f32[ni * 2][1], 0, acco_f32[ni * 2 + 1][1], 0);
+                    res.data_32[1] =  __builtin_hcu_cvt_pk_bf16_f32(0, acco_f32[ni * 2][1] * attn_sink_o_scale, 0, acco_f32[ni * 2 + 1][1] * attn_sink_o_scale, 0);
 
-                    res.data_32[2] =  __builtin_hcu_cvt_pk_bf16_f32(0, acco_f32[ni * 2][2], 0, acco_f32[ni * 2 + 1][2], 0);
+                    res.data_32[2] =  __builtin_hcu_cvt_pk_bf16_f32(0, acco_f32[ni * 2][2] * attn_sink_o_scale, 0, acco_f32[ni * 2 + 1][2] * attn_sink_o_scale, 0);
 
-                    res.data_32[3] =  __builtin_hcu_cvt_pk_bf16_f32(0, acco_f32[ni * 2][3], 0, acco_f32[ni * 2 + 1][3], 0);
+                    res.data_32[3] =  __builtin_hcu_cvt_pk_bf16_f32(0, acco_f32[ni * 2][3] * attn_sink_o_scale, 0, acco_f32[ni * 2 + 1][3] * attn_sink_o_scale, 0);
                     
                     *(__fp16x8_t*)(&gO(row, col)) = res.data_128;
 
@@ -742,8 +809,8 @@ __device__ void KernelTemplate_B_H_64<D_QK, HAVE_TOPK_LENGTH, IS_TOPK_2048>::dev
                     {
                         result_type res;
                         Element e0, e1;
-                        e0.storage = float2bf16(acco_f32[ni * 2][ei]);
-                        e1.storage = float2bf16(acco_f32[ni * 2 + 1][ei]);
+                        e0.storage = float2bf16(acco_f32[ni * 2][ei] * attn_sink_o_scale);
+                        e1.storage = float2bf16(acco_f32[ni * 2 + 1][ei] * attn_sink_o_scale);
                         res[0] = e0;
                         res[1] = e1;
                         // gO(row, col) = res[0];
@@ -1318,9 +1385,34 @@ void KernelTemplate_B_H_64<D_QK, HAVE_TOPK_LENGTH, IS_TOPK_2048>::run(const Spar
     KU_CHECK_KERNEL_LAUNCH();
 }
 
+class KernelTemplate_D512_H64_TopkLen_AttnSink {
+public:
+static constexpr int NUM_THREADS = KernelTemplate_B_H_64<512, true, false>::NUM_THREADS;
+
+static __device__ __forceinline__ void
+devfunc(const SparseAttnFwdParams &params) {
+    KernelTemplate_B_H_64<512, true, false>::devfunc(params);
+}
+
+static void run(const SparseAttnFwdParams &params) {
+    KU_ASSERT(params.h_kv == 1);
+    KU_ASSERT(params.topk > 0);
+    auto kernel = &sparse_attn_fwd_kernel<KernelTemplate_D512_H64_TopkLen_AttnSink>;
+    constexpr size_t smem_size = 16384 + 4096;
+    dim3 grid((params.h_q + 64 - 1) / 64, params.s_q, 1);
+    kernel<<<grid, NUM_THREADS, smem_size, params.stream>>>(params);
+    KU_CHECK_KERNEL_LAUNCH();
+}
+
+};
+
 template<int D_QK, bool HAVE_TOPK_LENGTH>
 void run_fwd_phase1_kernel(const SparseAttnFwdParams& params) {
-    if (params.h_q == 64 && !HAVE_TOPK_LENGTH && D_QK == 576 && !params.attn_sink)
+    if (D_QK == 512 && HAVE_TOPK_LENGTH && params.h_q == 64 && params.attn_sink)
+    {
+        KernelTemplate_D512_H64_TopkLen_AttnSink::run(params);
+    }
+    else if (params.h_q == 64 && !HAVE_TOPK_LENGTH && D_QK == 576 && !params.attn_sink)
     {
         if (params.topk == 2048)
         {
