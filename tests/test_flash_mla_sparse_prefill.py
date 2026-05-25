@@ -161,10 +161,11 @@ if __name__ == '__main__':
     ]
 
     performance_cases = [
-        TestParam(s_q, s_kv, topk, h_q=h_q, d_qk=d_qk, have_attn_sink=have_attn_sink)
+        TestParam(s_q, s_kv, topk, h_q=h_q, d_qk=d_qk, have_attn_sink=have_attn_sink, have_topk_length=have_topk_length)
         for (d_qk, h_q, topk, s_kv_list) in performance_case_templates
         for s_q in [4096]
         for have_attn_sink in [False, True]
+        for have_topk_length in [False, True]
         for s_kv in s_kv_list
     ]
 
