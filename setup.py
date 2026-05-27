@@ -124,7 +124,7 @@ ext_modules.append(
                 # "-mllvm -enable-num-vgprs-512=true",
                 # "-mllvm -allow-cse-cross-bb-convergent-call=true",
                 # "-mllvm -full-vectorize-slp=true",
-            ] + get_features_args() + get_arch_flags()
+            ] + get_features_args() + get_arch_flags() + aicc_flags
         },
         include_dirs=[
             Path(this_dir) / "csrc",
