@@ -642,17 +642,23 @@ __forceinline__ __device__ void compute_attn_1rowblock_splitkv_mla_fp8_gfx938(co
         lds_direct_copy_qkvfp8<false, true, true>(gQ, sQ, 0, params.q_row_stride, params.seqlen_q - m_block * kBlockM);                                                            
         lds_direct_copy_qkvfp8<false, true, true>(gQ, sQ, 1, params.q_row_stride, params.seqlen_q - m_block * kBlockM);                                                            
         lds_direct_copy_qkvfp8<false, false, true>(gQ, sQ, 2, params.q_row_stride, params.seqlen_q - m_block * kBlockM);  
+        __builtin_amdgcn_sched_barrier(0);
         asm volatile("s_waitcnt vmcnt(2) \n\t s_barrier\n\t");
+        __builtin_amdgcn_sched_barrier(0);
         cute::copy(smem_tiled_copy_Q, tSsQ(_, _, 0), tSrQ_copy_view(_, _, 0));
         cute::copy(smem_tiled_copy_Q, tSsQ(_, _, 1), tSrQ_copy_view(_, _, 1));
         cute::copy(smem_tiled_copy_Q, tSsQ(_, _, 2), tSrQ_copy_view(_, _, 2));
         cute::copy(smem_tiled_copy_Q, tSsQ(_, _, 3), tSrQ_copy_view(_, _, 3));
+        __builtin_amdgcn_sched_barrier(0);
         asm volatile("s_waitcnt vmcnt(1) \n\t s_barrier\n\t");
+        __builtin_amdgcn_sched_barrier(0);
         cute::copy(smem_tiled_copy_Q, tSsQ(_, _, 4), tSrQ_copy_view(_, _, 4));
         cute::copy(smem_tiled_copy_Q, tSsQ(_, _, 5), tSrQ_copy_view(_, _, 5));
         cute::copy(smem_tiled_copy_Q, tSsQ(_, _, 6), tSrQ_copy_view(_, _, 6));
         cute::copy(smem_tiled_copy_Q, tSsQ(_, _, 7), tSrQ_copy_view(_, _, 7));                                                                
+        __builtin_amdgcn_sched_barrier(0);
         asm volatile("s_waitcnt vmcnt(0) \n\t s_barrier\n\t");
+        __builtin_amdgcn_sched_barrier(0);
         cute::copy(smem_tiled_copy_Q, tSsQ(_, _, 8), tSrQ_copy_view(_, _, 8));
         __syncthreads(); 
     }
@@ -708,12 +714,14 @@ __forceinline__ __device__ void compute_attn_1rowblock_splitkv_mla_fp8_gfx938(co
                 const int offset_s = 0;
                 int ldsAddrPerWave = reinterpret_cast<size_t>(s_q) + warp_idx * bytes_per_warp + k_idx * bytes_per_block
                 + offset_k * 3 * bytes_per_block;
+                __builtin_amdgcn_sched_barrier(0);
                 asm volatile(
                     "s_mov_b32 m0, %1 \n\t"
                     "s_nop 0 \n\t"
                     "buffer_load_dwordx4 %0, %2, %3 ,offen  offset:0, lds \n" ::"v"(offset_v),
                     "s"(ldsAddrPerWave), "s"(global_addr), "s"(offset_s)
                 :);  
+                __builtin_amdgcn_sched_barrier(0);
             };
 
             lds_direct_copy_q(0, 0);
@@ -723,7 +731,9 @@ __forceinline__ __device__ void compute_attn_1rowblock_splitkv_mla_fp8_gfx938(co
             lds_direct_copy_q(2, 0);
             ElementQ* s_q_read_ptr = s_q + lane_idx * 8;
             Fp8_storage bf16_data;
+            __builtin_amdgcn_sched_barrier(0);
             asm volatile("s_waitcnt vmcnt(4) \n s_barrier"); 
+            __builtin_amdgcn_sched_barrier(0);
             float fp32[8];
             union Fp8_temp{
                 int32_t data;
@@ -747,7 +757,9 @@ __forceinline__ __device__ void compute_attn_1rowblock_splitkv_mla_fp8_gfx938(co
                 }
                 s_q_read_ptr += 16 * 32;
             }
+            __builtin_amdgcn_sched_barrier(0);
             asm volatile("s_waitcnt vmcnt(3) \n s_barrier"); 
+            __builtin_amdgcn_sched_barrier(0);
             for (int k = 4; k < 8; k++) {
                 bf16_data.data = *reinterpret_cast<intx4_t*>(s_q_read_ptr);
                 for (int i = 0; i < 4; i++) {
@@ -766,7 +778,9 @@ __forceinline__ __device__ void compute_attn_1rowblock_splitkv_mla_fp8_gfx938(co
                 }
                 s_q_read_ptr += 16 * 32;
             }
+            __builtin_amdgcn_sched_barrier(0);
             asm volatile("s_waitcnt vmcnt(2) \n s_barrier"); 
+            __builtin_amdgcn_sched_barrier(0);
             s_q_read_ptr = s_q + lane_idx * 8 + 3 * 4 * 16 * 4 * 8;
             for (int k = 0; k < 4; k++) {
                 bf16_data.data = *reinterpret_cast<intx4_t*>(s_q_read_ptr);
@@ -786,7 +800,9 @@ __forceinline__ __device__ void compute_attn_1rowblock_splitkv_mla_fp8_gfx938(co
                 }
                 s_q_read_ptr += 16 * 32;
             }
+            __builtin_amdgcn_sched_barrier(0);
             asm volatile("s_waitcnt vmcnt(1) \n s_barrier"); 
+            __builtin_amdgcn_sched_barrier(0);
             for (int k = 4; k < 8; k++) {
                 bf16_data.data = *reinterpret_cast<intx4_t*>(s_q_read_ptr);
                 for (int i = 0; i < 4; i++) {
@@ -805,7 +821,9 @@ __forceinline__ __device__ void compute_attn_1rowblock_splitkv_mla_fp8_gfx938(co
                 }
                 s_q_read_ptr += 16 * 32;
             }
+            __builtin_amdgcn_sched_barrier(0);
             asm volatile("s_waitcnt vmcnt(0) \n s_barrier"); 
+            __builtin_amdgcn_sched_barrier(0);
             s_q_read_ptr = s_q + lane_idx * 8 + 2 * 4 * 16 * 4 * 8;
             for (int k = 8; k < 9; k++) {
                 bf16_data.data = *reinterpret_cast<intx4_t*>(s_q_read_ptr);
@@ -848,17 +866,23 @@ __forceinline__ __device__ void compute_attn_1rowblock_splitkv_mla_fp8_gfx938(co
             lds_direct_copy_qkvfp8<false, true, true>(gQ_nope, sQ, 0, params.q_nope_head_stride, params.seqlen_q - m_block * kBlockM);                                                            
             lds_direct_copy_qkvfp8<false, true, true>(gQ_nope, sQ, 1, params.q_nope_head_stride, params.seqlen_q - m_block * kBlockM);                                                            
             lds_direct_copy_qkvfp8_pe<false, false, true>(gQ_pe, sQ, 2, params.q_pe_head_stride, params.seqlen_q - m_block * kBlockM);  
+            __builtin_amdgcn_sched_barrier(0);
             asm volatile("s_waitcnt vmcnt(2) \n\t s_barrier\n\t");
+            __builtin_amdgcn_sched_barrier(0);
             cute::copy(smem_tiled_copy_Q, tSsQ(_, _, 0), tSrQ_copy_view(_, _, 0));
             cute::copy(smem_tiled_copy_Q, tSsQ(_, _, 1), tSrQ_copy_view(_, _, 1));
             cute::copy(smem_tiled_copy_Q, tSsQ(_, _, 2), tSrQ_copy_view(_, _, 2));
             cute::copy(smem_tiled_copy_Q, tSsQ(_, _, 3), tSrQ_copy_view(_, _, 3));
+            __builtin_amdgcn_sched_barrier(0);
             asm volatile("s_waitcnt vmcnt(1) \n\t s_barrier\n\t");
+            __builtin_amdgcn_sched_barrier(0);
             cute::copy(smem_tiled_copy_Q, tSsQ(_, _, 4), tSrQ_copy_view(_, _, 4));
             cute::copy(smem_tiled_copy_Q, tSsQ(_, _, 5), tSrQ_copy_view(_, _, 5));
             cute::copy(smem_tiled_copy_Q, tSsQ(_, _, 6), tSrQ_copy_view(_, _, 6));
             cute::copy(smem_tiled_copy_Q, tSsQ(_, _, 7), tSrQ_copy_view(_, _, 7));                                                                
+            __builtin_amdgcn_sched_barrier(0);
             asm volatile("s_waitcnt vmcnt(0) \n\t s_barrier\n\t");
+            __builtin_amdgcn_sched_barrier(0);
             cute::copy(smem_tiled_copy_Q, tSsQ(_, _, 8), tSrQ_copy_view(_, _, 8));
             __syncthreads(); 
         }
@@ -968,7 +992,9 @@ __forceinline__ __device__ void compute_attn_1rowblock_splitkv_mla_fp8_gfx938(co
         for (int i = 0; i < 8; i++) {
             cute::gemm(tiled_mma, tSrQ(_, _, i), tSrK(_, _, i), acc_s);
         }
+        __builtin_amdgcn_sched_barrier(0);
         asm volatile("s_waitcnt lgkmcnt(0) \n\t s_barrier\n\t");
+        __builtin_amdgcn_sched_barrier(0);
         // if (thread0()) {
         //     printf(" %.2f %.2f %.2f %.2f \n", acc_s(0), acc_s(1), acc_s(2), acc_s(3));
         // }
@@ -1252,26 +1278,36 @@ __forceinline__ __device__ void compute_attn_1rowblock_splitkv_mla_fp8_gfx938_TP
     }
     auto q_lds_read_ptr = sQ.data().get() + (warp_id % 4) * 16 * 64;
 
+    __builtin_amdgcn_sched_barrier(0);
     asm volatile("s_waitcnt vmcnt(4) \n\t s_barrier\n\t");
+    __builtin_amdgcn_sched_barrier(0);
     q_r[0].data = __builtin_hcu_ds_read_matrix_trans_format_u8((__attribute__((address_space(3))) int*)(q_lds_read_ptr), 0, 3, 1, 0);
     // q_lds_read_ptr += 64 * 64;
     q_r[1].data = __builtin_hcu_ds_read_matrix_trans_format_u8((__attribute__((address_space(3))) int*)(q_lds_read_ptr), 64*64, 3, 1, 0);
+    __builtin_amdgcn_sched_barrier(0);
     asm volatile("s_waitcnt vmcnt(3) \n\t s_barrier\n\t");
+    __builtin_amdgcn_sched_barrier(0);
     // q_lds_read_ptr += 64 * 64;
     q_r[2].data = __builtin_hcu_ds_read_matrix_trans_format_u8((__attribute__((address_space(3))) int*)(q_lds_read_ptr), 2*64*64, 3, 1, 0);
     // q_lds_read_ptr += 64 * 64;
     q_r[3].data = __builtin_hcu_ds_read_matrix_trans_format_u8((__attribute__((address_space(3))) int*)(q_lds_read_ptr), 3*64*64, 3, 1, 0);
+    __builtin_amdgcn_sched_barrier(0);
     asm volatile("s_waitcnt vmcnt(2) \n\t s_barrier\n\t");
+    __builtin_amdgcn_sched_barrier(0);
     // q_lds_read_ptr += 64 * 64;
     q_r[4].data = __builtin_hcu_ds_read_matrix_trans_format_u8((__attribute__((address_space(3))) int*)(q_lds_read_ptr), 4*64*64, 3, 1, 0);
     // q_lds_read_ptr += 64 * 64;
     q_r[5].data = __builtin_hcu_ds_read_matrix_trans_format_u8((__attribute__((address_space(3))) int*)(q_lds_read_ptr), 5*64*64, 3, 1, 0);    
+    __builtin_amdgcn_sched_barrier(0);
     asm volatile("s_waitcnt vmcnt(1) \n\t s_barrier\n\t");
+    __builtin_amdgcn_sched_barrier(0);
     // q_lds_read_ptr += 64 * 64;
     q_r[6].data = __builtin_hcu_ds_read_matrix_trans_format_u8((__attribute__((address_space(3))) int*)(q_lds_read_ptr), 6*64*64, 3, 1, 0);
     // q_lds_read_ptr += 64 * 64;
     q_r[7].data = __builtin_hcu_ds_read_matrix_trans_format_u8((__attribute__((address_space(3))) int*)(q_lds_read_ptr), 7*64*64, 3, 1, 0);    
+    __builtin_amdgcn_sched_barrier(0);
     asm volatile("s_waitcnt vmcnt(0) \n\t s_barrier\n\t");
+    __builtin_amdgcn_sched_barrier(0);
     // q_lds_read_ptr += 64 * 64;
     q_r[8].data = __builtin_hcu_ds_read_matrix_trans_format_u8((__attribute__((address_space(3))) int*)(q_lds_read_ptr), 8*64*64, 3, 1, 0);
     __syncthreads();
@@ -1939,7 +1975,9 @@ __forceinline__ __device__ void compute_attn_1rowblock_splitkv_mla_fp8_gfx938_TP
     lds_direct_copy_qkvfp8_q_tp4<false, true>(gQ, sQ, 2, params.q_row_stride, params.seqlen_q - m_block * kBlockM);
     lds_direct_copy_qkvfp8_q_tp4<false, true>(gQ, sQ, 3, params.q_row_stride, params.seqlen_q - m_block * kBlockM);
     lds_direct_copy_qkvfp8_q_tp4<false, false>(gQ, sQ, 4, params.q_row_stride, params.seqlen_q - m_block * kBlockM);
+    __builtin_amdgcn_sched_barrier(0);
     asm volatile("s_waitcnt vmcnt(4) \n\t s_barrier\n\t");
+    __builtin_amdgcn_sched_barrier(0);
     uint8_t* q_lds_read_ptr = reinterpret_cast<uint8_t*>(sQ.data().get()) + (tidx % 64) * 16 + (warp_id % 2) * (16 * 64);
     {
         int k = 0;
@@ -1961,7 +1999,9 @@ __forceinline__ __device__ void compute_attn_1rowblock_splitkv_mla_fp8_gfx938_TP
         // tSrQ_ptr = reinterpret_cast<intx4_t*>(&(tSrQ(0, 0, k + 1)));
         // *tSrQ_ptr = *reinterpret_cast<intx4_t*>(q_lds_read_ptr);
     }     
+    __builtin_amdgcn_sched_barrier(0);
     asm volatile("s_waitcnt vmcnt(3) \n\t s_barrier\n\t");
+    __builtin_amdgcn_sched_barrier(0);
     {
         q_lds_read_ptr += 32*64;
         int k = 2;
@@ -1984,7 +2024,9 @@ __forceinline__ __device__ void compute_attn_1rowblock_splitkv_mla_fp8_gfx938_TP
         // tSrQ_ptr = reinterpret_cast<intx4_t*>(&(tSrQ(0, 0, k + 1)));
         // *tSrQ_ptr = *reinterpret_cast<intx4_t*>(q_lds_read_ptr);
     }     
+    __builtin_amdgcn_sched_barrier(0);
     asm volatile("s_waitcnt vmcnt(2) \n\t s_barrier\n\t");
+    __builtin_amdgcn_sched_barrier(0);
     {
         q_lds_read_ptr += 32*64;
         int k = 4;
@@ -2007,7 +2049,9 @@ __forceinline__ __device__ void compute_attn_1rowblock_splitkv_mla_fp8_gfx938_TP
         // tSrQ_ptr = reinterpret_cast<intx4_t*>(&(tSrQ(0, 0, k + 1)));
         // *tSrQ_ptr = *reinterpret_cast<intx4_t*>(q_lds_read_ptr);
     }     
+    __builtin_amdgcn_sched_barrier(0);
     asm volatile("s_waitcnt vmcnt(1) \n\t s_barrier\n\t");
+    __builtin_amdgcn_sched_barrier(0);
     {
         q_lds_read_ptr += 32*64;
         int k = 6;
@@ -2030,7 +2074,9 @@ __forceinline__ __device__ void compute_attn_1rowblock_splitkv_mla_fp8_gfx938_TP
         // tSrQ_ptr = reinterpret_cast<intx4_t*>(&(tSrQ(0, 0, k + 1)));
         // *tSrQ_ptr = *reinterpret_cast<intx4_t*>(q_lds_read_ptr);
     }     
+    __builtin_amdgcn_sched_barrier(0);
     asm volatile("s_waitcnt vmcnt(0) \n\t s_barrier\n\t");
+    __builtin_amdgcn_sched_barrier(0);
     {
         q_lds_read_ptr += 32*64;
         int k = 8;
@@ -2092,10 +2138,12 @@ __forceinline__ __device__ void compute_attn_1rowblock_splitkv_mla_fp8_gfx938_TP
         int cur_block_table;
         const int *cur_block_table_ptr = block_table + n_block;
         // cur_block_table = block_table[n_block - 1];
+        __builtin_amdgcn_sched_barrier(0);
         asm volatile("s_load_dword %1, %0, 0x0\n\t"
                     "s_waitcnt lgkmcnt(0)\n\t":
                     "+s"(cur_block_table_ptr),
             "=s"(cur_block_table));
+        __builtin_amdgcn_sched_barrier(0);
         index_t offset_k = cur_block_table * params.k_batch_stride;
         gK.data() = gK.data() + (offset_k);    
         lds_direct_copy_qkvfp8<false, true>(gK, sK, 0, params.k_row_stride, seqlen_k - n_block * kBlockN);
@@ -2107,31 +2155,49 @@ __forceinline__ __device__ void compute_attn_1rowblock_splitkv_mla_fp8_gfx938_TP
         lds_direct_copy_qkvfp8<false, true>(gK, sK, 6, params.k_row_stride, seqlen_k - n_block * kBlockN);
         lds_direct_copy_qkvfp8<false, true>(gK, sK, 7, params.k_row_stride, seqlen_k - n_block * kBlockN);
         lds_direct_copy_qkvfp8<false, true>(gK, sK, 8, params.k_row_stride, seqlen_k - n_block * kBlockN);
+        __builtin_amdgcn_sched_barrier(0);
         asm volatile("s_waitcnt vmcnt(8) \n\t s_barrier\n\t");
+        __builtin_amdgcn_sched_barrier(0);
         cute::copy(smem_tiled_copy_K, tSsK(_, _, 0), tSrK_copy_view(_, _, 0));
         cute::gemm(tiled_mma, tSrQ(_, _, 0), tSrK(_, _, 0), acc_s);
+        __builtin_amdgcn_sched_barrier(0);
         asm volatile("s_waitcnt vmcnt(7) \n\t s_barrier\n\t");
+        __builtin_amdgcn_sched_barrier(0);
         cute::copy(smem_tiled_copy_K, tSsK(_, _, 1), tSrK_copy_view(_, _, 1));
         cute::gemm(tiled_mma, tSrQ(_, _, 1), tSrK(_, _, 1), acc_s);
+        __builtin_amdgcn_sched_barrier(0);
         asm volatile("s_waitcnt vmcnt(6) \n\t s_barrier\n\t");
+        __builtin_amdgcn_sched_barrier(0);
         cute::copy(smem_tiled_copy_K, tSsK(_, _, 2), tSrK_copy_view(_, _, 2));
         cute::gemm(tiled_mma, tSrQ(_, _, 2), tSrK(_, _, 2), acc_s);
+        __builtin_amdgcn_sched_barrier(0);
         asm volatile("s_waitcnt vmcnt(5) \n\t s_barrier\n\t");
+        __builtin_amdgcn_sched_barrier(0);
         cute::copy(smem_tiled_copy_K, tSsK(_, _, 3), tSrK_copy_view(_, _, 3));
         cute::gemm(tiled_mma, tSrQ(_, _, 3), tSrK(_, _, 3), acc_s);
+        __builtin_amdgcn_sched_barrier(0);
         asm volatile("s_waitcnt vmcnt(4) \n\t s_barrier\n\t");
+        __builtin_amdgcn_sched_barrier(0);
         cute::copy(smem_tiled_copy_K, tSsK(_, _, 4), tSrK_copy_view(_, _, 4));
         cute::gemm(tiled_mma, tSrQ(_, _, 4), tSrK(_, _, 4), acc_s);
+        __builtin_amdgcn_sched_barrier(0);
         asm volatile("s_waitcnt vmcnt(3) \n\t s_barrier\n\t");
+        __builtin_amdgcn_sched_barrier(0);
         cute::copy(smem_tiled_copy_K, tSsK(_, _, 5), tSrK_copy_view(_, _, 5));
         cute::gemm(tiled_mma, tSrQ(_, _, 5), tSrK(_, _, 5), acc_s);
+        __builtin_amdgcn_sched_barrier(0);
         asm volatile("s_waitcnt vmcnt(2) \n\t s_barrier\n\t");
+        __builtin_amdgcn_sched_barrier(0);
         cute::copy(smem_tiled_copy_K, tSsK(_, _, 6), tSrK_copy_view(_, _, 6));
         cute::gemm(tiled_mma, tSrQ(_, _, 6), tSrK(_, _, 6), acc_s);
+        __builtin_amdgcn_sched_barrier(0);
         asm volatile("s_waitcnt vmcnt(1) \n\t s_barrier\n\t");
+        __builtin_amdgcn_sched_barrier(0);
         cute::copy(smem_tiled_copy_K, tSsK(_, _, 7), tSrK_copy_view(_, _, 7));
         cute::gemm(tiled_mma, tSrQ(_, _, 7), tSrK(_, _, 7), acc_s);
+        __builtin_amdgcn_sched_barrier(0);
         asm volatile("s_waitcnt vmcnt(0) \n\t s_barrier\n\t");
+        __builtin_amdgcn_sched_barrier(0);
         cute::copy(smem_tiled_copy_K, tSsK(_, _, 8), tSrK_copy_view(_, _, 8));
         cute::gemm(tiled_mma, tSrQ(_, _, 8), tSrK(_, _, 8), acc_s);
         gK.data() = gK.data() + (-offset_k);
