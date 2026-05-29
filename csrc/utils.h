@@ -33,11 +33,9 @@
 
 #define FLASH_DEVICE_ASSERT(cond)                                                                         \
     do {                                                                                                  \
-        if (not (cond)) {       
-            __builtin_amdgcn_sched_barrier(0);                                                                          \
+        if (not (cond)) {                                                                                 \
             printf("Assertion failed (%s:%d): %s\n", __FILE__, __LINE__, #cond);                          \
-            asm volatile("s_trap 0 \n\t");   
-            __builtin_amdgcn_sched_barrier(0);                                                                              \
+            asm volatile("s_trap 0 \n\t");                                                                                 \
         }                                                                                                 \
     } while(0)
 
