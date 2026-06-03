@@ -289,6 +289,17 @@ sparse_attn_decode_interface(
     }
 
     DecodeImplMeta impl_meta = impl->get_meta(h_q, s_q);
+    bool force_no_split_kv = false;
+    if (const char* val = std::getenv("FLASH_MLA_SPARSE_DECODE_DISABLE_SPLITKV")) {
+        force_no_split_kv = (std::string(val) == "1");
+    }
+    constexpr int max_sched_meta_smem_size = 64 * 1024;
+    bool sched_meta_smem_overflow = sizeof(int) * (static_cast<int64_t>(b) * 5 + 1) > max_sched_meta_smem_size;
+    bool use_no_split_kv = force_no_split_kv || sched_meta_smem_overflow;
+    if (use_no_split_kv) {
+        constexpr int max_grid_z = 65535;
+        impl_meta.num_sm_parts = std::min(b, max_grid_z);
+    }
 
     SparseAttnDecodeParams params = {
         b, s_q, h_q, h_kv, d_qk, d_v,
@@ -344,7 +355,11 @@ sparse_attn_decode_interface(
             impl_meta.num_sm_parts,
             at::cuda::getCurrentCUDAStream().stream()
         };
-        gfx9::decode::run_get_decoding_sched_meta_kernel(get_sched_meta_params);
+        if (use_no_split_kv) {
+            gfx9::decode::run_get_decoding_sched_meta_no_split_kernel(get_sched_meta_params);
+        } else {
+            gfx9::decode::run_get_decoding_sched_meta_kernel(get_sched_meta_params);
+        }
     }
     // Stick the metadata pointers to `params`
     KU_CHECK_DEVICE(tile_scheduler_metadata);
@@ -359,43 +374,55 @@ sparse_attn_decode_interface(
     params.num_splits_ptr = num_splits->data_ptr<int>();
     params.num_sm_parts = impl_meta.num_sm_parts;
 
-    // Allocate intermediate buffers for split-KV
-    const int total_num_splits = b + impl_meta.num_sm_parts;
-    lse_accum = torch::empty({total_num_splits, s_q, h_q}, opts.dtype(at::kFloat));
-    o_accum = torch::empty({total_num_splits, s_q, h_q, d_v}, opts.dtype(at::kFloat));
-    KU_CHECK_CONTIGUOUS(lse_accum);
-    KU_CHECK_CONTIGUOUS(o_accum);
-    params.lse_accum = lse_accum.data_ptr<float>();
-    params.o_accum = o_accum.data_ptr<float>();
-    params.stride_lse_accum_split = int64_stride_to_int(lse_accum.stride(0));
-    params.stride_lse_accum_s_q = int64_stride_to_int(lse_accum.stride(1));
-    params.stride_o_accum_split = int64_stride_to_int(o_accum.stride(0));
-    params.stride_o_accum_s_q = int64_stride_to_int(o_accum.stride(1));
-    params.stride_o_accum_h_q = int64_stride_to_int(o_accum.stride(2));
+    if (!use_no_split_kv) {
+        // Allocate intermediate buffers for split-KV
+        const int total_num_splits = b + impl_meta.num_sm_parts;
+        lse_accum = torch::empty({total_num_splits, s_q, h_q}, opts.dtype(at::kFloat));
+        o_accum = torch::empty({total_num_splits, s_q, h_q, d_v}, opts.dtype(at::kFloat));
+        KU_CHECK_CONTIGUOUS(lse_accum);
+        KU_CHECK_CONTIGUOUS(o_accum);
+        params.lse_accum = lse_accum.data_ptr<float>();
+        params.o_accum = o_accum.data_ptr<float>();
+        params.stride_lse_accum_split = int64_stride_to_int(lse_accum.stride(0));
+        params.stride_lse_accum_s_q = int64_stride_to_int(lse_accum.stride(1));
+        params.stride_o_accum_split = int64_stride_to_int(o_accum.stride(0));
+        params.stride_o_accum_s_q = int64_stride_to_int(o_accum.stride(1));
+        params.stride_o_accum_h_q = int64_stride_to_int(o_accum.stride(2));
+    } else {
+        params.lse_accum = nullptr;
+        params.o_accum = nullptr;
+        params.stride_lse_accum_split = 0;
+        params.stride_lse_accum_s_q = 0;
+        params.stride_o_accum_split = 0;
+        params.stride_o_accum_s_q = 0;
+        params.stride_o_accum_h_q = 0;
+    }
 
     impl->run(params, features);
     
-    CombineParams combine_params = {
-        b, s_q, h_q, d_v,
+    if (!use_no_split_kv) {
+        CombineParams combine_params = {
+            b, s_q, h_q, d_v,
 
-        params.lse,
-        params.out,
-        params.stride_lse_b, params.stride_lse_s_q,
-        params.stride_o_b, params.stride_o_s_q, params.stride_o_h_q,
+            params.lse,
+            params.out,
+            params.stride_lse_b, params.stride_lse_s_q,
+            params.stride_o_b, params.stride_o_s_q, params.stride_o_h_q,
 
-        params.lse_accum,
-        params.o_accum,
-        params.stride_lse_accum_split, params.stride_lse_accum_s_q,
-        params.stride_o_accum_split, params.stride_o_accum_s_q, params.stride_o_accum_h_q,
+            params.lse_accum,
+            params.o_accum,
+            params.stride_lse_accum_split, params.stride_lse_accum_s_q,
+            params.stride_o_accum_split, params.stride_o_accum_s_q, params.stride_o_accum_h_q,
 
-        params.tile_scheduler_metadata_ptr,
-        params.num_splits_ptr,
-        params.num_sm_parts,
+            params.tile_scheduler_metadata_ptr,
+            params.num_splits_ptr,
+            params.num_sm_parts,
 
-        ku::get_optional_tensor_ptr<float>(attn_sink),
-        at::cuda::getCurrentCUDAStream().stream()
-    };
-    gfx9::decode::run_flash_mla_combine_kernel<bf16>(combine_params);
+            ku::get_optional_tensor_ptr<float>(attn_sink),
+            at::cuda::getCurrentCUDAStream().stream()
+        };
+        gfx9::decode::run_flash_mla_combine_kernel<bf16>(combine_params);
+    }
 
     delete impl;
 
