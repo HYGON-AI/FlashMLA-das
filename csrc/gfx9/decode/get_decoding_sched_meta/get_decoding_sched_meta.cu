@@ -1,5 +1,6 @@
 #include "get_decoding_sched_meta.h"
 
+#include <algorithm>
 #include <cuda_runtime_api.h>
 #include <cutlass/fast_math.h>
 #include <kerutils/kerutils.cuh>
@@ -105,9 +106,63 @@ get_mla_metadata_kernel(const GetDecodeSchedMetaParams params) {
     }
 }
 
+__global__ void __launch_bounds__(256, 1)
+get_mla_metadata_no_split_kernel(const GetDecodeSchedMetaParams params) {
+    DecodingSchedMeta *tile_scheduler_metadata_ptr = params.tile_scheduler_metadata_ptr;
+    int *num_splits_ptr = params.num_splits_ptr;
+    int batch_size = params.b;
+    int block_size_n = params.block_size_n;
+    int num_sm_parts = params.num_sm_parts;
+
+    for (int part_idx = blockIdx.x * blockDim.x + threadIdx.x;
+         part_idx < num_sm_parts;
+         part_idx += blockDim.x * gridDim.x) {
+        int begin_req_idx = (static_cast<int64_t>(part_idx) * batch_size) / num_sm_parts;
+        int end_req_idx_exclusive = (static_cast<int64_t>(part_idx + 1) * batch_size) / num_sm_parts;
+
+        DecodingSchedMeta cur_meta;
+        cur_meta.begin_req_idx = begin_req_idx;
+        cur_meta.end_req_idx = end_req_idx_exclusive - 1;
+        cur_meta.begin_block_idx = 0;
+        cur_meta.begin_split_idx = 0;
+        cur_meta.is_first_req_splitted = 0;
+        cur_meta.is_last_req_splitted = 0;
+        cur_meta._pad[0] = 0;
+
+        int cur_s_k = 0;
+        if (begin_req_idx < end_req_idx_exclusive) {
+            if (params.topk == -1) {
+                cur_s_k = __ldg(params.seqlens_k_ptr + cur_meta.end_req_idx);
+            } else {
+                cur_s_k = params.topk_length ? __ldg(params.topk_length + cur_meta.end_req_idx) : params.topk;
+                if (cur_s_k == 0) cur_s_k = 1;
+                if (params.extra_topk) {
+                    cur_s_k = ku::ceil(cur_s_k, block_size_n);
+                    cur_s_k += params.extra_topk_length ? __ldg(params.extra_topk_length + cur_meta.end_req_idx) : params.extra_topk;
+                }
+            }
+        }
+        cur_meta.end_block_idx = cutlass::ceil_div(cur_s_k, block_size_n);
+        tile_scheduler_metadata_ptr[part_idx] = cur_meta;
+    }
+
+    for (int i = blockIdx.x * blockDim.x + threadIdx.x;
+         i <= batch_size;
+         i += blockDim.x * gridDim.x) {
+        num_splits_ptr[i] = i;
+    }
+}
+
 void run_get_decoding_sched_meta_kernel(GetDecodeSchedMetaParams &params) {
-    int smem_size = sizeof(int) * (params.b*5+1);
+    int smem_size = sizeof(int) * (static_cast<int64_t>(params.b) * 5 + 1);
     get_mla_metadata_kernel<<<1, 64, smem_size, params.stream>>>(params);
+    CHECK_CUDA_KERNEL_LAUNCH();
+}
+
+void run_get_decoding_sched_meta_no_split_kernel(GetDecodeSchedMetaParams &params) {
+    int grid = cutlass::ceil_div(std::max(params.num_sm_parts, params.b + 1), 256);
+    grid = std::min(grid, 1024);
+    get_mla_metadata_no_split_kernel<<<grid, 256, 0, params.stream>>>(params);
     CHECK_CUDA_KERNEL_LAUNCH();
 }
 
