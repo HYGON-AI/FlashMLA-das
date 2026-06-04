@@ -78,6 +78,10 @@ git submodule update --init --recursive
 pip install -v .
 ```
 
+The CUTLASS dependency is pinned as `csrc/cutlass/cutlass_3.2.1` on branch
+`feature/16x64-mmac`. If the submodule is missing, `setup.py` will try to
+initialize it before compiling.
+
 ## Usage
 
 ### MLA Decoding

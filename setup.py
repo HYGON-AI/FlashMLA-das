@@ -38,10 +38,21 @@ def get_arch_flags():
 #     # nvcc_threads = os.getenv("NVCC_THREADS") or "32"
 #     return ["--threads", nvcc_threads]
 
-# subprocess.run(["git", "submodule", "update", "--init", "csrc/cutlass"])
-
 this_dir = os.path.dirname(os.path.abspath(__file__))
 os.environ['PYTORCH_NVCC'] = 'aicc'
+
+cutlass_dir = Path(this_dir) / "csrc" / "cutlass" / "cutlass_3.2.1"
+if not (cutlass_dir / "include").exists():
+    subprocess.run(
+        ["git", "submodule", "update", "--init", "--recursive", "csrc/cutlass/cutlass_3.2.1"],
+        cwd=this_dir,
+        check=True,
+    )
+if not (cutlass_dir / "include").exists():
+    raise RuntimeError(
+        "CUTLASS dependency is missing. Run "
+        "`git submodule update --init --recursive csrc/cutlass/cutlass_3.2.1` first."
+    )
 
 if False:
     cxx_args = ["/O2", "/std:c++20", "/DNDEBUG", "/W0"]
