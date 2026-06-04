@@ -151,7 +151,10 @@ def flash_mla_with_kvcache(
     if topk is not None:
         # Sparse attention
         assert not causal, "causal must be False when sparse attention is enabled"
-        assert is_fp8_kvcache, "is_fp8_kvcache must be True when sparse attention is enabled"
+        if not is_fp8_kvcache:
+            assert k_cache.dtype == torch.bfloat16, "BF16 sparse attention requires k_cache dtype to be torch.bfloat16 when is_fp8_kvcache is False"
+            if extra_k_cache is not None:
+                assert extra_k_cache.dtype == torch.bfloat16, "BF16 sparse attention requires extra_k_cache dtype to be torch.bfloat16 when is_fp8_kvcache is False"
         out, lse, new_tile_scheduler_metadata, new_num_splits = flash_mla_cuda.sparse_decode_fwd(
             q, k_cache, indices_in_kvcache, topk_length, attn_sink,
             sched_meta.tile_scheduler_metadata, sched_meta.num_splits,

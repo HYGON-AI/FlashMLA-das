@@ -6,6 +6,7 @@
 #include "params.h"
 
 #include "gfx93/decode/sparse_fp8/splitkv_mla.h"
+#include "gfx93/decode/sparse_bf16_dsa/fwd.h"
 #include "gfx9/decode/get_decoding_sched_meta/get_decoding_sched_meta.h"
 #include "gfx9/decode/combine/combine.h"
 
@@ -122,6 +123,14 @@ sparse_attn_decode_interface(
     bool have_extra_kcache = extra_kv.has_value();
     bool have_extra_topk_length = extra_topk_length.has_value();
     bool have_attn_sink = attn_sink.has_value();
+
+    if (kv.dtype() == torch::kBFloat16) {
+        return gfx93::decode::sparse_bf16_dsa::run(
+            q, kv, indices, topk_length, attn_sink,
+            tile_scheduler_metadata, num_splits,
+            extra_kv, extra_indices, extra_topk_length,
+            d_v, sm_scale);
+    }
 
     int extra_num_blocks = 0, extra_page_block_size = 0, extra_topk = 0;
     if (have_extra_kcache) {

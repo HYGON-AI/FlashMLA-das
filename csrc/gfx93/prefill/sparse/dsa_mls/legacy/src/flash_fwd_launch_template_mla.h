@@ -37,6 +37,7 @@ void run_mla_splitkv_reduce(Params &params, hipStream_t stream) {
     reduce_params.num_splits      = params.num_splits;
     reduce_params.partition_size  = params.partition_size;
     reduce_params.h               = params.h;
+    reduce_params.ngroups         = params.ngroups;
     reduce_params.seqlen_q        = params.seqlen_q;
     reduce_params.layout          = params.layout;
     reduce_params.topk_length     = params.topk_length;
@@ -556,11 +557,14 @@ void run_mla_fwd_dispatch_dsa_prefill_nopage_64(Flash_fwd_mla_params_dsa &params
         dimGrid.z = params.b;
 
         constexpr bool IsEvenMNConst = false;
+        const bool has_extra = params.extra_sparse_indices != nullptr && params.extra_topk > 0;
         if(params.num_splits == 1){
             BOOL_SWITCH(params.mtp > 1/* is_mtp */, Is_MTP, [&] {
                 BOOL_SWITCH(params.is_causal, Is_causal, [&] {
-                        flash::flash_fwd_mla_decode_kernel_gfx938_dsa_nopage_64<Kernel_traits, true/*Is_training*/, Is_dropout, false/* Is_prefix | flashmla */,Is_causal, IsEvenMNConst, /*Is_even_K*/true, /*Return_softmax*/false, Is_MTP, 0, Flash_fwd_mla_params_dsa>
+                    BOOL_SWITCH(has_extra, Has_extra, [&] {
+                        flash::flash_fwd_mla_decode_kernel_gfx938_dsa_nopage_64<Kernel_traits, true/*Is_training*/, Is_dropout, false/* Is_prefix | flashmla */,Is_causal, IsEvenMNConst, /*Is_even_K*/true, /*Return_softmax*/false, Is_MTP, 0, Has_extra, Flash_fwd_mla_params_dsa>
                                     <<<dimGrid, dimBlock, 21 * 1024, stream>>>(params);
+                    });
                 });
             });
         }
@@ -570,8 +574,10 @@ void run_mla_fwd_dispatch_dsa_prefill_nopage_64(Flash_fwd_mla_params_dsa &params
             dimGrid.z = params.b;
             BOOL_SWITCH(params.mtp > 1/* is_mtp */, Is_MTP, [&] {
                 BOOL_SWITCH(params.is_causal, Is_causal, [&] {
-                        flash::flash_fwd_mla_decode_kernel_gfx938_dsa_nopage_64_splitkv<Kernel_traits, true/*Is_training*/, Is_dropout, false/* Is_prefix | flashmla */,Is_causal, IsEvenMNConst, /*Is_even_K*/true, /*Return_softmax*/false, Is_MTP, 0, Flash_fwd_mla_params_dsa>
+                    BOOL_SWITCH(has_extra, Has_extra, [&] {
+                        flash::flash_fwd_mla_decode_kernel_gfx938_dsa_nopage_64_splitkv<Kernel_traits, true/*Is_training*/, Is_dropout, false/* Is_prefix | flashmla */,Is_causal, IsEvenMNConst, /*Is_even_K*/true, /*Return_softmax*/false, Is_MTP, 0, Has_extra, Flash_fwd_mla_params_dsa>
                                     <<<dimGrid, dimBlock, 21 * 1024, stream>>>(params);
+                    });
                 });
             });
             run_mla_splitkv_reduce<Kernel_traits, false/*Tail*/>(params, stream);

@@ -450,6 +450,7 @@ struct Flash_fwd_mla_reduce_params {
     int num_splits;
     int partition_size;
     int h;
+    int ngroups;
     int seqlen_q;
     int layout;
     float* attn_sink;

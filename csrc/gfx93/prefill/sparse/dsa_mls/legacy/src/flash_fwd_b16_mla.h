@@ -2503,24 +2503,8 @@ __forceinline__ __device__ void flash_fwd_mla_decode_kernel_gfx938_dsa_prefill_n
         /**************************************************************************************************************************************/
         constexpr bool Is_Interleave = true;
         int lane_id = threadIdx.x & 63;
-        #pragma unroll
-        for (int mi = 0; mi < WARP_M / 16; ++mi) {
-            if (real_topk == 0) {
-                lse[mi].f32[0] = __builtin_inff();
-            }
-        }
         if (params.softmax_lse_ptr != nullptr) {
             prefill_mla_epilogue_store_lse<WARP_M, Is_even_MN, false/*SplitD*/, Is_Interleave, ElementAccum, vec_Accum<ElementAccum>, 1/* M_MMAC_COUNT */>(lse, params.softmax_lse_ptr, row_offset_lse, warp_id, lane_id, 0, actual_seqlen_q - m_block * kBlockM);
-        }
-        if (params.scores_max_ptr != nullptr) {
-            float* scores_max_ptr = params.scores_max_ptr + row_offset_lse;
-            const bool write_scores_max = (lane_id >> 4) == 0;
-            if (write_scores_max) {
-                const int row = warp_id * WARP_M + (lane_id & 15);
-                if (row < actual_seqlen_q - m_block * kBlockM) {
-                    scores_max_ptr[row] = scores_max[0].f32[0] * params.scale_softmax;
-                }
-            }
         }
         /**************************************************************************************************************************************/
         Element* o_ptr = reinterpret_cast<Element *>(params.o_ptr) + row_offset_o;
@@ -2539,7 +2523,7 @@ __global__ void __launch_bounds__(256, 1) flash_fwd_mla_decode_kernel_gfx938_dsa
     flash_fwd_mla_decode_kernel_gfx938_dsa_prefill_nopage_64_impl<Kernel_traits, Is_training, Is_dropout, Is_prefix, Is_causal, Is_even_MN, Is_even_K, Return_softmax, Is_MTP, Layout, false, Params>(params);
 }
 
-template<typename Kernel_traits, bool Is_training, bool Is_dropout, bool Is_prefix, bool Is_causal, bool Is_even_MN, bool Is_even_K, bool Return_softmax, bool Is_MTP, int Layout, typename Params>
+template<typename Kernel_traits, bool Is_training, bool Is_dropout, bool Is_prefix, bool Is_causal, bool Is_even_MN, bool Is_even_K, bool Return_softmax, bool Is_MTP, int Layout, bool Has_extra, typename Params>
 __global__ void __launch_bounds__(256, 1) flash_fwd_mla_decode_kernel_gfx938_dsa_nopage_64(const Params params) {
 #if defined(__gfx938__)
     using Element           = typename Kernel_traits::Element;
@@ -2576,7 +2560,7 @@ __global__ void __launch_bounds__(256, 1) flash_fwd_mla_decode_kernel_gfx938_dsa
         const int warp_offset_in_seq_q = m_block * kBlockM + warp_id * WARP_M;
         const int warp_seqq_limit      = Is_even_MN ? 0: actual_seqlen_q - m_block * kBlockM;
 
-        const bool has_extra = params.extra_sparse_indices != nullptr && params.extra_topk > 0;
+        constexpr bool has_extra = Has_extra;
         // 分配 lds Q/P same place, K/V same place;
         // extern __shared__ Element smem[];
         // int* index_lds = (int *)&(smem);
@@ -2588,7 +2572,7 @@ __global__ void __launch_bounds__(256, 1) flash_fwd_mla_decode_kernel_gfx938_dsa
         Element* k_lds = q_lds; // 16KB
         Element* v_lds = q_lds;  
         int* index_lds = (int *)(q_lds + 8 * 1024);
-        int* extra_index_lds = (int *)(index_lds + 1024);
+        int* extra_index_lds = (int *)(index_lds + 256);
         // int* sIndices = (int *)(q_lds + 8192); 
         // 计算当前任务沿着 seqlenKV 方向的 block 起始位置和终止位置
         
@@ -2601,7 +2585,7 @@ __global__ void __launch_bounds__(256, 1) flash_fwd_mla_decode_kernel_gfx938_dsa
         int extra_topk_length = params.extra_topk_length ? params.extra_topk_length[bidb] : params.extra_topk;
 
         int main_num_blocks = ceil_div(main_topk_length, kBlockN);
-        int extra_num_blocks = has_extra ? ceil_div(extra_topk_length, kBlockN) : 0;
+        int extra_num_blocks = Has_extra ? ceil_div(extra_topk_length, kBlockN) : 0;
 
         // 计算数据跨度
         int seqlen_q_stride = params.q_head_stride;
@@ -2619,12 +2603,13 @@ __global__ void __launch_bounds__(256, 1) flash_fwd_mla_decode_kernel_gfx938_dsa
             + bidb * params.sparse_indices_batch_stride
             + query_idx * params.sparse_indices_row_stride
             + (q_head_start / params.ngroups) * params.sparse_indices_head_stride;
-        int* extra_index_ptr = has_extra
-            ? params.extra_sparse_indices
+        int* extra_index_ptr = nullptr;
+        if constexpr (Has_extra) {
+            extra_index_ptr = params.extra_sparse_indices
                 + bidb * params.extra_sparse_indices_batch_stride
                 + query_idx * params.extra_sparse_indices_row_stride
-                + (q_head_start / params.ngroups) * params.extra_sparse_indices_head_stride
-            : nullptr;
+                + (q_head_start / params.ngroups) * params.extra_sparse_indices_head_stride;
+        }
         // const int block_table_idx = 0;
         // const int block_table_offset = 0;
 
@@ -2645,43 +2630,50 @@ __global__ void __launch_bounds__(256, 1) flash_fwd_mla_decode_kernel_gfx938_dsa
             qv_ptr = prepare_for_matrix_load<kHeadDim>(reinterpret_cast<Element*>(params.qv_ptr) + row_offset_qv);
         auto k_ptr = prepare_for_matrix_load<kHeadDim>(reinterpret_cast<Element*>(params.k_ptr) + row_offset_k);
         auto k_ptr_buffer = tcp_cache_swizzle_func<64, Element>(reinterpret_cast<Element*>(params.k_ptr) + row_offset_k);
-        auto extra_k_ptr_buffer = has_extra ? tcp_cache_swizzle_func<64, Element>(reinterpret_cast<Element*>(params.extra_k_ptr)) : k_ptr_buffer;
+        auto extra_k_ptr_buffer = tcp_cache_swizzle_func<64, Element>(reinterpret_cast<Element*>(Has_extra ? params.extra_k_ptr : params.k_ptr));
         auto v_ptr = prepare_for_matrix_load<kHeadDimV>(reinterpret_cast<Element*>(params.v_ptr) + row_offset_v);
         auto v_ptr_buffer = tcp_cache_swizzle_func<64, Element>(reinterpret_cast<Element*>(params.v_ptr) + row_offset_v);
-        auto extra_v_ptr_buffer = has_extra ? tcp_cache_swizzle_func<64, Element>(reinterpret_cast<Element*>(params.extra_v_ptr)) : v_ptr_buffer;
+        auto extra_v_ptr_buffer = tcp_cache_swizzle_func<64, Element>(reinterpret_cast<Element*>(Has_extra ? params.extra_v_ptr : params.v_ptr));
         auto index_ptr_buffer = tcp_cache_swizzle_func<0, int>(reinterpret_cast<int*>(index_ptr));
         int tid = threadIdx.x % 64;
-        if (has_extra) {
+        if constexpr (Has_extra) {
             auto extra_index_ptr_buffer = tcp_cache_swizzle_func<0, int>(extra_index_ptr);
-            int lds_offset = __builtin_amdgcn_readfirstlane(warp_id * 64);
-            int g_offset_v = tid;
-            int g_offset_s = warp_id * 64;
-            inline_buffer_load_dword_lds(extra_index_lds, extra_index_ptr_buffer, lds_offset, g_offset_s, g_offset_v);
+            int lds_offset = __builtin_amdgcn_readfirstlane(warp_id * 4 * 64);
+            int g_offset_v = tid * 4;
+            int g_offset_s = warp_id * 256;
+            inline_buffer_load_dwordx4_lds(extra_index_lds, extra_index_ptr_buffer, lds_offset, g_offset_s, g_offset_v);
         }
         auto k_faker = reinterpret_cast<Element*>(params.k_ptr) + row_offset_k;
         auto v_faker = reinterpret_cast<Element*>(params.v_ptr) + row_offset_v;
         // apply causal mask 的步骤和 no causal mask 的步骤分开算
         constexpr int n_masking_steps = 1;
 
-        int lds_offset = __builtin_amdgcn_readfirstlane(warp_id * 4 * 64);
-        int g_offset_v = tid * 4;
-        int g_offset_s = warp_id * 256;
-        inline_buffer_load_dwordx4_lds(index_lds, index_ptr_buffer, lds_offset, g_offset_s, g_offset_v);
+        int lds_offset = __builtin_amdgcn_readfirstlane(Has_extra ? warp_id * 64 : warp_id * 4 * 64);
+        int g_offset_v = Has_extra ? tid : tid * 4;
+        int g_offset_s = Has_extra ? warp_id * 64 : warp_id * 256;
+        if constexpr (Has_extra) {
+            inline_buffer_load_dword_lds(index_lds, index_ptr_buffer, lds_offset, g_offset_s, g_offset_v);
+        } else {
+            inline_buffer_load_dwordx4_lds(index_lds, index_ptr_buffer, lds_offset, g_offset_s, g_offset_v);
+        }
 
         flash::wait_buffer_data_arrived<true>(0);
         flash::wait_all_warp_arrived();
 
         #pragma unroll
         for (int i = 0; i < 4; ++i) {
-            const int local_index = warp_id * 256 + tid * 4 + i;
+            const int local_index = Has_extra ? warp_id * 64 + tid : warp_id * 256 + tid * 4 + i;
             if (local_index >= main_topk_length) {
                 index_lds[local_index] = main_topk_length > 0 ? index_lds[main_topk_length - 1] : -1;
             }
         }
-        if (has_extra) {
-            const int local_index = warp_id * 64 + tid;
-            if (local_index >= extra_topk_length) {
-                extra_index_lds[local_index] = extra_topk_length > 0 ? extra_index_lds[extra_topk_length - 1] : -1;
+        if constexpr (Has_extra) {
+            #pragma unroll
+            for (int i = 0; i < 4; ++i) {
+                const int local_index = warp_id * 256 + tid * 4 + i;
+                if (local_index >= extra_topk_length) {
+                    extra_index_lds[local_index] = extra_topk_length > 0 ? extra_index_lds[extra_topk_length - 1] : -1;
+                }
             }
         }
         flash::wait_all_warp_arrived();
@@ -2862,7 +2854,7 @@ __global__ void __launch_bounds__(256, 1) flash_fwd_mla_decode_kernel_gfx938_dsa
 #endif
 }
 
-template<typename Kernel_traits, bool Is_training, bool Is_dropout, bool Is_prefix, bool Is_causal, bool Is_even_MN, bool Is_even_K, bool Return_softmax, bool Is_MTP, int Layout, typename Params>
+template<typename Kernel_traits, bool Is_training, bool Is_dropout, bool Is_prefix, bool Is_causal, bool Is_even_MN, bool Is_even_K, bool Return_softmax, bool Is_MTP, int Layout, bool Has_extra, typename Params>
 __global__ void __launch_bounds__(256, 1) flash_fwd_mla_decode_kernel_gfx938_dsa_nopage_64_splitkv(const Params params) {
 #if defined(__gfx938__)
     using Element           = typename Kernel_traits::Element;
@@ -2899,7 +2891,7 @@ __global__ void __launch_bounds__(256, 1) flash_fwd_mla_decode_kernel_gfx938_dsa
         const int warp_offset_in_seq_q = m_block * kBlockM + warp_id * WARP_M;
         const int warp_seqq_limit      = Is_even_MN ? 0: actual_seqlen_q - m_block * kBlockM;
 
-        const bool has_extra = params.extra_sparse_indices != nullptr && params.extra_topk > 0;
+        constexpr bool has_extra = Has_extra;
         // 分配 lds Q/P same place, K/V same place;
         // extern __shared__ Element smem[];
         // int* index_lds = (int *)&(smem);
@@ -2911,7 +2903,7 @@ __global__ void __launch_bounds__(256, 1) flash_fwd_mla_decode_kernel_gfx938_dsa
         Element* k_lds = q_lds; // 16KB
         Element* v_lds = q_lds;  
         int* index_lds = (int *)(q_lds + 8 * 1024);
-        int* extra_index_lds = (int *)(index_lds + 1024);
+        int* extra_index_lds = (int *)(index_lds + 256);
         // int* sIndices = (int *)(q_lds + 8192); 
         // 计算当前任务沿着 seqlenKV 方向的 block 起始位置和终止位置
         int split_id = blockIdx.y;
@@ -2925,7 +2917,7 @@ __global__ void __launch_bounds__(256, 1) flash_fwd_mla_decode_kernel_gfx938_dsa
         int extra_topk_length = params.extra_topk_length ? params.extra_topk_length[bidb] : params.extra_topk;
 
         int main_num_blocks = ceil_div(main_topk_length, kBlockN);
-        int extra_num_blocks = params.extra_sparse_indices ? ceil_div(extra_topk_length, kBlockN) : 0;
+        int extra_num_blocks = Has_extra ? ceil_div(extra_topk_length, kBlockN) : 0;
         int total_num_blocks = main_num_blocks + extra_num_blocks;
 
         int blocks_per_split = ceil_div(params.partition_size, kBlockN);
@@ -2949,12 +2941,13 @@ __global__ void __launch_bounds__(256, 1) flash_fwd_mla_decode_kernel_gfx938_dsa
             + bidb * params.sparse_indices_batch_stride
             + query_idx * params.sparse_indices_row_stride
             + (q_head_start / params.ngroups) * params.sparse_indices_head_stride;
-        int* extra_index_ptr = has_extra
-            ? params.extra_sparse_indices
+        int* extra_index_ptr = nullptr;
+        if constexpr (Has_extra) {
+            extra_index_ptr = params.extra_sparse_indices
                 + bidb * params.extra_sparse_indices_batch_stride
                 + query_idx * params.extra_sparse_indices_row_stride
-                + (q_head_start / params.ngroups) * params.extra_sparse_indices_head_stride
-            : nullptr;
+                + (q_head_start / params.ngroups) * params.extra_sparse_indices_head_stride;
+        }
         // const int block_table_idx = 0;
         // const int block_table_offset = 0;
 
@@ -2963,6 +2956,11 @@ __global__ void __launch_bounds__(256, 1) flash_fwd_mla_decode_kernel_gfx938_dsa
         row_offset_v   = 0;
         row_offset_o   = bidb * int64_t(params.o_batch_stride) + query_idx * int64_t(params.o_row_stride) + q_head_start * int64_t(params.o_head_stride);
         row_offset_lse = bidb * params.seqlen_q + m_block * kBlockM;
+        const int64_t split_block_base = int64_t(bidb) * params.h * params.seqlen_q + m_block * kBlockM;
+        const int64_t split_accum_row_offset = int64_t(split_id) * params.b * params.h * params.seqlen_q * kHeadDimV
+            + split_block_base * kHeadDimV;
+        const int64_t split_lse_row_offset = int64_t(split_id) * params.b * params.h * params.seqlen_q
+            + split_block_base;
 
         // row_offset_k = bidb * int64_t(params.k_batch_stride) + block_table_offset * params.k_row_stride + (bidh / params.h_h_k_ratio) * params.k_head_stride;
         // row_offset_v = bidb * int64_t(params.v_batch_stride) + block_table_offset * params.v_row_stride + (bidh / params.h_h_k_ratio) * params.v_head_stride;
@@ -2975,42 +2973,49 @@ __global__ void __launch_bounds__(256, 1) flash_fwd_mla_decode_kernel_gfx938_dsa
             qv_ptr = prepare_for_matrix_load<kHeadDim>(reinterpret_cast<Element*>(params.qv_ptr) + row_offset_qv);
         auto k_ptr = prepare_for_matrix_load<kHeadDim>(reinterpret_cast<Element*>(params.k_ptr) + row_offset_k);
         auto k_ptr_buffer = tcp_cache_swizzle_func<64, Element>(reinterpret_cast<Element*>(params.k_ptr) + row_offset_k);
-        auto extra_k_ptr_buffer = has_extra ? tcp_cache_swizzle_func<64, Element>(reinterpret_cast<Element*>(params.extra_k_ptr)) : k_ptr_buffer;
+        auto extra_k_ptr_buffer = tcp_cache_swizzle_func<64, Element>(reinterpret_cast<Element*>(Has_extra ? params.extra_k_ptr : params.k_ptr));
         auto v_ptr = prepare_for_matrix_load<kHeadDimV>(reinterpret_cast<Element*>(params.v_ptr) + row_offset_v);
         auto v_ptr_buffer = tcp_cache_swizzle_func<64, Element>(reinterpret_cast<Element*>(params.v_ptr) + row_offset_v);
-        auto extra_v_ptr_buffer = has_extra ? tcp_cache_swizzle_func<64, Element>(reinterpret_cast<Element*>(params.extra_v_ptr)) : v_ptr_buffer;
+        auto extra_v_ptr_buffer = tcp_cache_swizzle_func<64, Element>(reinterpret_cast<Element*>(Has_extra ? params.extra_v_ptr : params.v_ptr));
         auto index_ptr_buffer = tcp_cache_swizzle_func<0, int>(reinterpret_cast<int*>(index_ptr));
         int tid = threadIdx.x % 64;
-        if (has_extra) {
+        if constexpr (Has_extra) {
             auto extra_index_ptr_buffer = tcp_cache_swizzle_func<0, int>(extra_index_ptr);
-            int lds_offset = __builtin_amdgcn_readfirstlane(warp_id * 64);
-            int g_offset_v = tid;
-            int g_offset_s = warp_id * 64;
-            inline_buffer_load_dword_lds(extra_index_lds, extra_index_ptr_buffer, lds_offset, g_offset_s, g_offset_v);
+            int lds_offset = __builtin_amdgcn_readfirstlane(warp_id * 4 * 64);
+            int g_offset_v = tid * 4;
+            int g_offset_s = warp_id * 256;
+            inline_buffer_load_dwordx4_lds(extra_index_lds, extra_index_ptr_buffer, lds_offset, g_offset_s, g_offset_v);
         }
         auto k_faker = reinterpret_cast<Element*>(params.k_ptr) + row_offset_k;
         auto v_faker = reinterpret_cast<Element*>(params.v_ptr) + row_offset_v;
         // apply causal mask 的步骤和 no causal mask 的步骤分开算
         constexpr int n_masking_steps = 1;
 
-        int lds_offset = __builtin_amdgcn_readfirstlane(warp_id * 4 * 64);
-        int g_offset_v = tid * 4;
-        int g_offset_s = warp_id * 256;
-        inline_buffer_load_dwordx4_lds(index_lds, index_ptr_buffer, lds_offset, g_offset_s, g_offset_v);
+        int lds_offset = __builtin_amdgcn_readfirstlane(Has_extra ? warp_id * 64 : warp_id * 4 * 64);
+        int g_offset_v = Has_extra ? tid : tid * 4;
+        int g_offset_s = Has_extra ? warp_id * 64 : warp_id * 256;
+        if constexpr (Has_extra) {
+            inline_buffer_load_dword_lds(index_lds, index_ptr_buffer, lds_offset, g_offset_s, g_offset_v);
+        } else {
+            inline_buffer_load_dwordx4_lds(index_lds, index_ptr_buffer, lds_offset, g_offset_s, g_offset_v);
+        }
         flash::wait_buffer_data_arrived<true>(0);
         flash::wait_all_warp_arrived();
 
         #pragma unroll
         for (int i = 0; i < 4; ++i) {
-            const int local_index = warp_id * 256 + tid * 4 + i;
+            const int local_index = Has_extra ? warp_id * 64 + tid : warp_id * 256 + tid * 4 + i;
             if (local_index >= main_topk_length) {
                 index_lds[local_index] = main_topk_length > 0 ? index_lds[main_topk_length - 1] : -1;
             }
         }
-        if (has_extra) {
-            const int local_index = warp_id * 64 + tid;
-            if (local_index >= extra_topk_length) {
-                extra_index_lds[local_index] = extra_topk_length > 0 ? extra_index_lds[extra_topk_length - 1] : -1;
+        if constexpr (Has_extra) {
+            #pragma unroll
+            for (int i = 0; i < 4; ++i) {
+                const int local_index = warp_id * 256 + tid * 4 + i;
+                if (local_index >= extra_topk_length) {
+                    extra_index_lds[local_index] = extra_topk_length > 0 ? extra_index_lds[extra_topk_length - 1] : -1;
+                }
             }
         }
         flash::wait_all_warp_arrived();
@@ -3070,7 +3075,7 @@ __global__ void __launch_bounds__(256, 1) flash_fwd_mla_decode_kernel_gfx938_dsa
         auto PV_GEMM_FUNC_IN_MASK = &pv_gemm_prefetch_k_mls_ds_576_512_nopage_64_new_999<false, kHeadDim, kHeadDimV, kBlockM, 256, kBlockN, WARP_M, 256, STAGES, Element, ElementAccum, Is_even_MN>;
  
         for (int logical_block = n_block_min; logical_block < n_block_max; ++logical_block) {
-            bool is_extra = logical_block >= main_num_blocks;
+            bool is_extra = Has_extra && logical_block >= main_num_blocks;
             int rel_block = is_extra ? logical_block - main_num_blocks : logical_block;
             int cur_topk_length = is_extra ? extra_topk_length : main_topk_length;
             int* cur_index_lds = is_extra ? extra_index_lds : index_lds;
@@ -3191,11 +3196,11 @@ __global__ void __launch_bounds__(256, 1) flash_fwd_mla_decode_kernel_gfx938_dsa
         constexpr bool Is_Interleave = true;
         int lane_id = threadIdx.x & 63;
         if (params.softmax_lse_ptr != nullptr) {
-            prefill_mla_epilogue_store_lse<WARP_M, Is_even_MN, false/*SplitD*/, Is_Interleave, ElementAccum, vec_Accum<ElementAccum>, 1/* M_MMAC_COUNT */>(lse, params.softmax_lse_ptr, row_offset_lse, warp_id, lane_id, 0, actual_block_m);
+            prefill_mla_epilogue_store_lse<WARP_M, Is_even_MN, false/*SplitD*/, Is_Interleave, ElementAccum, vec_Accum<ElementAccum>, 1/* M_MMAC_COUNT */>(lse, params.softmax_lse_ptr, split_lse_row_offset, warp_id, lane_id, 0, actual_block_m);
         }
         /**************************************************************************************************************************************/
-        Element* o_ptr = reinterpret_cast<Element *>(params.oaccum_ptr) + row_offset_o;
-        prefill_mla_epilogue_store_output<kHeadDimV, kBlockM, kBlockK, WARP_M, Is_even_MN, Is_Interleave, false/*TcpSwizzle*/, Element, ElementAccum, 1/* M_MMAC_COUNT */>(o_ptr, acc_o, 0, warp_id, lane_id, seqlen_o_stride, actual_block_m);
+        Element* o_ptr = reinterpret_cast<Element *>(params.oaccum_ptr) + split_accum_row_offset;
+        prefill_mla_epilogue_store_output<kHeadDimV, kBlockM, kBlockK, WARP_M, Is_even_MN, Is_Interleave, false/*TcpSwizzle*/, Element, ElementAccum, 1/* M_MMAC_COUNT */>(o_ptr, acc_o, 0, warp_id, lane_id, kHeadDimV, actual_block_m);
     }
 #endif
 }
