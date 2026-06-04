@@ -100,6 +100,7 @@ ext_modules.append(
             "csrc/gfx93/prefill/sparse/instantiations/phase1_k512_topklen.cu",
             "csrc/gfx93/prefill/sparse/instantiations/phase1_k576.cu",
             "csrc/gfx93/prefill/sparse/instantiations/phase1_k576_topklen.cu",
+            "csrc/gfx93/prefill/sparse/dsa_mls/fwd.cu",
 
             "csrc/extension/flash_fwd_mla_bf16_gfx936.cu",
             "csrc/extension/flash_fwd_mla_fp16_gfx936.cu",
@@ -130,7 +131,8 @@ ext_modules.append(
             Path(this_dir) / "csrc",
             Path(this_dir) / "csrc" / "kerutils" / "include",   # TODO Remove me
             Path(this_dir) / "csrc" / "gfx93",
-            Path(this_dir) / "csrc" / "cutlass" / "include",
+            Path(this_dir) / "csrc" / "cutlass" / "cutlass_3.2.1" / "include",
+            Path(this_dir) / "csrc" / "gfx93" / "prefill" / "sparse" / "dsa_mls" / "legacy" / "include",
         ],
     )
 )
@@ -167,4 +169,3 @@ setup(
     cmdclass={"build_ext": BuildExtension},
     install_requires=[pytorch_dep],
 )
-

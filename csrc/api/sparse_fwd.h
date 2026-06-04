@@ -1,9 +1,12 @@
 #pragma once
 
+#include <cstdlib>
+
 #include "common.h"
 
 #include "params.h"
 
+#include "gfx93/prefill/sparse/dsa_mls/fwd.h"
 #include "gfx93/prefill/sparse/phase1.h"
 
 
@@ -39,6 +42,12 @@ class Fwd_Sm90_Impl : public FwdImplBase {
 
 protected:
     void run_(const SparseAttnFwdParams &params, const std::vector<FeatureT> &required_features) override {
+        if ((std::getenv("FLASH_MLA_FORCE_DSA_MLS_PREFILL") != nullptr && gfx93::fwd::dsa_mls::can_run(params)) ||
+            gfx93::fwd::dsa_mls::should_run(params)) {
+            gfx93::fwd::dsa_mls::run(params);
+            return;
+        }
+
         DISPATCH_HEAD_DIM(params.d_qk, HEAD_DIM_QK, [&]() {
             DISPATCH_BOOLEAN_FLAG(params.topk_length != nullptr, HAVE_TOPK_LENGTH, [&]() {
                 gfx93::fwd::run_fwd_phase1_kernel<HEAD_DIM_QK, HAVE_TOPK_LENGTH>(params);
