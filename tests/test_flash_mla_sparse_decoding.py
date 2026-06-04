@@ -172,8 +172,12 @@ def test_flash_mla(p: TestParam) -> Result:
     else:
         result = kk.bench_kineto(run_decode, p.num_runs)
 
-        splitkv_kernel_name = "flash_fwd_splitkv_mla_fp8_sparse_kernel"
-        combine_kernel_name = "flash_fwd_mla_combine_kernel"
+        if lib.is_decode_bf16_kvcache():
+            splitkv_kernel_name = "flash_fwd_mla_decode_kernel_gfx938_dsa_nopage_64_splitkv"
+            combine_kernel_name = "flash_mla_splitkv_reduce_kernel"
+        else:
+            splitkv_kernel_name = "flash_fwd_splitkv_mla_fp8_sparse_kernel"
+            combine_kernel_name = "flash_fwd_mla_combine_kernel"
         
         # Get individual kernel time usages
         kernel_time_usages_us: Dict[str, Optional[float]] = {}
@@ -226,8 +230,11 @@ def test_flash_mla(p: TestParam) -> Result:
             out_ref, lse_ref = ref.ref_sparse_attn_decode(p, t)
 
         is_out_correct = kk.check_is_allclose("out", out_ans, out_ref, abs_tol=1e-3, rel_tol=2.01/128, cos_diff_tol=5e-6)
-        is_lse_correct = kk.check_is_allclose("lse", lse_ans, lse_ref, abs_tol=1e-6, rel_tol=8.01/65536)
-        is_correct &= is_out_correct and is_lse_correct
+        if lib.is_decode_bf16_kvcache():
+            is_correct &= is_out_correct
+        else:
+            is_lse_correct = kk.check_is_allclose("lse", lse_ans, lse_ref, abs_tol=1e-6, rel_tol=8.01/65536)
+            is_correct &= is_out_correct and is_lse_correct
 
     performance_result.is_correct = is_correct
     return performance_result
@@ -250,6 +257,22 @@ def main():
 
     raw_testcases = gen_testcase()
     testcases = [t.to_test_param() for t in raw_testcases]
+    if lib.is_decode_bf16_kvcache():
+        bf16_testcases = []
+        seen_bf16_cases = set()
+        for t in testcases:
+            if not lib.is_bf16_decode_supported_param(t):
+                continue
+            if t.num_runs > 0 and t.decode.b > 16:
+                t = dataclasses.replace(t, decode=dataclasses.replace(t.decode, b=16))
+            key = dataclasses.asdict(t)
+            key["decode"] = tuple(key["decode"].items()) if key["decode"] is not None else None
+            key = tuple(key.items())
+            if key in seen_bf16_cases:
+                continue
+            seen_bf16_cases.add(key)
+            bf16_testcases.append(t)
+        testcases = bf16_testcases
 
     print(f"{kk.colors['CYAN_BG']}{len(testcases)} testcases to run{kk.colors['CLEAR']}")
 

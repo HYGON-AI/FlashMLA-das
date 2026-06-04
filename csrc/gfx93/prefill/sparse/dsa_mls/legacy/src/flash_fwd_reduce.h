@@ -1,6 +1,7 @@
 #pragma once
 #include "numeric_types.h"
 #include "splitkv.h"
+#include "intrinsic.h"
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -29,7 +30,7 @@ __global__ void flash_fwd_splitkv_reduce_kernel(
 
     // compute partition_size when fix num_splits
     int partition_size = params.partition_size > MLA_MAX_SPLITS ? splitkv_get_partitionsize_of_fix_numsplits(actual_seqlen_k, params.num_splits): params.partition_size;
-    const int true_num_splits = Tail ? max(1, floor_div(actual_seqlen_k, partition_size)): ceil_div(actual_seqlen_k, partition_size);
+    const int true_num_splits = Tail ? max(1, flash::floor_div(actual_seqlen_k, partition_size)): flash::ceil_div(actual_seqlen_k, partition_size);
     // const int true_num_splits = num_splits;
 
     bool exceed_split = (tx >= true_num_splits); // process boundary
@@ -40,7 +41,7 @@ __global__ void flash_fwd_splitkv_reduce_kernel(
     float s_max_tmp = s_max_load_ori;
     #pragma unroll
     for (int step = SPLIT_COUNT >> 1; step > 0; step = (step >> 1)) {
-        s_max_tmp = max(s_max_tmp, __shfl_xor_tmp(s_max_tmp, step));
+        s_max_tmp = max(s_max_tmp, flash::__shfl_xor_tmp(s_max_tmp, step));
     }
     // compute rescale coefficient for max (numerator)
     float s_max_ratio = __expf(s_max_load_ori - s_max_tmp);
@@ -50,7 +51,7 @@ __global__ void flash_fwd_splitkv_reduce_kernel(
     float s_sum_tmp = s_sum_load_ori * s_max_ratio;
     #pragma unroll
     for (int step = SPLIT_COUNT >> 1; step > 0; step = (step >> 1)) {
-        s_sum_tmp = s_sum_tmp + __shfl_xor_tmp(s_sum_tmp, step);
+        s_sum_tmp = s_sum_tmp + flash::__shfl_xor_tmp(s_sum_tmp, step);
     }
 
     // max-rescale coefficient x sum-rescale coefficient
@@ -81,18 +82,18 @@ __global__ void flash_fwd_splitkv_reduce_kernel(
                 // read ultimate scale value for current split
                 vec2_Element<accumType> load = *(vec2_Element<accumType>*)(oaccum_ptr + tx_offset + t);
                 // half -> float32, reduce precision loss
-                float a_f32 = within_splits? splitkv_upcast_to_f32<accumType>(load[0]): 0.f;
-                float b_f32 = within_splits? splitkv_upcast_to_f32<accumType>(load[1]): 0.f;
+                float a_f32 = within_splits? flash::splitkv_upcast_to_f32<accumType>(load[0]): 0.f;
+                float b_f32 = within_splits? flash::splitkv_upcast_to_f32<accumType>(load[1]): 0.f;
                 // do rescale and sum
-                tx_accum[t]     = __llvm_fma_f32(a_f32, s_scale, tx_accum[t]);
-                tx_accum[t + 1] = __llvm_fma_f32(b_f32, s_scale, tx_accum[t + 1]);
+                tx_accum[t]     = flash::__llvm_fma_f32(a_f32, s_scale, tx_accum[t]);
+                tx_accum[t + 1] = flash::__llvm_fma_f32(b_f32, s_scale, tx_accum[t + 1]);
             } else if constexpr (kHeadDim == 64) {
                 // read ultimate scale value for current split
                 accumType load  = *(accumType*)(oaccum_ptr + tx_offset + t);
                 // half -> float32, reduce precision loss
-                float load_f32  = within_splits? splitkv_upcast_to_f32<accumType>(load): 0.f;
+                float load_f32  = within_splits? flash::splitkv_upcast_to_f32<accumType>(load): 0.f;
                 // do rescale and sum
-                tx_accum[t]     = __llvm_fma_f32(load_f32, s_scale, tx_accum[t]);
+                tx_accum[t]     = flash::__llvm_fma_f32(load_f32, s_scale, tx_accum[t]);
             }
         }
         // switch to next split
@@ -103,14 +104,14 @@ __global__ void flash_fwd_splitkv_reduce_kernel(
         if constexpr (kHeadDim % 128 == 0) {
             vec2_Element<reduceType> accum_result;
             #if defined(__gfx938__) || defined(__gfx946__) || defined(__gfx92a__)
-                accum_result = DownCastPairNoPack<float, reduceType>(tx_accum[t], tx_accum[t + 1]);
+                accum_result = flash::DownCastPairNoPack<float, reduceType>(tx_accum[t], tx_accum[t + 1]);
             #else
-                accum_result[0] = DownCast<float, reduceType, true>(tx_accum[t]);
-                accum_result[1] = DownCast<float, reduceType, true>(tx_accum[t + 1]); // here, v_cvt_pkrtz can be used
+                accum_result[0] = flash::DownCast<float, reduceType, true>(tx_accum[t]);
+                accum_result[1] = flash::DownCast<float, reduceType, true>(tx_accum[t + 1]); // here, v_cvt_pkrtz can be used
             #endif
             *(vec2_Element<reduceType>*)(output_ptr + t) = accum_result;
         } else if constexpr (kHeadDim == 64) {
-            reduceType accum_result = DownCast<float, reduceType, false>(tx_accum[t]);
+            reduceType accum_result = flash::DownCast<float, reduceType, false>(tx_accum[t]);
             output_ptr[t] = accum_result;
         }
     }
@@ -146,7 +147,7 @@ __global__ void flash_fwd_splitkv_reduce_kernel_split128(Params params) {
     }
     // compute partition_size when fix num_splits
     int partition_size = params.partition_size > MLA_MAX_SPLITS ? splitkv_get_partitionsize_of_fix_numsplits(actual_seqlen_k, params.num_splits): params.partition_size;
-    const int true_num_splits = Tail ? max(1, floor_div(actual_seqlen_k, partition_size)): ceil_div(actual_seqlen_k, partition_size);
+    const int true_num_splits = Tail ? max(1, flash::floor_div(actual_seqlen_k, partition_size)): flash::ceil_div(actual_seqlen_k, partition_size);
     // const int true_num_splits = num_splits;
 
     bool exceed_split = (tx >= true_num_splits); // process boundary
@@ -157,7 +158,7 @@ __global__ void flash_fwd_splitkv_reduce_kernel_split128(Params params) {
     float s_max_tmp = s_max_load_ori;
     #pragma unroll
     for (int step = 64 >> 1; step > 0; step = (step >> 1)) {
-        s_max_tmp = max(s_max_tmp, __shfl_xor_tmp(s_max_tmp, step));
+        s_max_tmp = max(s_max_tmp, flash::__shfl_xor_tmp(s_max_tmp, step));
     }
     // for multiple waves, store the reduced max value to lds individually, and recompute max across multiple waves
     int wave_id = (tx >> 6);
@@ -181,7 +182,7 @@ __global__ void flash_fwd_splitkv_reduce_kernel_split128(Params params) {
     float s_sum_tmp = s_sum_load_ori * s_max_ratio;
     #pragma unroll
     for (int step = 64 >> 1; step > 0; step = (step >> 1)) {
-        s_sum_tmp = s_sum_tmp + __shfl_xor_tmp(s_sum_tmp, step);
+        s_sum_tmp = s_sum_tmp + flash::__shfl_xor_tmp(s_sum_tmp, step);
     }
     // for multiple wave, store the reduced sum value to lds individually, and recompute sum across multiple waves
     lds[LDS_ACCUM + wave_id] = s_sum_tmp;
@@ -230,18 +231,18 @@ __global__ void flash_fwd_splitkv_reduce_kernel_split128(Params params) {
                 // read 2 halfs from current split of this threads
                 vec2_Element<accumType> load = *(vec2_Element<accumType>*)(oaccum_ptr + tx_offset + t);
                 // half -> float32, reduce precision loss
-                float a_f32 = within_splits? splitkv_upcast_to_f32<accumType>(load[0]): 0.f;
-                float b_f32 = within_splits? splitkv_upcast_to_f32<accumType>(load[1]): 0.f;
+                float a_f32 = within_splits? flash::splitkv_upcast_to_f32<accumType>(load[0]): 0.f;
+                float b_f32 = within_splits? flash::splitkv_upcast_to_f32<accumType>(load[1]): 0.f;
                 // do rescale and sum
-                tx_accum[t]     = __llvm_fma_f32(a_f32, s_scale, tx_accum[t]);
-                tx_accum[t + 1] = __llvm_fma_f32(b_f32, s_scale, tx_accum[t + 1]);
+                tx_accum[t]     = flash::__llvm_fma_f32(a_f32, s_scale, tx_accum[t]);
+                tx_accum[t + 1] = flash::__llvm_fma_f32(b_f32, s_scale, tx_accum[t + 1]);
             } else if constexpr (kHeadDim == 64) {
                 // read 1 half from current split of this threads
                 accumType load = *(accumType*)(oaccum_ptr + tx_offset + t);
                 // half -> float32, reduce precision loss
-                float load_f32 = within_splits? splitkv_upcast_to_f32<accumType>(load): 0.f;
+                float load_f32 = within_splits? flash::splitkv_upcast_to_f32<accumType>(load): 0.f;
                 // do rescale and sum
-                tx_accum[t]     = __llvm_fma_f32(load_f32, s_scale, tx_accum[t]);
+                tx_accum[t]     = flash::__llvm_fma_f32(load_f32, s_scale, tx_accum[t]);
             }
         }
         // switch to next split
@@ -290,15 +291,15 @@ __global__ void flash_fwd_splitkv_reduce_kernel_split128(Params params) {
                 tx_accum[t + 1] = lds[tx * tx_float_count + t + 1];
                 vec2_Element<reduceType> accum_result;
                 #if defined(__gfx938__) || defined(__gfx946__) || defined(__gfx92a__)
-                    accum_result = DownCastPairNoPack<float, reduceType>(tx_accum[t], tx_accum[t + 1]);
+                    accum_result = flash::DownCastPairNoPack<float, reduceType>(tx_accum[t], tx_accum[t + 1]);
                 #else
-                    accum_result[0] = DownCast<float, reduceType, true>(tx_accum[t]);
-                    accum_result[1] = DownCast<float, reduceType, true>(tx_accum[t + 1]); // here, v_cvt_pkrtz can be used
+                    accum_result[0] = flash::DownCast<float, reduceType, true>(tx_accum[t]);
+                    accum_result[1] = flash::DownCast<float, reduceType, true>(tx_accum[t + 1]); // here, v_cvt_pkrtz can be used
                 #endif
                 *(vec2_Element<reduceType>*)(output_ptr + t) = accum_result;
             } else if constexpr (kHeadDim == 64) {
                 tx_accum[t]  = lds[tx * tx_float_count + t];
-                reduceType accum_result = DownCast<float, reduceType, false>(tx_accum[t]);
+                reduceType accum_result = flash::DownCast<float, reduceType, false>(tx_accum[t]);
                 *(reduceType*)(output_ptr + t) = accum_result;
             }
         }
@@ -341,7 +342,7 @@ __global__ void __launch_bounds__(256, 1) flash_fwd_splitkv_reduce_varlen_kernel
 
     // compute partition_size when fix num_splits
     int partition_size = splitkv_get_partitionsize_of_fix_numsplits(actual_seqlen_k, params.num_splits);
-    const int true_num_splits = Tail ? max(1, floor_div(actual_seqlen_k, partition_size)): ceil_div(actual_seqlen_k, partition_size);
+    const int true_num_splits = Tail ? max(1, flash::floor_div(actual_seqlen_k, partition_size)): flash::ceil_div(actual_seqlen_k, partition_size);
     // const int true_num_splits = num_splits;
 
     bool exceed_split = (tx >= true_num_splits); // process boundary
@@ -399,13 +400,13 @@ __global__ void __launch_bounds__(256, 1) flash_fwd_splitkv_reduce_varlen_kernel
         float lse_max_local = lse_local;
         #pragma unroll
         for (int step = SPLIT_COUNT >> 1; step > 0; step = (step >> 1)) {
-            lse_max_local = max(lse_max_local, __shfl_xor_tmp(lse_max_local, step));
+            lse_max_local = max(lse_max_local, flash::__shfl_xor_tmp(lse_max_local, step));
         }
         // reduce sum lse
         float lse_local_logsum = __expf(lse_local - lse_max_local);
         #pragma unroll
         for (int step = SPLIT_COUNT >> 1; step > 0; step = (step >> 1)) {
-            lse_local_logsum = lse_local_logsum + __shfl_xor_tmp(lse_local_logsum, step);
+            lse_local_logsum = lse_local_logsum + flash::__shfl_xor_tmp(lse_local_logsum, step);
         }
         lse_local_logsum = __logf(lse_local_logsum) + lse_max_local;
 
@@ -427,16 +428,16 @@ __global__ void __launch_bounds__(256, 1) flash_fwd_splitkv_reduce_varlen_kernel
             for (int t = 0; t < tx_float_count; t += 2) {
                 if constexpr (kHeadDim % 128 == 0) {
                     // half -> float32, reduce precision loss
-                    float a_f32 = within_splits? splitkv_upcast_to_f32<accumType>(load_vec[i][t >> 1][0]): 0.f;
-                    float b_f32 = within_splits? splitkv_upcast_to_f32<accumType>(load_vec[i][t >> 1][1]): 0.f;
+                    float a_f32 = within_splits? flash::splitkv_upcast_to_f32<accumType>(load_vec[i][t >> 1][0]): 0.f;
+                    float b_f32 = within_splits? flash::splitkv_upcast_to_f32<accumType>(load_vec[i][t >> 1][1]): 0.f;
                     // do rescale and sum
-                    tx_accum[t]     = __llvm_fma_f32(a_f32, s_scale, tx_accum[t]);
-                    tx_accum[t + 1] = __llvm_fma_f32(b_f32, s_scale, tx_accum[t + 1]);
+                    tx_accum[t]     = flash::__llvm_fma_f32(a_f32, s_scale, tx_accum[t]);
+                    tx_accum[t + 1] = flash::__llvm_fma_f32(b_f32, s_scale, tx_accum[t + 1]);
                 } else if constexpr (kHeadDim == 64) {
                     // half -> float32, reduce precision loss
-                    float load_f32  = within_splits? splitkv_upcast_to_f32<accumType>(load[i][t >> 1]): 0.f;
+                    float load_f32  = within_splits? flash::splitkv_upcast_to_f32<accumType>(load[i][t >> 1]): 0.f;
                     // do rescale and sum
-                    tx_accum[t]     = __llvm_fma_f32(load_f32, s_scale, tx_accum[t]);
+                    tx_accum[t]     = flash::__llvm_fma_f32(load_f32, s_scale, tx_accum[t]);
                 }
             }
         }
@@ -446,14 +447,14 @@ __global__ void __launch_bounds__(256, 1) flash_fwd_splitkv_reduce_varlen_kernel
             if constexpr (kHeadDim % 128 == 0) {
                 vec2_Element<reduceType> accum_result;
                 #if defined(__gfx938__) || defined(__gfx946__) || defined(__gfx92a__)
-                    accum_result = DownCastPairNoPack<float, reduceType>(tx_accum[t], tx_accum[t + 1]);
+                    accum_result = flash::DownCastPairNoPack<float, reduceType>(tx_accum[t], tx_accum[t + 1]);
                 #else
-                    accum_result[0] = DownCast<float, reduceType, true>(tx_accum[t]);
-                    accum_result[1] = DownCast<float, reduceType, true>(tx_accum[t + 1]); // here, v_cvt_pkrtz can be used
+                    accum_result[0] = flash::DownCast<float, reduceType, true>(tx_accum[t]);
+                    accum_result[1] = flash::DownCast<float, reduceType, true>(tx_accum[t + 1]); // here, v_cvt_pkrtz can be used
                 #endif
                 *(vec2_Element<reduceType>*)(output_ptr + t) = accum_result;
             } else if constexpr (kHeadDim == 64) {
-                reduceType accum_result = DownCast<float, reduceType, false>(tx_accum[t]);
+                reduceType accum_result = flash::DownCast<float, reduceType, false>(tx_accum[t]);
                 output_ptr[t] = accum_result;
             }
         }
@@ -501,15 +502,15 @@ __global__ void __launch_bounds__(256, 1) flash_mla_splitkv_reduce_kernel(
     // int main_len = params.topk_length ? params.topk_length[row] : params.topk;
     // int extra_len = params.extra_topk_length ? params.extra_topk_length[row] : params.extra_topk;
 
-    // int actual_seqlen_k = ceil_div(main_len, 64) * 64 + ceil_div(extra_len, 64) * 64;
+    // int actual_seqlen_k = flash::ceil_div(main_len, 64) * 64 + flash::ceil_div(extra_len, 64) * 64;
 
-    int row = block_x / 64;
-    int main_len = params.topk_length ? params.topk_length[row] : params.topk;
-    int extra_len = params.extra_topk_length ? params.extra_topk_length[row] : params.extra_topk;
+    int topk_length_row = h == 1 ? bidb : block_x / 64;
+    int main_len = params.topk_length ? params.topk_length[topk_length_row] : params.topk;
+    int extra_len = params.extra_topk_length ? params.extra_topk_length[topk_length_row] : params.extra_topk;
 
-    int total_blocks = ceil_div(main_len, 64) + ceil_div(extra_len, 64);
-    int blocks_per_split = ceil_div(params.partition_size, 64);
-    int true_num_splits = ceil_div(total_blocks, blocks_per_split);
+    int total_blocks = flash::ceil_div(main_len, 64) + flash::ceil_div(extra_len, 64);
+    int blocks_per_split = flash::ceil_div(params.partition_size, 64);
+    int true_num_splits = flash::ceil_div(total_blocks, blocks_per_split);
 
     // for flashmla, 512 elements are engaged to 4 blocks
     // within each block, num_splits / WARM_NUM load transactions are engaged to each wave
@@ -539,7 +540,7 @@ __global__ void __launch_bounds__(256, 1) flash_mla_splitkv_reduce_kernel(
 
     // compute partition_size when fix num_splits
     // int partition_size = params_partition_size > MLA_MAX_SPLITS ? splitkv_get_partitionsize_of_fix_numsplits(actual_seqlen_k, params.num_splits): params_partition_size;
-    // const int true_num_splits = Tail ? max(1, floor_div(actual_seqlen_k, partition_size)): ceil_div(actual_seqlen_k, partition_size);
+    // const int true_num_splits = Tail ? max(1, flash::floor_div(actual_seqlen_k, partition_size)): flash::ceil_div(actual_seqlen_k, partition_size);
     // const int true_num_splits = num_splits;
 
     bool exceed_split = (tx >= true_num_splits); // process boundary
@@ -552,20 +553,20 @@ __global__ void __launch_bounds__(256, 1) flash_mla_splitkv_reduce_kernel(
     float lse_max_local = lse_local;
     #pragma unroll
     for (int step = SPLIT_COUNT >> 1; step > 0; step = (step >> 1)) {
-        lse_max_local = max(lse_max_local, __shfl_xor_tmp(lse_max_local, step));
+        lse_max_local = max(lse_max_local, flash::__shfl_xor_tmp(lse_max_local, step));
     }
     // reduce sum lse
     float lse_local_logsum = __expf(lse_local - lse_max_local);
     #pragma unroll
     for (int step = SPLIT_COUNT >> 1; step > 0; step = (step >> 1)) {
-        lse_local_logsum = lse_local_logsum + __shfl_xor_tmp(lse_local_logsum, step);
+        lse_local_logsum = lse_local_logsum + flash::__shfl_xor_tmp(lse_local_logsum, step);
     }
     lse_local_logsum = __logf(lse_local_logsum) + lse_max_local;
 
     float attn_sink_o_scale = 1.0f;
     if (params.attn_sink != nullptr) {
-        // 当前 reduce kernel 的 block_x 是按 b,h,s 展开的，所以 bidh 就是 head id。
-        float rAttn_sink = params.attn_sink[block_x % 64];
+        int attn_sink_idx = h == 1 ? in_batch_offset % params.ngroups : block_x % 64;
+        float rAttn_sink = params.attn_sink[attn_sink_idx];
 
         if (rAttn_sink == INFINITY) {
             attn_sink_o_scale = 0.0f;
@@ -588,11 +589,11 @@ __global__ void __launch_bounds__(256, 1) flash_mla_splitkv_reduce_kernel(
         #pragma unroll
         for (int t = 0; t < tx_float_count; t += 2) {
             // half -> float32, reduce precision loss
-            float a_f32 = within_splits? splitkv_upcast_to_f32<accumType>(load[i >> 2][t >> 1][0]): 0.f;
-            float b_f32 = within_splits? splitkv_upcast_to_f32<accumType>(load[i >> 2][t >> 1][1]): 0.f;
+            float a_f32 = within_splits? flash::splitkv_upcast_to_f32<accumType>(load[i >> 2][t >> 1][0]): 0.f;
+            float b_f32 = within_splits? flash::splitkv_upcast_to_f32<accumType>(load[i >> 2][t >> 1][1]): 0.f;
             // do rescale and sum
-            tx_accum[t]     = __llvm_fma_f32(a_f32, s_scale, tx_accum[t]);
-            tx_accum[t + 1] = __llvm_fma_f32(b_f32, s_scale, tx_accum[t + 1]);
+            tx_accum[t]     = flash::__llvm_fma_f32(a_f32, s_scale, tx_accum[t]);
+            tx_accum[t + 1] = flash::__llvm_fma_f32(b_f32, s_scale, tx_accum[t + 1]);
         }
     }
     // reduce across 4 waves
@@ -616,10 +617,10 @@ __global__ void __launch_bounds__(256, 1) flash_mla_splitkv_reduce_kernel(
             // cvt
             vec2_Element<reduceType> accum_result;
             #if defined(__gfx938__) || defined(__gfx946__) || defined(__gfx92a__)
-                accum_result = DownCastPairNoPack<float, reduceType>(tx_accum[t], tx_accum[t + 1]);
+                accum_result = flash::DownCastPairNoPack<float, reduceType>(tx_accum[t], tx_accum[t + 1]);
             #else
-                accum_result[0] = DownCast<float, reduceType, true>(tx_accum[t]);
-                accum_result[1] = DownCast<float, reduceType, true>(tx_accum[t + 1]);
+                accum_result[0] = flash::DownCast<float, reduceType, true>(tx_accum[t]);
+                accum_result[1] = flash::DownCast<float, reduceType, true>(tx_accum[t + 1]);
             #endif
             // storation
             *(vec2_Element<reduceType>*)(output_ptr + t) = accum_result;
