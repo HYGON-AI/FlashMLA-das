@@ -54,11 +54,9 @@ def is_bf16_decode_supported_param(t: TestParam) -> bool:
         return False
     if t.h_q not in [64, 128]:
         return False
-    if t.d_qk not in [512, 576]:
+    if t.d_qk != 512:
         return False
-    if t.decode.extra_topk is None:
-        return t.topk <= 1024
-    return t.topk <= 256 and t.decode.extra_topk <= 1024
+    return True
 
 @dataclasses.dataclass
 class RawTestParamForDecode:

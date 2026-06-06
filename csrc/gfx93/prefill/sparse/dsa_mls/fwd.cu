@@ -27,7 +27,9 @@ bool should_run(const SparseAttnFwdParams& params) {
         return true;
     }
 
-    if (params.d_qk == 576 && params.h_q == 64 && params.topk == 2048 && params.s_kv >= 32768) {
+    if (params.d_qk == 576 && params.topk == 2048 &&
+        ((params.h_q == 64 && params.s_kv >= 24576) ||
+         (params.h_q == 128 && params.s_kv >= 8192))) {
         return true;
     }
 

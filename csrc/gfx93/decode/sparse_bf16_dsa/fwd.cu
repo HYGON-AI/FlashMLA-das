@@ -31,6 +31,11 @@ struct LocalArch {
         const auto base = arch_name.substr(0, arch_name.find(':'));
         return base == "gfx936" || base == "gfx938";
     }
+
+    bool is_gfx938() const {
+        const auto base = arch_name.substr(0, arch_name.find(':'));
+        return base == "gfx938";
+    }
 };
 
 static int int64_stride_to_int(int64_t stride) {
@@ -38,13 +43,25 @@ static int int64_stride_to_int(int64_t stride) {
     return static_cast<int>(stride);
 }
 
-static int default_num_splits(int topk, int extra_topk) {
+static int default_num_splits(int b, int s_q, int topk, int extra_topk) {
     if (extra_topk > 0) {
         return 2;
     }
-    if (topk == 1024) return 16;
-    if (topk == 512) return 8;
-    return 1;
+
+    int split = 1;
+    if (topk > 1024) {
+        split = 32;
+    } else if (topk == 1024) {
+        split = 16;
+    } else if (topk == 512) {
+        split = 8;
+    }
+
+    constexpr int64_t kMaxDecodeTasksBeforeReducingSplit = 2048;
+    while (split > 1 && static_cast<int64_t>(b) * s_q * split > kMaxDecodeTasksBeforeReducingSplit) {
+        split /= 2;
+    }
+    return split;
 }
 
 static void check_optional_extra(
@@ -74,7 +91,7 @@ run(
     int d_v,
     float sm_scale) {
     LocalArch arch;
-    TORCH_CHECK(arch.is_gfx93x(), "DSA BF16 sparse decode is only supported on gfx936/gfx938");
+    TORCH_CHECK(arch.is_gfx938(), "DSA BF16 sparse decode is only supported on gfx938");
 
     KU_CHECK_NDIM(q, 4);
     KU_CHECK_NDIM(kv, 4);
@@ -97,17 +114,13 @@ run(
     TORCH_CHECK(b > 0 && s_q > 0 && h_q > 0, "Invalid q shape for DSA BF16 sparse decode");
     TORCH_CHECK(h_kv == 1, "DSA BF16 sparse decode only supports h_kv == 1");
     TORCH_CHECK(h_q == 64 || h_q == 128, "DSA BF16 sparse decode only supports h_q == 64 or 128");
-    TORCH_CHECK(d_qk == 512 || d_qk == 576, "DSA BF16 sparse decode only supports d_qk == 512 or 576");
+    TORCH_CHECK(d_qk == 512, "DSA BF16 sparse decode only supports d_qk == 512 for now");
     TORCH_CHECK(d_v == 512, "DSA BF16 sparse decode only supports d_v == 512");
     TORCH_CHECK(topk > 0, "topk must be positive");
     if (has_extra) {
-        TORCH_CHECK(topk <= 256, "DSA BF16 sparse decode with extra_kv supports topk <= 256");
-        TORCH_CHECK(extra_topk <= 1024, "DSA BF16 sparse decode supports extra_topk <= 1024");
         TORCH_CHECK(extra_kv->size(1) > 0, "extra page_block_size must be positive");
         TORCH_CHECK(extra_kv->size(2) == h_kv, "extra_kv h_kv must match kv h_kv");
         TORCH_CHECK(extra_kv->size(3) == d_qk, "extra_kv d_qk must match q d_qk");
-    } else {
-        TORCH_CHECK(topk <= 1024, "DSA BF16 sparse decode supports topk <= 1024");
     }
     check_optional_extra(extra_kv, extra_indices, extra_topk_length);
 
@@ -167,7 +180,7 @@ run(
     at::Tensor scores_sum = scores_memory.select(0, 1);
 
     if (!num_splits.has_value()) {
-        const int split = default_num_splits(topk, extra_topk);
+        const int split = default_num_splits(b, s_q, topk, extra_topk);
         num_splits = torch::empty({1}, opts.dtype(torch::kInt32));
         num_splits->fill_(split);
     }
@@ -177,6 +190,14 @@ run(
     TORCH_CHECK(num_splits->numel() == 1, "DSA BF16 sparse decode expects num_splits to be a scalar tensor");
     const int requested_num_splits = num_splits->item<int>();
     TORCH_CHECK(requested_num_splits >= 1 && requested_num_splits <= 64, "DSA BF16 sparse decode requires 1 <= num_splits <= 64");
+    if (requested_num_splits == 1) {
+        if (has_extra) {
+            TORCH_CHECK(topk <= 256, "DSA BF16 sparse decode with extra_kv and num_splits == 1 supports topk <= 256");
+            TORCH_CHECK(extra_topk <= 1024, "DSA BF16 sparse decode with extra_kv and num_splits == 1 supports extra_topk <= 1024");
+        } else {
+            TORCH_CHECK(topk <= 1024, "DSA BF16 sparse decode with num_splits == 1 supports topk <= 1024");
+        }
+    }
 
     Flash_fwd_mla_params_dsa params;
     std::memset(&params, 0, sizeof(params));
@@ -246,6 +267,11 @@ run(
     params.seqlenq_ngroups_swapped = true;
     params.is_seqlens_k_cumulative = false;
     params.splitkv_use_fp32_as_accum = false;
+    constexpr int64_t kBufferLoadPaddedTokenLimit = 32LL * 64 * 1024;
+    const int64_t padded_k_tokens = static_cast<int64_t>(kv.size(0)) * page_block_size;
+    const int64_t padded_extra_k_tokens = has_extra ? static_cast<int64_t>(extra_kv->size(0)) * extra_kv->size(1) : 0;
+    params.decode_use_c_load = padded_k_tokens > kBufferLoadPaddedTokenLimit ||
+                               padded_extra_k_tokens > kBufferLoadPaddedTokenLimit;
     params.num_splits = requested_num_splits;
     params.partition_size = topk + params.extra_topk;
     if (params.num_splits > 1) {
@@ -263,11 +289,7 @@ run(
     }
 
     hipStream_t stream = reinterpret_cast<hipStream_t>(at::cuda::getCurrentCUDAStream().stream());
-    if (d_qk == 512) {
-        gfx93::fwd::dsa_mls::run_dsa_prefill_nopage_64_dispatch<BFloat16, 512, 512>(params, stream);
-    } else {
-        gfx93::fwd::dsa_mls::run_dsa_prefill_nopage_64_dispatch<BFloat16, 576, 512>(params, stream);
-    }
+    gfx93::fwd::dsa_mls::run_dsa_prefill_nopage_64_dispatch<BFloat16, 512, 512>(params, stream);
 
     return {out, lse, tile_scheduler_metadata, num_splits};
 }

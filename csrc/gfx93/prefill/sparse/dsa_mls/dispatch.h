@@ -72,7 +72,7 @@ void run_dsa_mla_splitkv_reduce(Params& params, hipStream_t stream) {
 }
 
 template<typename T, int Headdim, int HeaddimV>
-void run_dsa_prefill_nopage_64_dispatch(Flash_fwd_mla_params_dsa& params, hipStream_t stream) {
+static inline void run_dsa_prefill_nopage_64_dispatch(Flash_fwd_mla_params_dsa& params, hipStream_t stream) {
     constexpr int kBlockM = 64;
     constexpr int kBlockN = 64;
     constexpr int WARP_M = 16;
@@ -100,10 +100,12 @@ void run_dsa_prefill_nopage_64_dispatch(Flash_fwd_mla_params_dsa& params, hipStr
         BOOL_SWITCH(params.mtp > 1, Is_MTP, [&] {
             BOOL_SWITCH(params.is_causal, Is_causal, [&] {
                 BOOL_SWITCH(has_extra, Has_extra, [&] {
-                    flash::flash_fwd_mla_decode_kernel_gfx938_dsa_nopage_64<
-                        Kernel_traits, true, Is_dropout, false, Is_causal,
-                        IsEvenMNConst, true, false, Is_MTP, 0, Has_extra, Flash_fwd_mla_params_dsa>
-                        <<<dimGrid, dimBlock, 21 * 1024, stream>>>(params);
+                    BOOL_SWITCH(params.decode_use_c_load, DecodeCLoad, [&] {
+                        flash::flash_fwd_mla_decode_kernel_gfx938_dsa_nopage_64<
+                            Kernel_traits, true, Is_dropout, false, Is_causal,
+                            IsEvenMNConst, true, false, Is_MTP, 0, DecodeCLoad, Has_extra, Flash_fwd_mla_params_dsa>
+                            <<<dimGrid, dimBlock, 21 * 1024, stream>>>(params);
+                    });
                 });
             });
         });
@@ -124,10 +126,25 @@ void run_dsa_prefill_nopage_64_dispatch(Flash_fwd_mla_params_dsa& params, hipStr
         BOOL_SWITCH(params.mtp > 1, Is_MTP, [&] {
             BOOL_SWITCH(params.is_causal, Is_causal, [&] {
                 if (params.topk == 2048) {
-                    flash::flash_fwd_mla_decode_kernel_gfx938_dsa_prefill_nopage_64<
-                        Kernel_traits, true, Is_dropout, false, Is_causal,
-                        IsEvenMNConst, true, false, Is_MTP, 0, Flash_fwd_mla_params_dsa>
-                        <<<dimGrid, dimBlock, 21 * 1024, stream>>>(params);
+                    constexpr bool CanUseFastTopk2048 = Headdim == 576 && HeaddimV == 512;
+                    if constexpr (CanUseFastTopk2048) {
+                        if (params.seqlen_k < params.topk) {
+                            flash::flash_fwd_mla_decode_kernel_gfx938_dsa_prefill_topk2048_fast_nopage_64<
+                                Kernel_traits, true, Is_dropout, false, Is_causal,
+                                IsEvenMNConst, true, false, Is_MTP, 0, true, Flash_fwd_mla_params_dsa>
+                                <<<dimGrid, dimBlock, 21 * 1024, stream>>>(params);
+                        } else {
+                            flash::flash_fwd_mla_decode_kernel_gfx938_dsa_prefill_topk2048_fast_nopage_64<
+                                Kernel_traits, true, Is_dropout, false, Is_causal,
+                                IsEvenMNConst, true, false, Is_MTP, 0, false, Flash_fwd_mla_params_dsa>
+                                <<<dimGrid, dimBlock, 21 * 1024, stream>>>(params);
+                        }
+                    } else {
+                        flash::flash_fwd_mla_decode_kernel_gfx938_dsa_prefill_nopage_64<
+                            Kernel_traits, true, Is_dropout, false, Is_causal,
+                            IsEvenMNConst, true, false, Is_MTP, 0, Flash_fwd_mla_params_dsa>
+                            <<<dimGrid, dimBlock, 21 * 1024, stream>>>(params);
+                    }
                 } else {
                     flash::flash_fwd_mla_decode_kernel_gfx938_dsa_prefill_nopage_64_topk1024<
                         Kernel_traits, true, Is_dropout, false, Is_causal,

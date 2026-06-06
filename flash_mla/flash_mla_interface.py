@@ -57,7 +57,7 @@ def flash_mla_with_kvcache(
     cache_seqlens: Optional[torch.Tensor],
     head_dim_v: int,
     tile_scheduler_metadata: FlashMLASchedMeta,
-    num_splits: None = None,
+    num_splits: Optional[torch.Tensor] = None,
     softmax_scale: Optional[float] = None,
     causal: bool = False,
     is_fp8_kvcache: bool = False,
@@ -78,7 +78,7 @@ def flash_mla_with_kvcache(
         cache_seqlens: (batch_size), torch.int32. Can be None when sparse attention is used.
         head_dim_v: Head_dim of v. Must be 512
         sched_meta: FlashMLASchedMeta, return by get_mla_metadata. You may reuse the same sched_meta across different invocations, but only when the tensor shapes and the values of cache_seqlens, topk_length, and extra_topk_length remain the same.
-        num_splits_placeholder: must be "None" (to be compatible with the old interface).
+        num_splits: optional override for BF16 sparse decode. Other paths keep using sched_meta.
         softmax_scale: float. The scaling of QK^T before applying softmax. Default to 1 / sqrt(head_dim_k).
         causal: bool. Whether to apply causal attention mask. Only valid for dense attention
         is_fp8_kvcache: bool.
@@ -104,7 +104,6 @@ def flash_mla_with_kvcache(
     sched_meta = tile_scheduler_metadata
     indices_in_kvcache = indices
     assert isinstance(sched_meta, FlashMLASchedMeta), "tile_scheduler_metadata must be of type FlashMLASchedMeta"
-    assert num_splits is None, "num_splits must be None"
 
     topk = indices_in_kvcache.shape[-1] if indices_in_kvcache is not None else None
     extra_k_page_block_size = extra_k_cache.shape[1] if extra_k_cache is not None else None
@@ -155,14 +154,18 @@ def flash_mla_with_kvcache(
             assert k_cache.dtype == torch.bfloat16, "BF16 sparse attention requires k_cache dtype to be torch.bfloat16 when is_fp8_kvcache is False"
             if extra_k_cache is not None:
                 assert extra_k_cache.dtype == torch.bfloat16, "BF16 sparse attention requires extra_k_cache dtype to be torch.bfloat16 when is_fp8_kvcache is False"
+        else:
+            assert num_splits is None, "num_splits override is only supported by BF16 sparse decode"
+        decode_num_splits = num_splits if num_splits is not None else sched_meta.num_splits
         out, lse, new_tile_scheduler_metadata, new_num_splits = flash_mla_cuda.sparse_decode_fwd(
             q, k_cache, indices_in_kvcache, topk_length, attn_sink,
-            sched_meta.tile_scheduler_metadata, sched_meta.num_splits,
+            sched_meta.tile_scheduler_metadata, decode_num_splits,
             extra_k_cache, extra_indices_in_kvcache, extra_topk_length,
             head_dim_v, softmax_scale
         )
     else:
         # Dense attention
+        assert num_splits is None, "num_splits override is only supported by BF16 sparse decode"
         assert indices_in_kvcache is None and attn_sink is None and extra_k_cache is None and extra_indices_in_kvcache is None and topk_length is None and extra_topk_length is None, "indices_in_kvcache, attn_sink, extra_k_cache, extra_indices_in_kvcache, topk_length and extra_topk_length must be None when dense attention is used."
         assert block_table is not None and cache_seqlens is not None, "block_table and cache_seqlens must be provided when dense attention is used."
         out, lse, new_tile_scheduler_metadata, new_num_splits = flash_mla_cuda.dense_decode_fwd(

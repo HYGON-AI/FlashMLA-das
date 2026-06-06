@@ -55,7 +55,7 @@ __global__ void flash_fwd_splitkv_reduce_kernel(
     }
 
     // max-rescale coefficient x sum-rescale coefficient
-    lds[tx] = s_sum_load_ori * s_max_ratio / s_sum_tmp;
+    lds[tx] = s_sum_tmp > 0.f ? s_sum_load_ori * s_max_ratio / s_sum_tmp : 0.f;
 
     // finally, do rescale for each split and reduce the sum of them
     // each block(1waves) process (num_splits x head_dim) elements in total
@@ -76,7 +76,7 @@ __global__ void flash_fwd_splitkv_reduce_kernel(
     for (int i = 0; i < num_splits; ++i) {
         // read ultimate scale value for current split
         float s_scale      = lds[i];
-        bool within_splits = (i < true_num_splits);
+        bool within_splits = (i < true_num_splits) && (s_scale > 0.f);
         for (int t = 0; t < tx_float_count; t += 2) {
             if constexpr (kHeadDim % 128 == 0) {
                 // read ultimate scale value for current split
@@ -197,7 +197,7 @@ __global__ void flash_fwd_splitkv_reduce_kernel_split128(Params params) {
     s_sum_tmp = lds[LDS_ACCUM];
 
     // max-rescale coefficient x sum-rescale coefficient
-    lds[tx] = s_sum_load_ori * s_max_ratio / s_sum_tmp;
+    lds[tx] = s_sum_tmp > 0.f ? s_sum_load_ori * s_max_ratio / s_sum_tmp : 0.f;
 
     // finally, do rescale for each split and reduce the sum of them
     // each block(multiple waves) process (num_splits x head_dim) elements in total
@@ -224,7 +224,7 @@ __global__ void flash_fwd_splitkv_reduce_kernel_split128(Params params) {
     for (int i = 0; i < split_count_this_wave; ++i) {
         // read ultimate scale value for current split
         float s_scale      = lds[begin + i];
-        bool within_splits = (begin + i) < true_num_splits;
+        bool within_splits = ((begin + i) < true_num_splits) && (s_scale > 0.f);
         #pragma unroll
         for (int t = 0; t < tx_float_count; t += 2) {
             if constexpr (kHeadDim % 128 == 0) {
@@ -402,13 +402,14 @@ __global__ void __launch_bounds__(256, 1) flash_fwd_splitkv_reduce_varlen_kernel
         for (int step = SPLIT_COUNT >> 1; step > 0; step = (step >> 1)) {
             lse_max_local = max(lse_max_local, flash::__shfl_xor_tmp(lse_max_local, step));
         }
+        bool has_valid_lse = (lse_max_local != -INFINITY);
         // reduce sum lse
-        float lse_local_logsum = __expf(lse_local - lse_max_local);
+        float lse_local_logsum = has_valid_lse ? __expf(lse_local - lse_max_local) : 0.f;
         #pragma unroll
         for (int step = SPLIT_COUNT >> 1; step > 0; step = (step >> 1)) {
             lse_local_logsum = lse_local_logsum + flash::__shfl_xor_tmp(lse_local_logsum, step);
         }
-        lse_local_logsum = __logf(lse_local_logsum) + lse_max_local;
+        lse_local_logsum = has_valid_lse ? __logf(lse_local_logsum) + lse_max_local : -INFINITY;
 
         // store softmax_lse
         if (tx == 0) {
@@ -416,14 +417,14 @@ __global__ void __launch_bounds__(256, 1) flash_fwd_splitkv_reduce_varlen_kernel
         }
 
         // store rescale coefficient into lds
-        lds[tx] = __expf(lse_local - lse_local_logsum);
+        lds[tx] = has_valid_lse ? __expf(lse_local - lse_local_logsum) : 0.f;
 
         // num_splits may not be 64, and thus need boundary judgement
         #pragma unroll
         for (int i = 0; i < num_splits; ++i) {
             // read ultimate scale value for current split
             float s_scale      = lds[i];
-            bool within_splits = (i < true_num_splits);
+            bool within_splits = (i < true_num_splits) && (s_scale > 0.f);
             #pragma unroll
             for (int t = 0; t < tx_float_count; t += 2) {
                 if constexpr (kHeadDim % 128 == 0) {
@@ -555,13 +556,14 @@ __global__ void __launch_bounds__(256, 1) flash_mla_splitkv_reduce_kernel(
     for (int step = SPLIT_COUNT >> 1; step > 0; step = (step >> 1)) {
         lse_max_local = max(lse_max_local, flash::__shfl_xor_tmp(lse_max_local, step));
     }
+    bool has_valid_lse = (lse_max_local != -INFINITY);
     // reduce sum lse
-    float lse_local_logsum = __expf(lse_local - lse_max_local);
+    float lse_local_logsum = has_valid_lse ? __expf(lse_local - lse_max_local) : 0.f;
     #pragma unroll
     for (int step = SPLIT_COUNT >> 1; step > 0; step = (step >> 1)) {
         lse_local_logsum = lse_local_logsum + flash::__shfl_xor_tmp(lse_local_logsum, step);
     }
-    lse_local_logsum = __logf(lse_local_logsum) + lse_max_local;
+    lse_local_logsum = has_valid_lse ? __logf(lse_local_logsum) + lse_max_local : -INFINITY;
 
     float attn_sink_o_scale = 1.0f;
     if (params.attn_sink != nullptr) {
@@ -578,7 +580,7 @@ __global__ void __launch_bounds__(256, 1) flash_mla_splitkv_reduce_kernel(
     }
 
     // store rescale coefficient into lds
-    lds[tx] = __expf(lse_local - lse_local_logsum) * attn_sink_o_scale;
+    lds[tx] = has_valid_lse ? __expf(lse_local - lse_local_logsum) * attn_sink_o_scale : 0.f;
 
     // num_splits may not be 64, and thus need boundary judgement
     #pragma unroll
@@ -586,6 +588,7 @@ __global__ void __launch_bounds__(256, 1) flash_mla_splitkv_reduce_kernel(
         // read ultimate scale value for current split
         bool within_splits = ((i + wave_id) < true_num_splits);
         float s_scale      = num_splits >= WARP_NUM ? lds[i + wave_id]: (within_splits ? lds[i + wave_id]: 0.f);
+        within_splits = within_splits && (s_scale > 0.f);
         #pragma unroll
         for (int t = 0; t < tx_float_count; t += 2) {
             // half -> float32, reduce precision loss
