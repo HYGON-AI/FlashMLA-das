@@ -1727,6 +1727,12 @@ __forceinline__ __device__ void qk_gemm_prefetch_v_mls_ds_576_512_nopage_64_new_
     index_topk[2] = index_ptr[(n_loop * 64) + 2 * 16 + (tid / 4)];
     index_topk[3] = index_ptr[(n_loop * 64) + 3 * 16 + (tid / 4)];
 
+    bool invalid_topk[4];
+    invalid_topk[0] = index_topk[0] == -1;
+    invalid_topk[1] = index_topk[1] == -1;
+    invalid_topk[2] = index_topk[2] == -1;
+    invalid_topk[3] = index_topk[3] == -1;
+
     int fallback_index = index_ptr[0] == -1 ? 0 : index_ptr[0];
     index_topk[0] = (index_topk[0] == -1) ? fallback_index : index_topk[0];
     index_topk[1] = (index_topk[1] == -1) ? fallback_index : index_topk[1];
@@ -2097,12 +2103,436 @@ __forceinline__ __device__ void qk_gemm_prefetch_v_mls_ds_576_512_nopage_64_new_
     }
 }
 
-template<int kHeadDim, int kHeadDimV, int kBlockM, int kBlockN, int kBlockK, int WARP_M, int WARP_N, int STAGES, typename Element, typename ElementAccum, bool Is_even_MN, bool Is_FlashMLA>
-__forceinline__ __device__ void qk_gemm_prefetch_v_mls_ds_576_512_nopage_64_new_888(
+// Old topk=2048 prefill fast path. Keep separate from the generic paged/fallback variant.
+template<bool NeedIndexGuard, int kHeadDim, int kHeadDimV, int kBlockM, int kBlockN, int kBlockK, int WARP_M, int WARP_N, int STAGES, typename Element, typename ElementAccum, bool Is_even_MN, bool Is_FlashMLA>
+__forceinline__ __device__ void qk_gemm_prefetch_v_mls_ds_576_512_nopage_64_new_777_topk2048_fast(
         vec4_uint qv_ptr,
         vec4_uint q_ptr,
         vec4_uint k_ptr,
         Element* v_faker,
+        Element* q_lds,
+        Element* k_lds,
+        Element* v_lds,
+        union_vec4_f16x2<Element> q_reg[(WARP_M * kBlockK) / (16 * 32) * (kHeadDim / kBlockK)],
+        vec4_Accum<ElementAccum> s_reg[(WARP_M / 16) * (kBlockN / 32)][2],
+        int warp_id,
+        int seqlen_qv_stride,
+        int __seqlen_q_stride,
+        int seqlen_k_stride,
+        int seqlen_v_stride,
+        int* index_ptr,
+        int batch_stride_k,
+        int batch_stride_v,
+        int n_loop,
+        int max_seq_q_offset=0,
+        int max_seq_k_offset=0) {
+
+    // Simplify
+    static_assert (kBlockK == 64 and "To simplify, only kBlockK = 32 is supported!");
+    static_assert (WARP_M == 16 and "To simplify, only WARP_M = 16 is supported!");
+    static_assert (WARP_N == 64 and "To simplify, only WARP_N = 64 is supported!");
+    constexpr int WARP_NUM        = kBlockM / WARP_M;
+    constexpr int kHeadDim_OPT       = (kHeadDim == 576) ? 64 : kHeadDim;
+    constexpr int Q_LDS_LOAD_NUM  = (kBlockM * kBlockK) / (16 * 32);
+    constexpr int Q_LOAD_REQUESTS = Q_LDS_LOAD_NUM / WARP_NUM;
+    constexpr int K_LDS_LOAD_NUM  = (kHeadDim_OPT * WARP_N) / (32 * 16);
+    constexpr int K_LOAD_REQUESTS = K_LDS_LOAD_NUM / WARP_NUM;
+    constexpr int ELEMENT_BYTES   = sizeof(Element);
+
+    __builtin_amdgcn_sched_barrier(0);
+    if constexpr (kBlockN == 128) {
+        inline_vgpr4_init_zero_4x4x4(s_reg);
+    } else {
+        for (int i = 0; i < (WARP_M / 16) * (kBlockN / 32); ++i) {
+            for (int j = 0; j < 2; ++j) {
+                s_reg[i][j].u64[0] = 0.0f;
+                s_reg[i][j].u64[1] = 0.0f;
+            }
+        }
+    }
+    __builtin_amdgcn_sched_barrier(0);
+
+    int tid = threadIdx.x % 64;
+    int index_topk[4];
+    index_topk[0] = index_ptr[(n_loop * 64) + 0 * 16 + (tid / 4)];
+    index_topk[1] = index_ptr[(n_loop * 64) + 1 * 16 + (tid / 4)];
+    index_topk[2] = index_ptr[(n_loop * 64) + 2 * 16 + (tid / 4)];
+    index_topk[3] = index_ptr[(n_loop * 64) + 3 * 16 + (tid / 4)];
+
+    if constexpr (NeedIndexGuard) {
+        int fallback_index = index_ptr[0] == -1 ? 0 : index_ptr[0];
+        index_topk[0] = (index_topk[0] == -1) ? fallback_index : index_topk[0];
+        index_topk[1] = (index_topk[1] == -1) ? fallback_index : index_topk[1];
+        index_topk[2] = (index_topk[2] == -1) ? fallback_index : index_topk[2];
+        index_topk[3] = (index_topk[3] == -1) ? fallback_index : index_topk[3];
+    }
+
+    // 准备 q,k 寄存器
+    union_vec4_f16x2<Element> k_reg[STAGES * (32 * kBlockK) / (32 * 32) * 2];
+
+    // 计算 q_lds,k_lds 的起始偏移量
+    int k_lds_base = reinterpret_cast<size_t>(k_lds);
+
+    for(int i=3;i>=0;i--)
+    {
+    int k_stage_id = 0;
+
+    int lds_offset = __builtin_amdgcn_readfirstlane((warp_id * 32 * 16) * ELEMENT_BYTES / 4);
+    int lds_offset_2;
+    int g_offset_v = ((4 - (tid / 8) % 4) * 4 + tid % 4 * 4) % 16 + index_topk[i] * seqlen_k_stride * ELEMENT_BYTES / 4;
+    int g_offset_s = 512 * ELEMENT_BYTES / 4 + warp_id * 16;
+    int g_offset_s_2;
+    flash::wait_all_warp_arrived();
+
+    if(warp_id < 2){
+        inline_buffer_load_dwordx4_lds(k_lds, k_ptr, lds_offset, g_offset_s, g_offset_v); 
+    }
+
+    if constexpr (STAGES == 2) {
+        k_stage_id ^= 1;
+    }
+
+    lds_offset = __builtin_amdgcn_readfirstlane((k_stage_id * 16 * 256 + warp_id * 32 * 16) * ELEMENT_BYTES / 4);
+    lds_offset_2 = __builtin_amdgcn_readfirstlane((k_stage_id * 16 * 256 + warp_id * 32 * 16 + 128 * 16) * ELEMENT_BYTES / 4);
+    g_offset_s = 256 * ELEMENT_BYTES / 4 + warp_id * 16;
+    g_offset_s_2 = 256 * ELEMENT_BYTES / 4 + warp_id * 16 + 64;
+    flash::wait_all_warp_arrived();
+    inline_buffer_load_dwordx4_lds(k_lds, k_ptr, lds_offset, g_offset_s, g_offset_v); 
+    inline_buffer_load_dwordx4_lds(k_lds, k_ptr, lds_offset_2, g_offset_s_2, g_offset_v); 
+
+    flash::wait_buffer_data_arrived<true>(K_LOAD_REQUESTS);
+
+    k_stage_id ^= 1;
+    int stage_id = 0;
+
+    // K DS  
+    {
+        int k_lds_load_offset = k_lds_base + (k_stage_id * 16 * 256) * ELEMENT_BYTES;
+        DS_READ_MATRIX_32X32_B16(k_lds_load_offset, k_reg[stage_id * 2].f16, k_reg[stage_id * 2 + 1].f16, true);
+    }
+
+    // Wait DS
+    flash::wait_lds_data_arrived<false>(0);
+    // flash::raise_priority();
+
+    { 
+        int min_tile_n = 0;
+        #pragma unroll
+        for(int min_tile_k = 0; min_tile_k < 2; ++min_tile_k) {
+                int k_tile_id  = stage_id * 2 + min_tile_n;
+                s_reg[i/2][i%2].f32 = mmac_4interleave<Element, ElementAccum>(
+                    q_reg[16].f16x4[min_tile_k],
+                    k_reg[k_tile_id].f16x4[min_tile_k],
+                    s_reg[i/2][i%2].f32);
+        }
+    }
+
+    { 
+        int min_tile_n = 1;
+        #pragma unroll
+        for(int min_tile_k = 0; min_tile_k < 2; ++min_tile_k) {
+                int k_tile_id  = stage_id * 2 + min_tile_n;
+                s_reg[i/2][i%2].f32 = mmac_4interleave<Element, ElementAccum>(
+                    q_reg[17].f16x4[min_tile_k],
+                    k_reg[k_tile_id].f16x4[min_tile_k],
+                    s_reg[i/2][i%2].f32);
+        }
+    }
+
+    // flash::lower_priority();
+
+    lds_offset = __builtin_amdgcn_readfirstlane((k_stage_id * 16 * 256 + warp_id * 32 * 16) * ELEMENT_BYTES / 4);
+    lds_offset_2 = __builtin_amdgcn_readfirstlane((k_stage_id * 16 * 256 + warp_id * 32 * 16 + 128 * 16) * ELEMENT_BYTES / 4);
+    g_offset_s = 0 * ELEMENT_BYTES / 4 + warp_id * 16;
+    g_offset_s_2 = 0 * ELEMENT_BYTES / 4 + warp_id * 16 + 64;
+    flash::wait_all_warp_arrived();
+    inline_buffer_load_dwordx4_lds(k_lds, k_ptr, lds_offset, g_offset_s, g_offset_v); 
+    inline_buffer_load_dwordx4_lds(k_lds, k_ptr, lds_offset_2, g_offset_s_2, g_offset_v); 
+
+    flash::wait_buffer_data_arrived<true>(K_LOAD_REQUESTS);
+
+    k_stage_id ^= 1;
+    stage_id = 0;
+
+    // K DS  
+    {
+        int k_lds_load_offset = k_lds_base + (k_stage_id * 16 * 256) * ELEMENT_BYTES;
+        int k_lds_load_offset_2 = k_lds_base + (k_stage_id * 16 * 256 + 16 * 64) * ELEMENT_BYTES;
+        DS_READ_MATRIX_32X32_B16(k_lds_load_offset, k_reg[stage_id * 2].f16, k_reg[stage_id * 2 + 1].f16, true);
+        DS_READ_MATRIX_32X32_B16(k_lds_load_offset_2, k_reg[4 + stage_id * 2].f16, k_reg[4 + stage_id * 2 + 1].f16, true);
+    }
+
+    // K DS PRE
+    stage_id ^= 1;
+    {
+        int k_lds_load_offset = k_lds_base + (k_stage_id * 16 * 256 + 16 * 128) * ELEMENT_BYTES;
+        int k_lds_load_offset_2 = k_lds_base + (k_stage_id * 16 * 256 + 16 * 192) * ELEMENT_BYTES;
+        DS_READ_MATRIX_32X32_B16(k_lds_load_offset, k_reg[stage_id * 2].f16, k_reg[stage_id * 2 + 1].f16, true);
+        DS_READ_MATRIX_32X32_B16(k_lds_load_offset_2, k_reg[4 + stage_id * 2].f16, k_reg[4 + stage_id * 2 + 1].f16, true);
+    }
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       
+    // Wait DS
+    flash::wait_lds_data_arrived<false>(6);
+    // flash::raise_priority();
+
+    // MMAC 
+    stage_id ^= 1;
+    { 
+        int min_tile_n = 0;
+        #pragma unroll
+        for(int min_tile_k = 0; min_tile_k < 2; ++min_tile_k) {
+                int k_tile_id  = stage_id * 2 + min_tile_n;
+                s_reg[i/2][i%2].f32 = mmac_4interleave<Element, ElementAccum>(
+                    q_reg[8].f16x4[min_tile_k],
+                    k_reg[k_tile_id].f16x4[min_tile_k],
+                    s_reg[i/2][i%2].f32);
+        }
+    }
+
+    { 
+        int min_tile_n = 1;
+        #pragma unroll
+        for(int min_tile_k = 0; min_tile_k < 2; ++min_tile_k) {
+                int k_tile_id  = stage_id * 2 + min_tile_n;
+                s_reg[i/2][i%2].f32 = mmac_4interleave<Element, ElementAccum>(
+                    q_reg[9].f16x4[min_tile_k],
+                    k_reg[k_tile_id].f16x4[min_tile_k],
+                    s_reg[i/2][i%2].f32);
+        }
+    }
+
+    // flash::lower_priority();
+    flash::wait_lds_data_arrived<false>(4);
+    // flash::raise_priority();
+
+    {
+        int min_tile_n = 0;
+        #pragma unroll
+        for(int min_tile_k = 0; min_tile_k < 2; ++min_tile_k) {
+                int k_tile_id  = 4 + stage_id * 2 + min_tile_n;
+                s_reg[i/2][i%2].f32 = mmac_4interleave<Element, ElementAccum>(
+                    q_reg[10].f16x4[min_tile_k],
+                    k_reg[k_tile_id].f16x4[min_tile_k],
+                    s_reg[i/2][i%2].f32);
+        }
+    }
+
+    { 
+        int min_tile_n = 1;
+        #pragma unroll
+        for(int min_tile_k = 0; min_tile_k < 2; ++min_tile_k) {
+                int k_tile_id  = 4 + stage_id * 2 + min_tile_n;
+                s_reg[i/2][i%2].f32 = mmac_4interleave<Element, ElementAccum>(
+                    q_reg[11].f16x4[min_tile_k],
+                    k_reg[k_tile_id].f16x4[min_tile_k],
+                    s_reg[i/2][i%2].f32);
+        }
+    }
+
+    // flash::lower_priority();
+    flash::wait_lds_data_arrived<false>(2);
+    // flash::raise_priority();
+
+    stage_id ^= 1;
+    { 
+        int min_tile_n = 0;
+        #pragma unroll
+        for(int min_tile_k = 0; min_tile_k < 2; ++min_tile_k) {
+                int k_tile_id  = stage_id * 2 + min_tile_n;
+                s_reg[i/2][i%2].f32 = mmac_4interleave<Element, ElementAccum>(
+                    q_reg[12].f16x4[min_tile_k],
+                    k_reg[k_tile_id].f16x4[min_tile_k],
+                    s_reg[i/2][i%2].f32);
+        }
+    }
+
+    { 
+        int min_tile_n = 1;
+        #pragma unroll
+        for(int min_tile_k = 0; min_tile_k < 2; ++min_tile_k) {
+                int k_tile_id  = stage_id * 2 + min_tile_n;
+                s_reg[i/2][i%2].f32 = mmac_4interleave<Element, ElementAccum>(
+                    q_reg[13].f16x4[min_tile_k],
+                    k_reg[k_tile_id].f16x4[min_tile_k],
+                    s_reg[i/2][i%2].f32);
+        }
+    }
+
+    // flash::lower_priority();
+    flash::wait_lds_data_arrived<false>(0);
+    // flash::raise_priority();
+
+    { 
+        int min_tile_n = 0;
+        #pragma unroll
+        for(int min_tile_k = 0; min_tile_k < 2; ++min_tile_k) {
+                int k_tile_id  = 4 + stage_id * 2 + min_tile_n;
+                s_reg[i/2][i%2].f32 = mmac_4interleave<Element, ElementAccum>(
+                    q_reg[14].f16x4[min_tile_k],
+                    k_reg[k_tile_id].f16x4[min_tile_k],
+                    s_reg[i/2][i%2].f32);
+        }
+    }
+
+    { 
+        int min_tile_n = 1;
+        #pragma unroll
+        for(int min_tile_k = 0; min_tile_k < 2; ++min_tile_k) {
+                int k_tile_id  = 4 + stage_id * 2 + min_tile_n;
+                s_reg[i/2][i%2].f32 = mmac_4interleave<Element, ElementAccum>(
+                    q_reg[15].f16x4[min_tile_k],
+                    k_reg[k_tile_id].f16x4[min_tile_k],
+                    s_reg[i/2][i%2].f32);
+        }
+    }
+    // flash::lower_priority();
+
+    flash::wait_buffer_data_arrived<true>(0);
+
+    k_stage_id ^= 1;
+    stage_id = 0;
+
+    // K DS  
+    {
+        int k_lds_load_offset = k_lds_base + (k_stage_id * 16 * 256) * ELEMENT_BYTES;
+        int k_lds_load_offset_2 = k_lds_base + (k_stage_id * 16 * 256 + 16 * 64) * ELEMENT_BYTES;
+        DS_READ_MATRIX_32X32_B16(k_lds_load_offset, k_reg[stage_id * 2].f16, k_reg[stage_id * 2 + 1].f16, true);
+        DS_READ_MATRIX_32X32_B16(k_lds_load_offset_2, k_reg[4 + stage_id * 2].f16, k_reg[4 + stage_id * 2 + 1].f16, true);
+    }
+
+    // K DS PRE
+    stage_id ^= 1;
+    {
+        int k_lds_load_offset = k_lds_base + (k_stage_id * 16 * 256 + 16 * 128) * ELEMENT_BYTES;
+        int k_lds_load_offset_2 = k_lds_base + (k_stage_id * 16 * 256 + 16 * 192) * ELEMENT_BYTES;
+        DS_READ_MATRIX_32X32_B16(k_lds_load_offset, k_reg[stage_id * 2].f16, k_reg[stage_id * 2 + 1].f16, true);
+        DS_READ_MATRIX_32X32_B16(k_lds_load_offset_2, k_reg[4 + stage_id * 2].f16, k_reg[4 + stage_id * 2 + 1].f16, true);
+    }
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       
+    // Wait DS
+    flash::wait_lds_data_arrived<false>(6);
+    // flash::raise_priority();
+
+    // MMAC 
+    stage_id ^= 1;
+    { 
+        int min_tile_n = 0;
+        #pragma unroll
+        for(int min_tile_k = 0; min_tile_k < 2; ++min_tile_k) {
+                int k_tile_id  = stage_id * 2 + min_tile_n;
+                s_reg[i/2][i%2].f32 = mmac_4interleave<Element, ElementAccum>(
+                    q_reg[0].f16x4[min_tile_k],
+                    k_reg[k_tile_id].f16x4[min_tile_k],
+                    s_reg[i/2][i%2].f32);
+        }
+    }
+
+    { 
+        int min_tile_n = 1;
+        #pragma unroll
+        for(int min_tile_k = 0; min_tile_k < 2; ++min_tile_k) {
+                int k_tile_id  = stage_id * 2 + min_tile_n;
+                s_reg[i/2][i%2].f32 = mmac_4interleave<Element, ElementAccum>(
+                    q_reg[1].f16x4[min_tile_k],
+                    k_reg[k_tile_id].f16x4[min_tile_k],
+                    s_reg[i/2][i%2].f32);
+        }
+    }
+
+    // flash::lower_priority();
+    flash::wait_lds_data_arrived<false>(4);
+    // flash::raise_priority();
+
+    {
+        int min_tile_n = 0;
+        #pragma unroll
+        for(int min_tile_k = 0; min_tile_k < 2; ++min_tile_k) {
+                int k_tile_id  = 4 + stage_id * 2 + min_tile_n;
+                s_reg[i/2][i%2].f32 = mmac_4interleave<Element, ElementAccum>(
+                    q_reg[2].f16x4[min_tile_k],
+                    k_reg[k_tile_id].f16x4[min_tile_k],
+                    s_reg[i/2][i%2].f32);
+        }
+    }
+
+    { 
+        int min_tile_n = 1;
+        #pragma unroll
+        for(int min_tile_k = 0; min_tile_k < 2; ++min_tile_k) {
+                int k_tile_id  = 4 + stage_id * 2 + min_tile_n;
+                s_reg[i/2][i%2].f32 = mmac_4interleave<Element, ElementAccum>(
+                    q_reg[3].f16x4[min_tile_k],
+                    k_reg[k_tile_id].f16x4[min_tile_k],
+                    s_reg[i/2][i%2].f32);
+        }
+    }
+
+    // flash::lower_priority();
+    flash::wait_lds_data_arrived<false>(2);
+    // flash::raise_priority();
+
+    stage_id ^= 1;
+    { 
+        int min_tile_n = 0;
+        #pragma unroll
+        for(int min_tile_k = 0; min_tile_k < 2; ++min_tile_k) {
+                int k_tile_id  = stage_id * 2 + min_tile_n;
+                s_reg[i/2][i%2].f32 = mmac_4interleave<Element, ElementAccum>(
+                    q_reg[4].f16x4[min_tile_k],
+                    k_reg[k_tile_id].f16x4[min_tile_k],
+                    s_reg[i/2][i%2].f32);
+        }
+    }
+
+    { 
+        int min_tile_n = 1;
+        #pragma unroll
+        for(int min_tile_k = 0; min_tile_k < 2; ++min_tile_k) {
+                int k_tile_id  = stage_id * 2 + min_tile_n;
+                s_reg[i/2][i%2].f32 = mmac_4interleave<Element, ElementAccum>(
+                    q_reg[5].f16x4[min_tile_k],
+                    k_reg[k_tile_id].f16x4[min_tile_k],
+                    s_reg[i/2][i%2].f32);
+        }
+    }
+
+    // flash::lower_priority();
+    flash::wait_lds_data_arrived<false>(0);
+    // flash::raise_priority();
+
+    { 
+        int min_tile_n = 0;
+        #pragma unroll
+        for(int min_tile_k = 0; min_tile_k < 2; ++min_tile_k) {
+                int k_tile_id  = 4 + stage_id * 2 + min_tile_n;
+                s_reg[i/2][i%2].f32 = mmac_4interleave<Element, ElementAccum>(
+                    q_reg[6].f16x4[min_tile_k],
+                    k_reg[k_tile_id].f16x4[min_tile_k],
+                    s_reg[i/2][i%2].f32);
+        }
+    }
+
+    { 
+        int min_tile_n = 1;
+        #pragma unroll
+        for(int min_tile_k = 0; min_tile_k < 2; ++min_tile_k) {
+                int k_tile_id  = 4 + stage_id * 2 + min_tile_n;
+                s_reg[i/2][i%2].f32 = mmac_4interleave<Element, ElementAccum>(
+                    q_reg[7].f16x4[min_tile_k],
+                    k_reg[k_tile_id].f16x4[min_tile_k],
+                    s_reg[i/2][i%2].f32);
+        }
+    }
+    // flash::lower_priority();
+    }
+}
+
+template<int kHeadDim, int kHeadDimV, int kBlockM, int kBlockN, int kBlockK, int WARP_M, int WARP_N, int STAGES, typename Element, typename ElementAccum, bool Is_even_MN, bool Is_FlashMLA, bool DecodeCLoad = false>
+__forceinline__ __device__ void qk_gemm_prefetch_v_mls_ds_576_512_nopage_64_new_888(
+        vec4_uint qv_ptr,
+        vec4_uint q_ptr,
+        vec4_uint k_ptr,
+        Element* k_ptr_raw,
         Element* q_lds,
         Element* k_lds,
         Element* v_lds,
@@ -2153,10 +2583,17 @@ __forceinline__ __device__ void qk_gemm_prefetch_v_mls_ds_576_512_nopage_64_new_
     index_topk[2] = index_ptr[(n_loop * 64) + 2 * 16 + (tid / 4)];
     index_topk[3] = index_ptr[(n_loop * 64) + 3 * 16 + (tid / 4)];
 
-    index_topk[0] = (index_topk[0] == -1) ? 0 : index_topk[0];
-    index_topk[1] = (index_topk[1] == -1) ? 0 : index_topk[1];
-    index_topk[2] = (index_topk[2] == -1) ? 0 : index_topk[2];
-    index_topk[3] = (index_topk[3] == -1) ? 0 : index_topk[3];
+    bool invalid_topk[4];
+    invalid_topk[0] = index_topk[0] == -1;
+    invalid_topk[1] = index_topk[1] == -1;
+    invalid_topk[2] = index_topk[2] == -1;
+    invalid_topk[3] = index_topk[3] == -1;
+
+    int fallback_index = index_ptr[0] == -1 ? 0 : index_ptr[0];
+    index_topk[0] = (index_topk[0] == -1) ? fallback_index : index_topk[0];
+    index_topk[1] = (index_topk[1] == -1) ? fallback_index : index_topk[1];
+    index_topk[2] = (index_topk[2] == -1) ? fallback_index : index_topk[2];
+    index_topk[3] = (index_topk[3] == -1) ? fallback_index : index_topk[3];
 
     // 准备 q,k 寄存器
     union_vec4_f16x2<Element> k_reg[STAGES * (32 * kBlockK) / (32 * 32) * 2];
@@ -2166,6 +2603,8 @@ __forceinline__ __device__ void qk_gemm_prefetch_v_mls_ds_576_512_nopage_64_new_
 
     int k_stage_id = 0;
     int stage_id;
+    using uint4_t = unsigned int __attribute__((ext_vector_type(4)));
+    const uint4_t zero4 = {0u, 0u, 0u, 0u};
 
     int index_block = index_topk[3] / page_block_size;
     int index_offset = index_topk[3] - index_block * page_block_size;
@@ -2176,8 +2615,19 @@ __forceinline__ __device__ void qk_gemm_prefetch_v_mls_ds_576_512_nopage_64_new_
     int g_offset_s = 256 * ELEMENT_BYTES / 4 + warp_id * 16;
     int g_offset_s_2 = 256 * ELEMENT_BYTES / 4 + warp_id * 16 + 64;
     flash::wait_all_warp_arrived();
-    inline_buffer_load_dwordx4_lds(k_lds, k_ptr, lds_offset, g_offset_s, g_offset_v); 
-    inline_buffer_load_dwordx4_lds(k_lds, k_ptr, lds_offset_2, g_offset_s_2, g_offset_v); 
+    if constexpr (DecodeCLoad) {
+        const int64_t token_base_elem = int64_t(index_block) * batch_stride_k + int64_t(index_offset) * seqlen_k_stride;
+        const int64_t src0_elem = token_base_elem + int64_t(g_offset_s + (((4 - (tid / 8) % 4) * 4 + tid % 4 * 4) % 16)) * 4 / ELEMENT_BYTES;
+        const int64_t src1_elem = token_base_elem + int64_t(g_offset_s_2 + (((4 - (tid / 8) % 4) * 4 + tid % 4 * 4) % 16)) * 4 / ELEMENT_BYTES;
+        const int64_t lane_store_elem = int64_t(tid) * 16 / ELEMENT_BYTES;
+        const int64_t dst0_elem = int64_t(lds_offset) * 4 / ELEMENT_BYTES + lane_store_elem;
+        const int64_t dst1_elem = int64_t(lds_offset_2) * 4 / ELEMENT_BYTES + lane_store_elem;
+        *reinterpret_cast<uint4_t*>(k_lds + dst0_elem) = invalid_topk[3] ? zero4 : *reinterpret_cast<const uint4_t*>(k_ptr_raw + src0_elem);
+        *reinterpret_cast<uint4_t*>(k_lds + dst1_elem) = invalid_topk[3] ? zero4 : *reinterpret_cast<const uint4_t*>(k_ptr_raw + src1_elem);
+    } else {
+        inline_buffer_load_dwordx4_lds(k_lds, k_ptr, lds_offset, g_offset_s, g_offset_v); 
+        inline_buffer_load_dwordx4_lds(k_lds, k_ptr, lds_offset_2, g_offset_s_2, g_offset_v); 
+    }
 
     k_stage_id ^= 1;
 
@@ -2195,10 +2645,27 @@ __forceinline__ __device__ void qk_gemm_prefetch_v_mls_ds_576_512_nopage_64_new_
     g_offset_s = (i % 2) * 256 * ELEMENT_BYTES / 4 + warp_id * 16;
     g_offset_s_2 = (i % 2) * 256  * ELEMENT_BYTES / 4 + warp_id * 16 + 64;
     flash::wait_all_warp_arrived();
-    inline_buffer_load_dwordx4_lds(k_lds, k_ptr, lds_offset, g_offset_s, g_offset_v); 
-    inline_buffer_load_dwordx4_lds(k_lds, k_ptr, lds_offset_2, g_offset_s_2, g_offset_v); 
+    if constexpr (DecodeCLoad) {
+        const int64_t token_base_elem = int64_t(index_block) * batch_stride_k + int64_t(index_offset) * seqlen_k_stride;
+        const int lane_dword = ((4 - (tid / 8) % 4) * 4 + tid % 4 * 4) % 16;
+        const int64_t src0_elem = token_base_elem + int64_t(g_offset_s + lane_dword) * 4 / ELEMENT_BYTES;
+        const int64_t src1_elem = token_base_elem + int64_t(g_offset_s_2 + lane_dword) * 4 / ELEMENT_BYTES;
+        const int64_t lane_store_elem = int64_t(tid) * 16 / ELEMENT_BYTES;
+        const int64_t dst0_elem = int64_t(lds_offset) * 4 / ELEMENT_BYTES + lane_store_elem;
+        const int64_t dst1_elem = int64_t(lds_offset_2) * 4 / ELEMENT_BYTES + lane_store_elem;
+        const bool invalid_index = invalid_topk[i / 2];
+        *reinterpret_cast<uint4_t*>(k_lds + dst0_elem) = invalid_index ? zero4 : *reinterpret_cast<const uint4_t*>(k_ptr_raw + src0_elem);
+        *reinterpret_cast<uint4_t*>(k_lds + dst1_elem) = invalid_index ? zero4 : *reinterpret_cast<const uint4_t*>(k_ptr_raw + src1_elem);
+    } else {
+        inline_buffer_load_dwordx4_lds(k_lds, k_ptr, lds_offset, g_offset_s, g_offset_v); 
+        inline_buffer_load_dwordx4_lds(k_lds, k_ptr, lds_offset_2, g_offset_s_2, g_offset_v); 
+    }
 
-    flash::wait_buffer_data_arrived<true>(K_LOAD_REQUESTS);
+    if constexpr (DecodeCLoad) {
+        flash::wait_all_warp_arrived();
+    } else {
+        flash::wait_buffer_data_arrived<true>(K_LOAD_REQUESTS);
+    }
 
     k_stage_id ^= 1;
     stage_id = 0;
@@ -2533,10 +3000,11 @@ __forceinline__ __device__ void qk_gemm_prefetch_v_mls_ds_576_512_nopage_64_new_
     index_topk[2] = index_ptr[(n_loop * 64) + 2 * 16 + (tid / 4)];
     index_topk[3] = index_ptr[(n_loop * 64) + 3 * 16 + (tid / 4)];
 
-    index_topk[0] = (index_topk[0] == -1) ? 0 : index_topk[0];
-    index_topk[1] = (index_topk[1] == -1) ? 0 : index_topk[1];
-    index_topk[2] = (index_topk[2] == -1) ? 0 : index_topk[2];
-    index_topk[3] = (index_topk[3] == -1) ? 0 : index_topk[3];
+    int fallback_index = index_ptr[0] == -1 ? 0 : index_ptr[0];
+    index_topk[0] = (index_topk[0] == -1) ? fallback_index : index_topk[0];
+    index_topk[1] = (index_topk[1] == -1) ? fallback_index : index_topk[1];
+    index_topk[2] = (index_topk[2] == -1) ? fallback_index : index_topk[2];
+    index_topk[3] = (index_topk[3] == -1) ? fallback_index : index_topk[3];
 
     // 准备 q,k 寄存器
     union_vec4_f16x2<Element> k_reg[STAGES * (32 * kBlockK) / (32 * 32) * 2];

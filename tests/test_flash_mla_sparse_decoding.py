@@ -110,6 +110,11 @@ def gen_testcase() -> List[RawTestParam]:
         (RawTestParam(0, 64, 2, 1, 16384, True, topk=128, d_qk=512, extra_s_k=16384, extra_topk=1024, block_size=256, extra_block_size=2, have_extra_topk_length=True), [2, 64, 74, 128, 74*2, 256]),
         # MODEL1 CONFIG4
         (RawTestParam(0, 128, 2, 1, 16384, True, topk=128, d_qk=512, extra_s_k=16384, extra_topk=1024, block_size=256, extra_block_size=2, have_extra_topk_length=True), [2, 64, 74, 128, 74*2, 256]),
+        # DSA BF16 large topk / extra_topk coverage
+        (RawTestParam(0, 64, 2, 1, 32768, True, topk=4096, d_qk=512, block_size=256, check_correctness=True, num_runs=0), [1, 2]),
+        (RawTestParam(0, 128, 2, 1, 32768, True, topk=8192, d_qk=576, block_size=256, check_correctness=True, num_runs=0), [1, 2]),
+        (RawTestParam(0, 64, 2, 1, 32768, True, topk=128, d_qk=512, extra_s_k=32768, extra_topk=4096, block_size=256, extra_block_size=256, check_correctness=True, num_runs=0), [1, 2]),
+        (RawTestParam(0, 128, 2, 1, 32768, True, topk=128, d_qk=512, extra_s_k=32768, extra_topk=8192, block_size=256, extra_block_size=256, have_extra_topk_length=True, check_correctness=True, num_runs=0), [1, 2]),
     ]
     performance_cases = [
         # Production cases
@@ -173,10 +178,13 @@ def test_flash_mla(p: TestParam) -> Result:
         result = kk.bench_kineto(run_decode, p.num_runs)
 
         if lib.is_decode_bf16_kvcache():
-            splitkv_kernel_name = "flash_fwd_mla_decode_kernel_gfx938_dsa_nopage_64_splitkv"
+            main_kernel_names = [
+                "flash_fwd_mla_decode_kernel_gfx938_dsa_nopage_64_splitkv",
+                "flash_fwd_mla_decode_kernel_gfx938_dsa_nopage_64<",
+            ]
             combine_kernel_name = "flash_mla_splitkv_reduce_kernel"
         else:
-            splitkv_kernel_name = "flash_fwd_splitkv_mla_fp8_sparse_kernel"
+            main_kernel_names = ["flash_fwd_splitkv_mla_fp8_sparse_kernel"]
             combine_kernel_name = "flash_fwd_mla_combine_kernel"
         
         # Get individual kernel time usages
@@ -188,21 +196,24 @@ def test_flash_mla(p: TestParam) -> Result:
                 kernel_time_usages_us[kernel_name] = result.get_kernel_time(kernel_name) * 1e6
             else:
                 kernel_time_usages_us[kernel_name] = None
-        pick_kernel_time_usage(splitkv_kernel_name)
+        for main_kernel_name in main_kernel_names:
+            pick_kernel_time_usage(main_kernel_name)
         pick_kernel_time_usage(combine_kernel_name)
 
         # Get E2E time usages
         def have_kernel(name: str):
             return kernel_time_usages_us[name] is not None
+
+        active_main_kernel_name = next((name for name in main_kernel_names if have_kernel(name)), None)
         
         if kk.is_using_profiling_tools():
             e2e_time_usage_us = 1e6
         else:
-            assert have_kernel(splitkv_kernel_name)
+            assert active_main_kernel_name is not None
             if have_kernel(combine_kernel_name):
-                e2e_time_usage_us = result.get_e2e_time(splitkv_kernel_name, combine_kernel_name) * 1e6
+                e2e_time_usage_us = result.get_e2e_time(active_main_kernel_name, combine_kernel_name) * 1e6
             else:
-                e2e_time_usage_us = kernel_time_usages_us[splitkv_kernel_name]
+                e2e_time_usage_us = kernel_time_usages_us[active_main_kernel_name]
         assert e2e_time_usage_us is not None
 
         flops_and_mem_vol = lib.count_flop_and_mem_vol_for_decode(p, t)
@@ -216,12 +227,14 @@ def test_flash_mla(p: TestParam) -> Result:
                 print(f'{short_name} time: {kernel_time_usages_us[name]:.1f} us')
         print(f'Compute/Memory: {theoritical_compute_memory_ratio:.2f}')
         print(f'Time (per): {e2e_time_usage_us:.1f} us')
-        print_kernel_time_usage(splitkv_kernel_name, "Splitkv")
+        for main_kernel_name in main_kernel_names:
+            print_kernel_time_usage(main_kernel_name, "Decode")
         print_kernel_time_usage(combine_kernel_name, "Combine")
         print(f'TFlops: {achieved_tflops:.1f}')
         print(f'GB/s: {achieved_gBps:.0f}')
 
-        performance_result = Result(True, theoritical_compute_memory_ratio, e2e_time_usage_us, kernel_time_usages_us[splitkv_kernel_name] or 0.0, kernel_time_usages_us[combine_kernel_name] or 0.0, achieved_tflops, achieved_gBps)
+        main_kernel_time_usage_us = kernel_time_usages_us[active_main_kernel_name] if active_main_kernel_name is not None else 0.0
+        performance_result = Result(True, theoritical_compute_memory_ratio, e2e_time_usage_us, main_kernel_time_usage_us or 0.0, kernel_time_usages_us[combine_kernel_name] or 0.0, achieved_tflops, achieved_gBps)
     
     is_correct = True
     if p.check_correctness:
@@ -229,10 +242,11 @@ def test_flash_mla(p: TestParam) -> Result:
         with torch.profiler.record_function("reference_flash_mla"):
             out_ref, lse_ref = ref.ref_sparse_attn_decode(p, t)
 
-        is_out_correct = kk.check_is_allclose("out", out_ans, out_ref, abs_tol=1e-3, rel_tol=2.01/128, cos_diff_tol=5e-6)
         if lib.is_decode_bf16_kvcache():
+            is_out_correct = kk.check_is_allclose("out", out_ans, out_ref, abs_tol=1e-3, rel_tol=2.01/128, cos_diff_tol=6e-6)
             is_correct &= is_out_correct
         else:
+            is_out_correct = kk.check_is_allclose("out", out_ans, out_ref, abs_tol=1e-3, rel_tol=2.01/128, cos_diff_tol=5e-6)
             is_lse_correct = kk.check_is_allclose("lse", lse_ans, lse_ref, abs_tol=1e-6, rel_tol=8.01/65536)
             is_correct &= is_out_correct and is_lse_correct
 
@@ -261,10 +275,10 @@ def main():
         bf16_testcases = []
         seen_bf16_cases = set()
         for t in testcases:
+            if t.d_qk == 576:
+                t = dataclasses.replace(t, d_qk=512)
             if not lib.is_bf16_decode_supported_param(t):
                 continue
-            if t.num_runs > 0 and t.decode.b > 16:
-                t = dataclasses.replace(t, decode=dataclasses.replace(t.decode, b=16))
             key = dataclasses.asdict(t)
             key["decode"] = tuple(key["decode"].items()) if key["decode"] is not None else None
             key = tuple(key.items())

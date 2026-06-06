@@ -429,6 +429,7 @@ struct Flash_fwd_mla_params_dsa {
     bool seqlenq_ngroups_swapped;
     bool is_seqlens_k_cumulative;
     bool splitkv_use_fp32_as_accum;
+    bool decode_use_c_load;
 
     // not used params
     float *__restrict__ scales_q_ptr;

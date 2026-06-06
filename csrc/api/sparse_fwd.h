@@ -29,6 +29,10 @@ class FwdImplBase : public ImplBase<
 > {};
 
 class Fwd_Sm90_Impl : public FwdImplBase {
+public:
+    explicit Fwd_Sm90_Impl(bool enable_dsa_mls_prefill)
+        : enable_dsa_mls_prefill_(enable_dsa_mls_prefill) {}
+
     DECLARE_SUPPORTED_FEATURES(
         FwdFeatures::HEAD_16,
         FwdFeatures::HEAD_64,
@@ -42,8 +46,11 @@ class Fwd_Sm90_Impl : public FwdImplBase {
 
 protected:
     void run_(const SparseAttnFwdParams &params, const std::vector<FeatureT> &required_features) override {
-        if ((std::getenv("FLASH_MLA_FORCE_DSA_MLS_PREFILL") != nullptr && gfx93::fwd::dsa_mls::can_run(params)) ||
-            gfx93::fwd::dsa_mls::should_run(params)) {
+        const bool disable_dsa_mls_prefill = std::getenv("FLASH_MLA_DISABLE_DSA_MLS_PREFILL") != nullptr;
+        if (enable_dsa_mls_prefill_ &&
+            !disable_dsa_mls_prefill &&
+            ((std::getenv("FLASH_MLA_FORCE_DSA_MLS_PREFILL") != nullptr && gfx93::fwd::dsa_mls::can_run(params)) ||
+             gfx93::fwd::dsa_mls::should_run(params))) {
             gfx93::fwd::dsa_mls::run(params);
             return;
         }
@@ -54,6 +61,9 @@ protected:
             });
         });
     }
+
+private:
+    bool enable_dsa_mls_prefill_;
 };
 
 static std::vector<at::Tensor> sparse_attn_prefill_interface(
@@ -182,7 +192,7 @@ static std::vector<at::Tensor> sparse_attn_prefill_interface(
     }
 
     if (arch.is_gfx93x()) {
-        Fwd_Sm90_Impl fwd_impl;
+        Fwd_Sm90_Impl fwd_impl(arch.is_gfx938());
         fwd_impl.run(params, required_features);
     } else {
         TORCH_CHECK(false, "Unsupported architecture");

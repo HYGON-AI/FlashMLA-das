@@ -562,7 +562,7 @@ void run_mla_fwd_dispatch_dsa_prefill_nopage_64(Flash_fwd_mla_params_dsa &params
             BOOL_SWITCH(params.mtp > 1/* is_mtp */, Is_MTP, [&] {
                 BOOL_SWITCH(params.is_causal, Is_causal, [&] {
                     BOOL_SWITCH(has_extra, Has_extra, [&] {
-                        flash::flash_fwd_mla_decode_kernel_gfx938_dsa_nopage_64<Kernel_traits, true/*Is_training*/, Is_dropout, false/* Is_prefix | flashmla */,Is_causal, IsEvenMNConst, /*Is_even_K*/true, /*Return_softmax*/false, Is_MTP, 0, Has_extra, Flash_fwd_mla_params_dsa>
+                        flash::flash_fwd_mla_decode_kernel_gfx938_dsa_nopage_64<Kernel_traits, true/*Is_training*/, Is_dropout, false/* Is_prefix | flashmla */,Is_causal, IsEvenMNConst, /*Is_even_K*/true, /*Return_softmax*/false, Is_MTP, 0, true, Has_extra, Flash_fwd_mla_params_dsa>
                                     <<<dimGrid, dimBlock, 21 * 1024, stream>>>(params);
                     });
                 });
