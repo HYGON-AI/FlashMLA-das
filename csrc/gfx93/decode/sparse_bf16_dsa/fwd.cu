@@ -48,20 +48,23 @@ static int default_num_splits(int b, int s_q, int topk, int extra_topk) {
         return 2;
     }
 
-    int split = 1;
+    const int64_t decode_tasks = static_cast<int64_t>(b) * s_q;
+    if (topk == 512) {
+        return decode_tasks <= 8 ? 8 : 1;
+    }
+    if (topk == 1024) {
+        if (decode_tasks <= 4) return 16;
+        if (decode_tasks <= 8) return 8;
+        return 1;
+    }
     if (topk > 1024) {
-        split = 32;
-    } else if (topk == 1024) {
-        split = 16;
-    } else if (topk == 512) {
-        split = 8;
+        if (decode_tasks <= 2) return 32;
+        if (decode_tasks <= 4) return 16;
+        if (decode_tasks <= 8) return 8;
+        if (decode_tasks <= 64) return 4;
+        return 2;
     }
-
-    constexpr int64_t kMaxDecodeTasksBeforeReducingSplit = 2048;
-    while (split > 1 && static_cast<int64_t>(b) * s_q * split > kMaxDecodeTasksBeforeReducingSplit) {
-        split /= 2;
-    }
-    return split;
+    return 1;
 }
 
 static void check_optional_extra(
