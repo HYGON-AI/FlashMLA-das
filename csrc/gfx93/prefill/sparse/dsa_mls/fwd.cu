@@ -21,15 +21,18 @@ bool can_run(const SparseAttnFwdParams& params) {
 bool should_run(const SparseAttnFwdParams& params) {
     if (!can_run(params)) return false;
 
-    if (params.d_qk == 512 &&
-        ((params.h_q == 64 && params.topk == 512) ||
-         (params.h_q == 128 && params.topk == 1024))) {
+    if (params.d_qk == 512 && params.h_q == 64 && params.topk == 512 &&
+        params.s_kv >= 28672) {
+        return true;
+    }
+
+    if (params.d_qk == 512 && params.h_q == 128 && params.topk == 1024 &&
+        params.s_kv >= 26624) {
         return true;
     }
 
     if (params.d_qk == 576 && params.topk == 2048 &&
-        ((params.h_q == 64 && params.s_kv >= 24576) ||
-         (params.h_q == 128 && params.s_kv >= 8192))) {
+        params.s_kv >= 24576) {
         return true;
     }
 
