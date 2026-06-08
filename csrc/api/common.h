@@ -33,15 +33,6 @@ struct Arch {
         archName = device_prop->gcnArchName;
     }
 
-    bool is_sm90a() const {
-        return major == 9 && minor == 3;
-        // return major == 9 && minor == 0;
-    }
-
-    bool is_sm100f() const {
-        return major == 10;
-    }   
-
     bool is_gfx938() const {
         return archName.substr(0, archName.find(':')) == "gfx938";
     }
