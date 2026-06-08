@@ -291,7 +291,7 @@ sparse_attn_decode_interface(
     }
 
     DecodeImplBase* impl;
-    if (arch.is_sm90a()) {
+    if (arch.is_gfx93x()) {
         impl = new Decode_Sm90_Impl();
     } else {
         TORCH_CHECK(false, "Unsupported architecture for sparse decode fwd");
