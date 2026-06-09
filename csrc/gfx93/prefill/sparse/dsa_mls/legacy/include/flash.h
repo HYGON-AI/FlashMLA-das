@@ -430,6 +430,7 @@ struct Flash_fwd_mla_params_dsa {
     bool is_seqlens_k_cumulative;
     bool splitkv_use_fp32_as_accum;
     bool decode_use_c_load;
+    bool splitkv_use_meta_dispatch;
 
     // not used params
     float *__restrict__ scales_q_ptr;

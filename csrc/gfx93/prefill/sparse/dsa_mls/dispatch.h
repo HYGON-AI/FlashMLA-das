@@ -1,6 +1,7 @@
 #pragma once
 
 #include <algorithm>
+#include <stdexcept>
 
 #include <hip/hip_runtime.h>
 
@@ -12,6 +13,13 @@
 #include "legacy/src/flash_fwd_reduce.h"
 
 namespace gfx93::fwd::dsa_mls {
+
+static inline bool dsa_decode_single_kernel_supports(const Flash_fwd_mla_params_dsa& params) {
+    if (params.extra_sparse_indices != nullptr && params.extra_topk > 0) {
+        return params.topk <= 256 && params.extra_topk <= 1024;
+    }
+    return params.topk <= 1024;
+}
 
 template<typename Kernel_traits, const bool Tail, typename Params>
 void run_dsa_mla_splitkv_reduce(Params& params, hipStream_t stream) {
@@ -100,28 +108,45 @@ static inline void run_dsa_prefill_nopage_64_dispatch(Flash_fwd_mla_params_dsa& 
         BOOL_SWITCH(params.mtp > 1, Is_MTP, [&] {
             BOOL_SWITCH(params.is_causal, Is_causal, [&] {
                 BOOL_SWITCH(has_extra, Has_extra, [&] {
-                    BOOL_SWITCH(params.decode_use_c_load, DecodeCLoad, [&] {
-                        flash::flash_fwd_mla_decode_kernel_gfx938_dsa_nopage_64<
+                    if (dsa_decode_single_kernel_supports(params)) {
+                        BOOL_SWITCH(params.decode_use_c_load, DecodeCLoad, [&] {
+                            flash::flash_fwd_mla_decode_kernel_gfx938_dsa_nopage_64<
+                                Kernel_traits, true, Is_dropout, false, Is_causal,
+                                IsEvenMNConst, true, false, Is_MTP, 0, DecodeCLoad, Has_extra, Flash_fwd_mla_params_dsa>
+                                <<<dimGrid, dimBlock, 21 * 1024, stream>>>(params);
+                        });
+                    } else {
+                        flash::flash_fwd_mla_decode_kernel_gfx938_dsa_nopage_64_splitkv_direct<
                             Kernel_traits, true, Is_dropout, false, Is_causal,
-                            IsEvenMNConst, true, false, Is_MTP, 0, DecodeCLoad, Has_extra, Flash_fwd_mla_params_dsa>
+                            IsEvenMNConst, true, false, Is_MTP, 0, Has_extra, Flash_fwd_mla_params_dsa>
                             <<<dimGrid, dimBlock, 21 * 1024, stream>>>(params);
-                    });
+                    }
                 });
             });
         });
     } else if (params.num_splits != 0) {
-        dimGrid.y = params.num_splits;
+        if (!params.splitkv_use_fp32_as_accum) {
+            throw std::runtime_error("DSA splitkv path requires official fp32 accum/combine");
+        }
+        dimGrid.y = params.splitkv_use_meta_dispatch ? 1 : params.num_splits;
+        dimGrid.z = params.splitkv_use_meta_dispatch ? params.num_sm_parts : params.b;
         BOOL_SWITCH(params.mtp > 1, Is_MTP, [&] {
             BOOL_SWITCH(params.is_causal, Is_causal, [&] {
                 BOOL_SWITCH(has_extra, Has_extra, [&] {
-                    flash::flash_fwd_mla_decode_kernel_gfx938_dsa_nopage_64_splitkv<
-                        Kernel_traits, true, Is_dropout, false, Is_causal,
-                        IsEvenMNConst, true, false, Is_MTP, 0, Has_extra, Flash_fwd_mla_params_dsa>
-                        <<<dimGrid, dimBlock, 21 * 1024, stream>>>(params);
+                    if (params.splitkv_use_meta_dispatch) {
+                        flash::flash_fwd_mla_decode_kernel_gfx938_dsa_nopage_64_splitkv_meta_dispatch<
+                            Kernel_traits, true, Is_dropout, false, Is_causal,
+                            IsEvenMNConst, true, false, Is_MTP, 0, Has_extra, Flash_fwd_mla_params_dsa>
+                            <<<dimGrid, dimBlock, 21 * 1024, stream>>>(params);
+                    } else {
+                        flash::flash_fwd_mla_decode_kernel_gfx938_dsa_nopage_64_splitkv<
+                            Kernel_traits, true, Is_dropout, false, Is_causal,
+                            IsEvenMNConst, true, false, Is_MTP, 0, Has_extra, Flash_fwd_mla_params_dsa>
+                            <<<dimGrid, dimBlock, 21 * 1024, stream>>>(params);
+                    }
                 });
             });
         });
-        run_dsa_mla_splitkv_reduce<Kernel_traits, false>(params, stream);
     } else {
         BOOL_SWITCH(params.mtp > 1, Is_MTP, [&] {
             BOOL_SWITCH(params.is_causal, Is_causal, [&] {

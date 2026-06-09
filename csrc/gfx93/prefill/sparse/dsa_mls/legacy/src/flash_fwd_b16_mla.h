@@ -2,6 +2,7 @@
 #include "block_info.h"
 #include "kernel_traits.h"
 #include "splitkv.h"
+#include "params.h"
 
 namespace flash {
 
@@ -3182,8 +3183,15 @@ __global__ void __launch_bounds__(256, 1) flash_fwd_mla_decode_kernel_gfx938_dsa
 #endif
 }
 
-template<typename Kernel_traits, bool Is_training, bool Is_dropout, bool Is_prefix, bool Is_causal, bool Is_even_MN, bool Is_even_K, bool Return_softmax, bool Is_MTP, int Layout, bool Has_extra, typename Params>
-__global__ void __launch_bounds__(256, 1) flash_fwd_mla_decode_kernel_gfx938_dsa_nopage_64_splitkv(const Params params) {
+template<typename Kernel_traits, bool Is_training, bool Is_dropout, bool Is_prefix, bool Is_causal, bool Is_even_MN, bool Is_even_K, bool Return_softmax, bool Is_MTP, int Layout, bool Has_extra, bool DirectOutput, typename Params>
+__device__ __forceinline__ void flash_fwd_mla_decode_kernel_gfx938_dsa_nopage_64_splitkv_body(
+    const Params params,
+    const int bidb,
+    const int split_id,
+    const int m_block,
+    const int n_block_min_override,
+    const int n_block_max_override,
+    const int64_t accum_split_idx) {
 #if defined(__gfx938__)
     using Element           = typename Kernel_traits::Element;
     using ElementAccum      = typename Kernel_traits::ElementAccum;
@@ -3200,11 +3208,8 @@ __global__ void __launch_bounds__(256, 1) flash_fwd_mla_decode_kernel_gfx938_dsa
     constexpr int WARP_NUM  = kBlockM / WARP_M;
 
     {
-        const int bidh = blockIdx.y;
-        const int bidb = blockIdx.z;
         int warp_id_vec = threadIdx.x / 64;
         const int warp_id = __builtin_amdgcn_readfirstlane(warp_id_vec);
-        const int m_block = blockIdx.x;
 
         // Is_FlashMLA为true则无qv，为False则有qv，适配FA3和FlashMLA接口
         constexpr bool Is_FlashMLA = !Is_prefix;
@@ -3235,8 +3240,6 @@ __global__ void __launch_bounds__(256, 1) flash_fwd_mla_decode_kernel_gfx938_dsa
         constexpr int kIndexChunkBlocks = kIndexChunk / kBlockN;
         // int* sIndices = (int *)(q_lds + 8192); 
         // 计算当前任务沿着 seqlenKV 方向的 block 起始位置和终止位置
-        int split_id = blockIdx.y;
-
         const int linear_q_start = m_block * kBlockM;
         const int query_idx = linear_q_start / params.ngroups;
         const int q_head_start = linear_q_start - query_idx * params.ngroups;
@@ -3249,9 +3252,16 @@ __global__ void __launch_bounds__(256, 1) flash_fwd_mla_decode_kernel_gfx938_dsa
         int extra_num_blocks = Has_extra ? ceil_div(extra_topk_length, kBlockN) : 0;
         int total_num_blocks = main_num_blocks + extra_num_blocks;
 
-        int blocks_per_split = ceil_div(params.partition_size, kBlockN);
-        int n_block_min = split_id * blocks_per_split;
-        int n_block_max = min(n_block_min + blocks_per_split, total_num_blocks);
+        int n_block_min;
+        int n_block_max;
+        if (n_block_min_override >= 0) {
+            n_block_min = n_block_min_override;
+            n_block_max = min(n_block_max_override, total_num_blocks);
+        } else {
+            int blocks_per_split = ceil_div(params.partition_size, kBlockN);
+            n_block_min = split_id * blocks_per_split;
+            n_block_max = min(n_block_min + blocks_per_split, total_num_blocks);
+        }
 
         // Empty split still needs to write neutral accum/lse for the reduce kernel.
         // 计算数据跨度
@@ -3285,11 +3295,13 @@ __global__ void __launch_bounds__(256, 1) flash_fwd_mla_decode_kernel_gfx938_dsa
         row_offset_v   = 0;
         row_offset_o   = bidb * int64_t(params.o_batch_stride) + query_idx * int64_t(params.o_row_stride) + q_head_start * int64_t(params.o_head_stride);
         row_offset_lse = bidb * params.seqlen_q + m_block * kBlockM;
-        const int64_t split_block_base = int64_t(bidb) * params.h * params.seqlen_q + m_block * kBlockM;
-        const int64_t split_accum_row_offset = int64_t(split_id) * params.b * params.h * params.seqlen_q * kHeadDimV
-            + split_block_base * kHeadDimV;
-        const int64_t split_lse_row_offset = int64_t(split_id) * params.b * params.h * params.seqlen_q
-            + split_block_base;
+        const int official_q_idx = query_idx;
+        const int official_h_idx = q_head_start;
+        const int64_t official_split_idx = accum_split_idx;
+        const int64_t official_accum_row_offset = (official_split_idx * params.max_seqlen * params.ngroups
+            + official_q_idx * params.ngroups + official_h_idx) * kHeadDimV;
+        const int64_t official_lse_row_offset = official_split_idx * params.max_seqlen * params.ngroups
+            + official_q_idx * params.ngroups + official_h_idx;
 
         // row_offset_k = bidb * int64_t(params.k_batch_stride) + block_table_offset * params.k_row_stride + (bidh / params.h_h_k_ratio) * params.k_head_stride;
         // row_offset_v = bidb * int64_t(params.v_batch_stride) + block_table_offset * params.v_row_stride + (bidh / params.h_h_k_ratio) * params.v_head_stride;
@@ -3398,7 +3410,6 @@ __global__ void __launch_bounds__(256, 1) flash_fwd_mla_decode_kernel_gfx938_dsa
                     index_lds[local_index] = -1;
                 }
             }
-
             const int logical_chunk_aligned_end = chunk_base + chunk_rel_block_start + kIndexChunkBlocks;
             const int logical_side_end = chunk_is_extra ? total_num_blocks : main_num_blocks;
             const int chunk_block_end = min(min(n_block_max, logical_chunk_aligned_end), logical_side_end);
@@ -3524,16 +3535,81 @@ __global__ void __launch_bounds__(256, 1) flash_fwd_mla_decode_kernel_gfx938_dsa
         /**********************************************************************************************************************************/
         // Epilogue: rescale acco
         vec_Accum<ElementAccum> lse[WARP_M / 16];
-        prefill_mla_epilugue_rescale_acco<WARP_M, kBlockK, kHeadDimV, Is_dropout && Is_training, ElementAccum, vec_Accum<ElementAccum>, 1/* M_MMAC_COUNT */>(acc_o, lse, scores_max, scores_sum, params.scale_softmax, 0/* params.rp_dropout */);
+        if constexpr (DirectOutput) {
+            decode_dsa_epilugue_rescale_acco<WARP_M, kBlockK, kHeadDimV, Is_dropout && Is_training, ElementAccum, vec_Accum<ElementAccum>, 1/* M_MMAC_COUNT */>(
+                acc_o, lse, scores_max, scores_sum, params.scale_softmax, 0/* params.rp_dropout */,
+                params.attn_sink == nullptr ? nullptr : params.attn_sink + q_head_start);
+        } else {
+            prefill_mla_epilugue_rescale_acco<WARP_M, kBlockK, kHeadDimV, Is_dropout && Is_training, ElementAccum, vec_Accum<ElementAccum>, 1/* M_MMAC_COUNT */>(acc_o, lse, scores_max, scores_sum, params.scale_softmax, 0/* params.rp_dropout */);
+        }
         /**************************************************************************************************************************************/
         constexpr bool Is_Interleave = true;
         int lane_id = threadIdx.x & 63;
         if (params.softmax_lse_ptr != nullptr) {
-            prefill_mla_epilogue_store_lse<WARP_M, Is_even_MN, false/*SplitD*/, Is_Interleave, ElementAccum, vec_Accum<ElementAccum>, 1/* M_MMAC_COUNT */>(lse, params.softmax_lse_ptr, split_lse_row_offset, warp_id, lane_id, 0, actual_block_m);
+            const int lse_row_offset = DirectOutput ? row_offset_lse : official_lse_row_offset;
+            prefill_mla_epilogue_store_lse<WARP_M, Is_even_MN, false/*SplitD*/, Is_Interleave, ElementAccum, vec_Accum<ElementAccum>, 1/* M_MMAC_COUNT */>(lse, params.softmax_lse_ptr, lse_row_offset, warp_id, lane_id, 0, actual_block_m);
         }
         /**************************************************************************************************************************************/
-        Element* o_ptr = reinterpret_cast<Element *>(params.oaccum_ptr) + split_accum_row_offset;
-        prefill_mla_epilogue_store_output<kHeadDimV, kBlockM, kBlockK, WARP_M, Is_even_MN, Is_Interleave, false/*TcpSwizzle*/, Element, ElementAccum, 1/* M_MMAC_COUNT */>(o_ptr, acc_o, 0, warp_id, lane_id, kHeadDimV, actual_block_m);
+        if constexpr (DirectOutput) {
+            Element* o_ptr = reinterpret_cast<Element *>(params.o_ptr) + row_offset_o;
+            prefill_mla_epilogue_store_output<kHeadDimV, kBlockM, kBlockK, WARP_M, Is_even_MN, Is_Interleave, false/*TcpSwizzle*/, Element, ElementAccum, 1/* M_MMAC_COUNT */>(o_ptr, acc_o, 0, warp_id, lane_id, seqlen_o_stride, actual_block_m);
+        } else {
+            float* o_ptr = reinterpret_cast<float *>(params.oaccum_ptr) + official_accum_row_offset;
+            prefill_mla_epilogue_store_output_fp32<kHeadDimV, kBlockM, kBlockK, WARP_M, Is_even_MN, ElementAccum, 1/* M_MMAC_COUNT */>(o_ptr, acc_o, 0, warp_id, lane_id, kHeadDimV, actual_block_m);
+        }
+    }
+#endif
+}
+
+template<typename Kernel_traits, bool Is_training, bool Is_dropout, bool Is_prefix, bool Is_causal, bool Is_even_MN, bool Is_even_K, bool Return_softmax, bool Is_MTP, int Layout, bool Has_extra, typename Params>
+__global__ void __launch_bounds__(256, 1) flash_fwd_mla_decode_kernel_gfx938_dsa_nopage_64_splitkv(const Params params) {
+#if defined(__gfx938__)
+    const int bidb = blockIdx.z;
+    const int split_id = blockIdx.y;
+    const int m_block = blockIdx.x;
+    const int64_t accum_split_idx = int64_t(bidb) * params.num_splits + split_id;
+    flash_fwd_mla_decode_kernel_gfx938_dsa_nopage_64_splitkv_body<
+        Kernel_traits, Is_training, Is_dropout, Is_prefix, Is_causal,
+        Is_even_MN, Is_even_K, Return_softmax, Is_MTP, Layout, Has_extra, false, Params>(
+            params, bidb, split_id, m_block, -1, -1, accum_split_idx);
+#endif
+}
+
+template<typename Kernel_traits, bool Is_training, bool Is_dropout, bool Is_prefix, bool Is_causal, bool Is_even_MN, bool Is_even_K, bool Return_softmax, bool Is_MTP, int Layout, bool Has_extra, typename Params>
+__global__ void __launch_bounds__(256, 1) flash_fwd_mla_decode_kernel_gfx938_dsa_nopage_64_splitkv_direct(const Params params) {
+#if defined(__gfx938__)
+    const int bidb = blockIdx.z;
+    const int m_block = blockIdx.x;
+    flash_fwd_mla_decode_kernel_gfx938_dsa_nopage_64_splitkv_body<
+        Kernel_traits, Is_training, Is_dropout, Is_prefix, Is_causal,
+        Is_even_MN, Is_even_K, Return_softmax, Is_MTP, Layout, Has_extra, true, Params>(
+            params, bidb, 0, m_block, 0, INT_MAX, bidb);
+#endif
+}
+
+template<typename Kernel_traits, bool Is_training, bool Is_dropout, bool Is_prefix, bool Is_causal, bool Is_even_MN, bool Is_even_K, bool Return_softmax, bool Is_MTP, int Layout, bool Has_extra, typename Params>
+__global__ void __launch_bounds__(256, 1) flash_fwd_mla_decode_kernel_gfx938_dsa_nopage_64_splitkv_meta_dispatch(const Params params) {
+#if defined(__gfx938__)
+    const int partition_idx = blockIdx.z;
+    const int m_block = blockIdx.x;
+    auto* metadata = reinterpret_cast<const DecodingSchedMeta*>(params.tile_scheduler_metadata_ptr);
+    const DecodingSchedMeta sched_meta = metadata[partition_idx];
+    if (sched_meta.begin_req_idx >= params.b) {
+        return;
+    }
+
+    for (int bidb = sched_meta.begin_req_idx; bidb <= sched_meta.end_req_idx; ++bidb) {
+        if (bidb > sched_meta.begin_req_idx) {
+            __syncthreads();
+        }
+        const int n_block_min = bidb == sched_meta.begin_req_idx ? sched_meta.begin_block_idx : 0;
+        const int n_block_max = bidb == sched_meta.end_req_idx ? sched_meta.end_block_idx : INT_MAX;
+        const int split_id = bidb == sched_meta.begin_req_idx ? sched_meta.begin_split_idx : 0;
+        const int64_t accum_split_idx = int64_t(__ldg(params.num_splits_ptr + bidb)) + split_id;
+        flash_fwd_mla_decode_kernel_gfx938_dsa_nopage_64_splitkv_body<
+            Kernel_traits, Is_training, Is_dropout, Is_prefix, Is_causal,
+            Is_even_MN, Is_even_K, Return_softmax, Is_MTP, Layout, Has_extra, false, Params>(
+                params, bidb, split_id, m_block, n_block_min, n_block_max, accum_split_idx);
     }
 #endif
 }
