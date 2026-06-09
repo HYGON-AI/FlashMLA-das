@@ -12,6 +12,7 @@
 
 #include "kerutils/supplemental/torch_tensors.h"
 #include "gfx93/prefill/sparse/dsa_mls/dispatch.h"
+#include "gfx9/decode/combine/combine_bf16_dsa.h"
 
 namespace gfx93::decode::sparse_bf16_dsa {
 
@@ -43,12 +44,21 @@ static int int64_stride_to_int(int64_t stride) {
     return static_cast<int>(stride);
 }
 
-static int default_num_splits(int b, int s_q, int topk, int extra_topk) {
+static int default_num_splits(int b, int s_q, int h_q, int topk, int extra_topk) {
+    const int64_t decode_tasks = static_cast<int64_t>(b) * s_q;
     if (extra_topk > 0) {
-        return 2;
+        if (h_q == 64) {
+            if (decode_tasks <= 16) return 16;
+            if (decode_tasks <= 32) return 4;
+            return 1;
+        }
+        if (decode_tasks <= 4) {
+            return 16;
+        }
+        if (decode_tasks <= 16) return 8;
+        return 1;
     }
 
-    const int64_t decode_tasks = static_cast<int64_t>(b) * s_q;
     if (topk == 512) {
         return decode_tasks <= 8 ? 8 : 1;
     }
@@ -58,7 +68,13 @@ static int default_num_splits(int b, int s_q, int topk, int extra_topk) {
         return 1;
     }
     if (topk > 1024) {
-        if (decode_tasks <= 2) return 32;
+        if (h_q == 64) {
+            if (decode_tasks <= 4) return 32;
+            if (decode_tasks <= 8) return 16;
+            if (decode_tasks <= 16) return 8;
+            if (decode_tasks <= 64) return 4;
+            return 2;
+        }
         if (decode_tasks <= 4) return 16;
         if (decode_tasks <= 8) return 8;
         if (decode_tasks <= 64) return 4;
@@ -181,26 +197,9 @@ run(
     at::Tensor scores_memory = torch::empty({2, b, h_kv, s_q * h_q}, opts.dtype(at::kFloat));
     at::Tensor scores_max = scores_memory.select(0, 0);
     at::Tensor scores_sum = scores_memory.select(0, 1);
-
-    if (!num_splits.has_value()) {
-        const int split = default_num_splits(b, s_q, topk, extra_topk);
-        num_splits = torch::empty({1}, opts.dtype(torch::kInt32));
-        num_splits->fill_(split);
-    }
-    KU_CHECK_DTYPE(num_splits, torch::kInt32);
-    KU_CHECK_DEVICE(num_splits);
-    KU_CHECK_CONTIGUOUS(num_splits);
-    TORCH_CHECK(num_splits->numel() == 1, "DSA BF16 sparse decode expects num_splits to be a scalar tensor");
-    const int requested_num_splits = num_splits->item<int>();
-    TORCH_CHECK(requested_num_splits >= 1 && requested_num_splits <= 64, "DSA BF16 sparse decode requires 1 <= num_splits <= 64");
-    if (requested_num_splits == 1) {
-        if (has_extra) {
-            TORCH_CHECK(topk <= 256, "DSA BF16 sparse decode with extra_kv and num_splits == 1 supports topk <= 256");
-            TORCH_CHECK(extra_topk <= 1024, "DSA BF16 sparse decode with extra_kv and num_splits == 1 supports extra_topk <= 1024");
-        } else {
-            TORCH_CHECK(topk <= 1024, "DSA BF16 sparse decode with num_splits == 1 supports topk <= 1024");
-        }
-    }
+    const int requested_num_splits = default_num_splits(b, s_q, h_q, topk, extra_topk);
+    TORCH_CHECK(requested_num_splits >= 1 && requested_num_splits <= arch.num_sms,
+                "DSA BF16 sparse decode requires 1 <= num_splits <= num_sms");
 
     Flash_fwd_mla_params_dsa params;
     std::memset(&params, 0, sizeof(params));
@@ -269,13 +268,17 @@ run(
     params.cu_count = arch.num_sms;
     params.seqlenq_ngroups_swapped = true;
     params.is_seqlens_k_cumulative = false;
-    params.splitkv_use_fp32_as_accum = false;
+    params.splitkv_use_meta_dispatch = false;
     constexpr int64_t kBufferLoadPaddedTokenLimit = 32LL * 64 * 1024;
     const int64_t padded_k_tokens = static_cast<int64_t>(kv.size(0)) * page_block_size;
     const int64_t padded_extra_k_tokens = has_extra ? static_cast<int64_t>(extra_kv->size(0)) * extra_kv->size(1) : 0;
     params.decode_use_c_load = padded_k_tokens > kBufferLoadPaddedTokenLimit ||
                                padded_extra_k_tokens > kBufferLoadPaddedTokenLimit;
     params.num_splits = requested_num_splits;
+    params.splitkv_use_fp32_as_accum = params.num_splits > 1;
+    params.tile_scheduler_metadata_ptr = nullptr;
+    params.num_splits_ptr = nullptr;
+    params.num_sm_parts = params.num_splits;
     params.partition_size = topk + params.extra_topk;
     if (params.num_splits > 1) {
         params.partition_size = std::max(64, (params.partition_size + params.num_splits - 1) / params.num_splits);
@@ -285,14 +288,44 @@ run(
     at::Tensor out_accum;
     at::Tensor lse_accum;
     if (params.num_splits > 1) {
-        lse_accum = torch::empty({params.num_splits, b, h_kv, params.seqlen_q}, opts.dtype(at::kFloat));
-        out_accum = torch::empty({params.num_splits, b, s_q, h_q, d_v}, opts);
+        const int total_num_splits = b * params.num_splits;
+        lse_accum = torch::empty({total_num_splits, s_q, h_q}, opts.dtype(at::kFloat));
+        out_accum = torch::empty({total_num_splits, s_q, h_q, d_v}, opts.dtype(at::kFloat));
         params.softmax_lse_ptr = lse_accum.data_ptr<float>();
         params.oaccum_ptr = out_accum.data_ptr();
     }
 
     hipStream_t stream = reinterpret_cast<hipStream_t>(at::cuda::getCurrentCUDAStream().stream());
     gfx93::fwd::dsa_mls::run_dsa_prefill_nopage_64_dispatch<BFloat16, 512, 512>(params, stream);
+
+    if (params.num_splits > 1) {
+        CombineParams combine_params = {
+            b, s_q, h_q, d_v,
+
+            lse.data_ptr<float>(),
+            out.data_ptr(),
+            int64_stride_to_int(lse.stride(0)), int64_stride_to_int(lse.stride(2)),
+            int64_stride_to_int(out.stride(0)), int64_stride_to_int(out.stride(1)), int64_stride_to_int(out.stride(2)),
+
+            lse_accum.data_ptr<float>(),
+            out_accum.data_ptr<float>(),
+            int64_stride_to_int(lse_accum.stride(0)), int64_stride_to_int(lse_accum.stride(1)),
+            int64_stride_to_int(out_accum.stride(0)), int64_stride_to_int(out_accum.stride(1)), int64_stride_to_int(out_accum.stride(2)),
+
+            nullptr,
+            nullptr,
+            params.num_splits,
+
+            ku::get_optional_tensor_ptr<float>(attn_sink),
+            at::cuda::getCurrentCUDAStream().stream(),
+
+            true,
+            params.num_splits,
+            nullptr,
+            0
+        };
+        gfx9::decode::bf16_dsa::run_flash_mla_combine_kernel<cutlass::bfloat16_t>(combine_params);
+    }
 
     return {out, lse, tile_scheduler_metadata, num_splits};
 }

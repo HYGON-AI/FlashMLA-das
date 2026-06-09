@@ -53,6 +53,60 @@ __forceinline__ __device__ void prefill_mla_epilugue_rescale_acco(
     }
 }
 
+template<int kHeadDimV, int kBlockM, int kBlockK, int WARP_M, bool Is_even_MN, typename ElementAccum, int M_MMAC_COUNT=2>
+__forceinline__ __device__ void prefill_mla_epilogue_store_output_fp32(
+        float *o_ptr,
+        vec4_Accum<ElementAccum> acc_o[(kHeadDimV / kBlockK) * (WARP_M / (16 * M_MMAC_COUNT)) * (kBlockK / 32)][2 * M_MMAC_COUNT],
+        int m_block,
+        int warp_id,
+        int lane_id,
+        int seqlen_o_stride,
+        int seqlen_q_limit) {
+
+    int pv_lane_seq_idx = lane_id & 15;
+    int pv_lane_head_dim_idx = lane_id >> 4;
+
+    #pragma unroll
+    for (int k_loop = 0; k_loop < (kHeadDimV / kBlockK); ++k_loop) {
+        #pragma unroll
+        for (int warp_m_idx = 0; warp_m_idx < (WARP_M / (16 * M_MMAC_COUNT)); ++warp_m_idx) {
+            #pragma unroll
+            for (int k_tile_idx = 0; k_tile_idx < (kBlockK / 32); ++k_tile_idx) {
+                #pragma unroll 2
+                for (int min_tile_m = 0; min_tile_m < M_MMAC_COUNT; ++min_tile_m) {
+                    #pragma unroll 2
+                    for (int min_tile_n = 0; min_tile_n < 2; ++min_tile_n) {
+                        const int pv_tile_id = k_loop * (WARP_M / (16 * M_MMAC_COUNT)) * (kBlockK / 32) + warp_m_idx * (kBlockK / 32) + k_tile_idx;
+                        int mmac_id;
+                        if constexpr (M_MMAC_COUNT == 2) {
+                            mmac_id = min_tile_m + min_tile_n * 2;
+                        } else {
+                            mmac_id = min_tile_n;
+                        }
+
+                        const int seqlen_q_offset = warp_id * WARP_M + warp_m_idx * (16 * M_MMAC_COUNT) + min_tile_m * 16 + pv_lane_seq_idx;
+                        const int s_offset = k_tile_idx * 32 + min_tile_n * 16;
+                        const int v_offset = seqlen_q_offset * seqlen_o_stride + k_loop * kBlockK + pv_lane_head_dim_idx * 4;
+                        if constexpr (not Is_even_MN) {
+                            if (m_block * kBlockM + seqlen_q_offset < seqlen_q_limit) {
+                                #pragma unroll
+                                for (int vec_index = 0; vec_index < 4; ++vec_index) {
+                                    o_ptr[v_offset + s_offset + vec_index] = acc_o[pv_tile_id][mmac_id].f32[vec_index];
+                                }
+                            }
+                        } else {
+                            #pragma unroll
+                            for (int vec_index = 0; vec_index < 4; ++vec_index) {
+                                o_ptr[v_offset + s_offset + vec_index] = acc_o[pv_tile_id][mmac_id].f32[vec_index];
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 template<int WARP_M, int kBlockK, int kHeadDimV, bool Is_dropout, typename ElementAccum, typename DataType=union_vec2_fp32/* vec2_Accum<ElementAccum> */, int M_MMAC_COUNT=2>
 __forceinline__ __device__ void decode_dsa_epilugue_rescale_acco(
     vec4_Accum<ElementAccum> acc_o[(kHeadDimV / kBlockK) * (WARP_M / (16 * M_MMAC_COUNT)) * (kBlockK / 32)][2 * M_MMAC_COUNT],

@@ -86,6 +86,7 @@ ext_modules.append(
             # # Misc kernels for decoding
             "csrc/gfx9/decode/get_decoding_sched_meta/get_decoding_sched_meta.cu",
             "csrc/gfx9/decode/combine/combine.cu",
+            "csrc/gfx9/decode/combine/combine_bf16_dsa.cu",
 
             # # gfx93 dense decode
             "csrc/gfx93/decode/dense/instantiations/fp16.cu",

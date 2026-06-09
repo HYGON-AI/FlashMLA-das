@@ -1,5 +1,6 @@
 from typing import Optional, Tuple
 import dataclasses
+import os
 
 import torch
 
@@ -48,6 +49,76 @@ def get_mla_metadata(
         A tuple. Due to historical reasons, we return a tuple of (FlashMLASchedMeta, None) now. Only the first element is useful.
     """
     return FlashMLASchedMeta(), None
+
+
+def _is_dsa_debug_enabled() -> bool:
+    return os.environ.get("FLASH_MLA_DSA_DEBUG", "").lower() in ["1", "true", "yes", "y", "on"]
+
+
+def _tensor_desc(t: Optional[torch.Tensor]) -> str:
+    if t is None:
+        return "None"
+    return (
+        f"shape={tuple(t.shape)} stride={tuple(t.stride())} "
+        f"dtype={t.dtype} device={t.device} contiguous={t.is_contiguous()}"
+    )
+
+
+def _print_sparse_decode_debug(
+    q: torch.Tensor,
+    k_cache: torch.Tensor,
+    indices: torch.Tensor,
+    head_dim_v: int,
+    is_fp8_kvcache: bool,
+    softmax_scale: float,
+    attn_sink: Optional[torch.Tensor],
+    extra_k_cache: Optional[torch.Tensor],
+    extra_indices: Optional[torch.Tensor],
+    topk_length: Optional[torch.Tensor],
+    extra_topk_length: Optional[torch.Tensor],
+    num_splits: Optional[torch.Tensor],
+) -> None:
+    if not _is_dsa_debug_enabled():
+        return
+    print("[flash_mla][sparse_decode]")
+    print(f"  mode={'fp8' if is_fp8_kvcache else 'bf16'} b={q.shape[0]} s_q={q.shape[1]} h_q={q.shape[2]} h_kv={k_cache.shape[2]} d_qk={q.shape[-1]} d_v={head_dim_v}")
+    print(f"  topk={indices.shape[-1]} page_block_size={k_cache.shape[1]} num_blocks={k_cache.shape[0]} softmax_scale={softmax_scale}")
+    print(f"  have_attn_sink={attn_sink is not None} have_topk_length={topk_length is not None} num_splits_override={num_splits is not None}")
+    print(f"  q: {_tensor_desc(q)}")
+    print(f"  k_cache: {_tensor_desc(k_cache)}")
+    print(f"  indices: {_tensor_desc(indices)}")
+    if extra_k_cache is not None or extra_indices is not None:
+        extra_topk = extra_indices.shape[-1] if extra_indices is not None else None
+        extra_block = extra_k_cache.shape[1] if extra_k_cache is not None else None
+        extra_blocks = extra_k_cache.shape[0] if extra_k_cache is not None else None
+        print(f"  extra_topk={extra_topk} extra_page_block_size={extra_block} extra_num_blocks={extra_blocks} have_extra_topk_length={extra_topk_length is not None}")
+        print(f"  extra_k_cache: {_tensor_desc(extra_k_cache)}")
+        print(f"  extra_indices: {_tensor_desc(extra_indices)}")
+    if topk_length is not None:
+        print(f"  topk_length: {_tensor_desc(topk_length)}")
+    if extra_topk_length is not None:
+        print(f"  extra_topk_length: {_tensor_desc(extra_topk_length)}")
+
+
+def _print_sparse_prefill_debug(
+    q: torch.Tensor,
+    kv: torch.Tensor,
+    indices: torch.Tensor,
+    sm_scale: float,
+    d_v: int,
+    attn_sink: Optional[torch.Tensor],
+    topk_length: Optional[torch.Tensor],
+) -> None:
+    if not _is_dsa_debug_enabled():
+        return
+    print("[flash_mla][sparse_prefill]")
+    print(f"  s_q={q.shape[0]} h_q={q.shape[1]} h_kv={kv.shape[1]} s_kv={kv.shape[0]} d_qk={q.shape[-1]} d_v={d_v}")
+    print(f"  topk={indices.shape[-1]} sm_scale={sm_scale} have_attn_sink={attn_sink is not None} have_topk_length={topk_length is not None}")
+    print(f"  q: {_tensor_desc(q)}")
+    print(f"  kv: {_tensor_desc(kv)}")
+    print(f"  indices: {_tensor_desc(indices)}")
+    if topk_length is not None:
+        print(f"  topk_length: {_tensor_desc(topk_length)}")
 
 
 def flash_mla_with_kvcache(
@@ -157,6 +228,11 @@ def flash_mla_with_kvcache(
         else:
             assert num_splits is None, "num_splits override is only supported by BF16 sparse decode"
         decode_num_splits = num_splits if num_splits is not None else sched_meta.num_splits
+        _print_sparse_decode_debug(
+            q, k_cache, indices_in_kvcache, head_dim_v, is_fp8_kvcache,
+            softmax_scale, attn_sink, extra_k_cache, extra_indices_in_kvcache,
+            topk_length, extra_topk_length, decode_num_splits
+        )
         out, lse, new_tile_scheduler_metadata, new_num_splits = flash_mla_cuda.sparse_decode_fwd(
             q, k_cache, indices_in_kvcache, topk_length, attn_sink,
             sched_meta.tile_scheduler_metadata, decode_num_splits,
@@ -211,6 +287,7 @@ def flash_mla_sparse_fwd(
         - max_logits:  [s_q, h_q], float
         - lse: [s_q, h_q], float, log-sum-exp of attention scores
     """
+    _print_sparse_prefill_debug(q, kv, indices, sm_scale, d_v, attn_sink, topk_length)
     results = flash_mla_cuda.sparse_prefill_fwd(
         q, kv, indices, sm_scale, d_v, attn_sink, topk_length
     )
