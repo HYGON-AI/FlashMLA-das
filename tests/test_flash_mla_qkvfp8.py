@@ -2,6 +2,9 @@ import argparse
 import math
 import random
 
+import os
+from csv_generate import _reset_csv, _append_csv, dtype_to_name
+
 import torch
 import triton
 
@@ -41,6 +44,7 @@ def cal_diff(x: torch.Tensor, y: torch.Tensor, name: str, use_fp8: bool=False) -
         assert cos_diff < 1e-3
     else:
         assert cos_diff < (1e-4 if torch_dtype == torch.bfloat16 else 1e-5)
+    return {"cos_diff": cos_diff, "RMSE": RMSE, "amax_diff": amax_diff}
 
     
 
@@ -168,12 +172,19 @@ def test_flash_mla(b, s_q, mean_sk, h_q, h_kv, d, dv, causal, varlen, is_prof=Fa
     cal_diff(out_flash, out_torch, "out", use_fp8)
     cal_diff(lse_flash, lse_torch, "lse")
     if is_prof: return
+
+    csv_row = {
+        "b": b, "s_q": s_q, "s_k": mean_sk, "h_q": h_q, "h_kv": h_kv, "d": d, "dv": dv,
+        "causal": causal, "varlen": varlen, "time_ms": "", "tflops": "", "gbps": ""
+    }
     t = triton.testing.do_bench(flash_mla)
     FLOPS = s_q * total_seqlens * h_q * (d + dv) * 2
     bytes = (total_seqlens * h_kv * d + b * s_q * h_q * d) * (torch.finfo(torch_dtype).bits // 8) + (b * s_q * h_q * dv) * (torch.finfo(init_dtype).bits // 8)
-    print(
-        f"{t:.3f} ms, {FLOPS / 10 ** 9 / t:.0f} TFLOPS, {bytes / 10 ** 6 / t:.0f} GB/s"
-    )
+    tflops = FLOPS / 10 ** 9 / t
+    gbps = bytes / 10 ** 6 / t
+    print(f"{t:.3f} ms, {tflops:.0f} TFLOPS, {gbps:.0f} GB/s")
+    csv_row.update({"time_ms": t, "tflops": tflops, "gbps": gbps})
+    _append_csv(csv_row)
 
 def get_gcn_arch_name() -> str:
     GPU_ARCH = torch.cuda.get_device_properties("cuda").gcnArchName
@@ -210,6 +221,18 @@ def main(torch_dtype, is_prof=False):
     h_kv = 1
     d, dv = 576, 512
     causal = True
+    seen_configs = set()
+
+    def run_once(b, s_q, s, h_q, h_kv, d, dv, causal, varlen, is_prof=False):
+        config = (b, s_q, s, h_q, h_kv, d, dv, causal, varlen)
+        if config in seen_configs:
+            print(
+                f"skip duplicate: {b=}, {s_q=}, s_k={s}, {h_q=}, {h_kv=}, "
+                f"{d=}, {dv=}, {causal=}, {varlen=}"
+            )
+            return
+        seen_configs.add(config)
+        test_flash_mla(b, s_q, s, h_q, h_kv, d, dv, causal, varlen, is_prof, torch_dtype)
    
 
     # for b in [40, 80]:
@@ -224,21 +247,21 @@ def main(torch_dtype, is_prof=False):
             for h_q in [32, 16, 64, 128]:
                 for s_q in [1, 2, 3]:  # MTP = 1, 2
                     for varlen in [False, True]:
-                        test_flash_mla(b, s_q, s, h_q, h_kv, d, dv, causal, varlen,True,torch_dtype)
+                        run_once(b, s_q, s, h_q, h_kv, d, dv, causal, varlen, True)
 
     for b in [3, 6, 9, 12, 15, 18, 21, 24, 32, 64, 128, 256]:
         for s in [4000]:
             for h_q in [32, 16, 64, 128]:
                 for s_q in [1]:  # MTP = 1, 2
                     for varlen in [False]:
-                        test_flash_mla(b, s_q, s, h_q, h_kv, d, dv, causal, varlen,False,torch_dtype)
+                        run_once(b, s_q, s, h_q, h_kv, d, dv, causal, varlen)
 
     for b in [3, 6, 9, 12, 15, 18, 21, 24, 32, 64, 128, 256]:
         for s in [4000]:
             for h_q in [16]:
                 for s_q in [1,2,3,4]:  # MTP = 1, 2
                     for varlen in [False]:
-                        test_flash_mla(b, s_q, s, h_q, h_kv, d, dv, causal, varlen,False,torch_dtype)
+                        run_once(b, s_q, s, h_q, h_kv, d, dv, causal, varlen)
 
 
 
@@ -262,4 +285,6 @@ if __name__ == "__main__":
         torch_dtype = torch.float16
     elif args.dtype == "e4m3":
         torch_dtype = torch.float8_e4m3fn
+
+    _reset_csv(f"{os.path.splitext(os.path.basename(__file__))[0]}_{dtype_to_name(torch_dtype)}.csv")
     main(torch_dtype, args.prof)
