@@ -2,6 +2,9 @@ import argparse
 import math
 import random
 
+import os
+from csv_generate import _reset_csv, _append_csv, dtype_to_name
+
 import torch
 import triton
 
@@ -37,6 +40,7 @@ def cal_diff(x: torch.Tensor, y: torch.Tensor, name: str) -> None:
     amax_diff = (x - y).abs().max().item()
     print(f"{name}: {cos_diff=}, {RMSE=}, {amax_diff=}")
     assert cos_diff < (1e-4 if torch_dtype == torch.bfloat16 else 1e-5)
+    return {"cos_diff": cos_diff, "RMSE": RMSE, "amax_diff": amax_diff}
 
 @torch.inference_mode()
 def test_flash_mla_fp8_e5m2(b, s_q, mean_sk, h_q, h_kv, d, dv, causal, varlen, is_prof=False):
@@ -164,9 +168,15 @@ def test_flash_mla_fp8_e5m2(b, s_q, mean_sk, h_q, h_kv, d, dv, causal, varlen, i
     bytes = ( b * s_q * h_q * d + b * s_q * h_q * dv) * (
         torch.finfo(q.dtype).bits // 8
     ) + total_seqlens * h_kv * d
+    tflops = FLOPS / 10 ** 9 / t
+    gbps = bytes / 10 ** 6 / t
     print(
-        f"{t:.3f} ms, {FLOPS / 10 ** 9 / t:.0f} TFLOPS, {bytes / 10 ** 6 / t:.0f} GB/s"
+        f"{t:.3f} ms, {tflops:.0f} TFLOPS, {gbps:.0f} GB/s"
     )
+    _append_csv({
+        "b": b, "s_q": s_q, "s_k": mean_sk, "h_q": h_q, "h_kv": h_kv, "d": d, "dv": dv,
+        "causal": causal, "varlen": varlen, "time_ms": t, "tflops": tflops, "gbps": gbps,
+    })
 
 def get_gcn_arch_name() -> str:
     GPU_ARCH = torch.cuda.get_device_properties("cuda").gcnArchName
@@ -202,6 +212,18 @@ def main(torch_dtype, is_prof=False):
     h_kv = 1
     d, dv = 576, 512
     causal = True
+    seen_configs = set()
+
+    def run_once(b, s_q, s, h_q, h_kv, d, dv, causal, varlen):
+        config = (b, s_q, s, h_q, h_kv, d, dv, causal, varlen)
+        if config in seen_configs:
+            print(
+                f"skip duplicate: {b=}, {s_q=}, s_k={s}, {h_q=}, {h_kv=}, "
+                f"{d=}, {dv=}, {causal=}, {varlen=}"
+            )
+            return
+        seen_configs.add(config)
+        test_flash_mla_fp8_e5m2(b, s_q, s, h_q, h_kv, d, dv, causal, varlen, is_prof)
 
     # for b in [1, 32]:
     #     for s in [200, 1002, 2002, 1024, 2000, 4000, 32768, 65536]:
@@ -224,14 +246,14 @@ def main(torch_dtype, is_prof=False):
             for h_q in [16]:
                 for s_q in [1]:  # MTP = 1, 2
                     for varlen in [False,True]:
-                        test_flash_mla_fp8_e5m2(b, s_q, s, h_q, h_kv, d, dv, causal, varlen)
+                        run_once(b, s_q, s, h_q, h_kv, d, dv, causal, varlen)
 
     for b in [3, 6, 9, 12, 15, 18, 21, 24, 32, 64, 128, 256]:
         for s in [4000]:
             for h_q in [16]:
                 for s_q in [1]:  # MTP = 1, 2
                     for varlen in [False]:
-                        test_flash_mla_fp8_e5m2(b, s_q, s, h_q, h_kv, d, dv, causal, varlen)
+                        run_once(b, s_q, s, h_q, h_kv, d, dv, causal, varlen)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
@@ -250,4 +272,6 @@ if __name__ == "__main__":
     if args.dtype == "fp16":
         torch_dtype = torch.float16
 
+
+    _reset_csv(f"{os.path.splitext(os.path.basename(__file__))[0]}_{dtype_to_name(torch_dtype)}.csv")
     main(torch_dtype, args.prof)

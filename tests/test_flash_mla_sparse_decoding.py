@@ -6,6 +6,9 @@ import copy
 import rich.console
 import rich.table
 
+import os
+from csv_generate import _reset_csv, _append_csv, dtype_to_name
+
 import torch
 import kernelkit as kk
 
@@ -257,6 +260,7 @@ def get_gcn_arch_name() -> str:
     GPU_ARCH = torch.cuda.get_device_properties("cuda").gcnArchName
     return GPU_ARCH.split(':')[0]
 
+
 def main():
     if get_gcn_arch_name() == "gfx928":
         print("[WARNING] gfx928 architecture is not supported.")
@@ -268,6 +272,7 @@ def main():
     torch.cuda.set_device(device)
     torch.set_float32_matmul_precision('high')
     torch.set_num_threads(32)
+    _reset_csv(f"{os.path.splitext(os.path.basename(__file__))[0]}_{dtype_to_name(dtype)}.csv")
 
     raw_testcases = gen_testcase()
     testcases = [t.to_test_param() for t in raw_testcases]
@@ -300,6 +305,20 @@ def main():
         print(f"[{testcase_idx+1:{num_testcases_len}d}/{len(testcases)}, {testcase_idx/len(testcases)*100:3.0f}%]  ", end='')
         result = test_flash_mla(testcase)
         results.append((testcase, result))
+
+        if testcase.num_runs > 0:
+            topk_str = f"{testcase.topk}" if testcase.decode.extra_topk is None else f"{testcase.topk}+{testcase.decode.extra_topk}"
+            _append_csv({
+                "b": testcase.decode.b, "s_q": testcase.s_q, "s_kv": testcase.s_kv, "topk": topk_str,
+                "h_q": testcase.h_q, "h_kv": testcase.h_kv, "d_qk": testcase.d_qk, "d_v": testcase.d_v,
+                "is_varlen": testcase.decode.is_varlen, "block_size": testcase.decode.block_size,
+                "extra_s_k": testcase.decode.extra_s_k, "extra_block_size": testcase.decode.extra_block_size,
+                "have_extra_topk_length": testcase.decode.have_extra_topk_length,
+                "compute_memory_ratio": result.compute_memory_ratio, "time_us": result.time_usage_per_us,
+                "splitkv_time_us": result.splitkv_time_usage_us, "combine_time_us": result.combine_time_usage_us,
+                "tflops": result.achieved_tflops, "gbps": result.achieved_gBps,
+            })
+
         if not result.is_correct:
             failed_cases.append(testcase)
             import sys

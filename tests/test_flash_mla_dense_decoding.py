@@ -2,7 +2,9 @@ import argparse
 import math
 import random
 import dataclasses
+import os
 from typing import Tuple
+from csv_generate import _reset_csv, _append_csv, dtype_to_name
 
 import torch
 
@@ -198,7 +200,14 @@ def test_flash_mla(t: TestParam):
         achieved_tflops = compute_volume_flop / time_usage / 1e12
         achieved_gBps = memory_volume_B / time_usage / 1e9
 
-        print(f"{time_usage * 1000:.3f} ms, {achieved_tflops:.0f} TFLOPS, {achieved_gBps:.0f} GB/s")
+        time_ms = time_usage * 1000
+        print(f"{time_ms:.3f} ms, {achieved_tflops:.0f} TFLOPS, {achieved_gBps:.0f} GB/s")
+
+        _append_csv({
+            "b": t.b, "s_q": t.s_q, "s_k": t.s_k, "is_varlen": t.is_varlen, "is_causal": t.is_causal,
+            "block_size": t.block_size, "h_q": t.h_q, "h_kv": t.h_kv, "d": t.d, "dv": t.dv, 
+            "time_ms": time_ms, "tflops": achieved_tflops, "gbps": achieved_gBps,
+        })
 
 
 def main(torch_dtype):
@@ -206,7 +215,6 @@ def main(torch_dtype):
     torch.set_default_dtype(torch_dtype)
     torch.set_default_device(device)
     torch.cuda.set_device(device)
-
     cc_major, cc_minor = torch.cuda.get_device_capability()
     assert cc_major == 9, "Dense MLA decoding is only supported on sm90 (Hopper) currently."
 
@@ -261,4 +269,5 @@ if __name__ == "__main__":
     if args.dtype == "fp16":
         torch_dtype = torch.float16
 
+    _reset_csv(f"{os.path.splitext(os.path.basename(__file__))[0]}_{dtype_to_name(torch_dtype)}.csv")
     main(torch_dtype)

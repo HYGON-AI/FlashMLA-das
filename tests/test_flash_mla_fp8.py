@@ -1,9 +1,10 @@
 import argparse
 import math
+import os
 import random
-
 import torch
 import triton
+from csv_generate import _reset_csv, _append_csv, dtype_to_name
 
 from flash_mla import flash_mla_with_kvcache_fp8, get_mla_decoding_metadata_dense_fp8
 torch.set_printoptions(precision=4, profile="default", sci_mode=False)
@@ -36,6 +37,7 @@ def cal_diff(x: torch.Tensor, y: torch.Tensor, name: str) -> None:
     amax_diff = (x - y).abs().max().item()
     print(f"{name}: {cos_diff=}, {RMSE=}, {amax_diff=}")
     assert cos_diff < (1e-4 if torch_dtype == torch.bfloat16 else 1e-5)
+    return {"cos_diff": cos_diff, "RMSE": RMSE, "amax_diff": amax_diff}
 
 @torch.inference_mode()
 def test_flash_mla_fp8_e5m2(b, s_q, mean_sk, h_q, h_kv, d, dv, causal, varlen, is_prof=False):
@@ -147,9 +149,13 @@ def test_flash_mla_fp8_e5m2(b, s_q, mean_sk, h_q, h_kv, d, dv, causal, varlen, i
     bytes = ( b * s_q * h_q * d + b * s_q * h_q * dv) * (
         torch.finfo(q.dtype).bits // 8
     ) + total_seqlens * h_kv * d
-    print(
-        f"{t:.3f} ms, {FLOPS / 10 ** 9 / t:.0f} TFLOPS, {bytes / 10 ** 6 / t:.0f} GB/s"
-    )
+    tflops = FLOPS / 10 ** 9 / t
+    gbps = bytes / 10 ** 6 / t
+    print(f"{t:.3f} ms, {tflops:.0f} TFLOPS, {gbps:.0f} GB/s")
+    _append_csv({
+        "b": b, "s_q": s_q, "mean_sk": mean_sk, "h_q": h_q, "h_kv": h_kv, "d": d, "dv": dv,"causal": causal, 
+        "varlen": varlen, "time_ms": t, "tflops": tflops, "gbps": gbps
+    })
 
 def main(torch_dtype, is_prof=False):
     device = torch.device("cuda:0")
@@ -178,6 +184,18 @@ def main(torch_dtype, is_prof=False):
     h_kv = 1
     d, dv = 576, 512
     causal = True
+    seen_configs = set()
+
+    def run_once(b, s_q, s, h_q, h_kv, d, dv, causal, varlen, is_prof=False):
+        config = (b, s_q, s, h_q, h_kv, d, dv, causal, varlen)
+        if config in seen_configs:
+            print(
+                f"skip duplicate: {b=}, {s_q=}, s_k={s}, {h_q=}, {h_kv=}, "
+                f"{d=}, {dv=}, {causal=}, {varlen=}"
+            )
+            return
+        seen_configs.add(config)
+        test_flash_mla_fp8_e5m2(b, s_q, s, h_q, h_kv, d, dv, causal, varlen, is_prof)
 
     # for b in [1, 32]:
     #     for s in [200, 1002, 2002, 1024, 2000, 4000, 32768, 65536]:
@@ -200,19 +218,19 @@ def main(torch_dtype, is_prof=False):
             for h_q in [16, 128]:
                 for s_q in [1, 2, 3]:  # MTP = 1, 2
                     for varlen in [False, True]:
-                        test_flash_mla_fp8_e5m2(b, s_q, s, h_q, h_kv, d, dv, causal, varlen,True)
+                        run_once(b, s_q, s, h_q, h_kv, d, dv, causal, varlen, True)
     for b in [3, 6, 9, 12, 15, 18, 21, 24, 32, 64, 128, 256]:
         for s in [4000]:
             for h_q in [16, 128]:
                 for s_q in [1]:  # MTP = 1, 2
                     for varlen in [False]:
-                        test_flash_mla_fp8_e5m2(b, s_q, s, h_q, h_kv, d, dv, causal, varlen)
+                        run_once(b, s_q, s, h_q, h_kv, d, dv, causal, varlen)
     for b in [3, 6, 9, 12, 15, 18, 21, 24, 32, 64, 128, 256]:
         for s in [4000]:
             for h_q in [16]:
                 for s_q in [1, 2, 3, 4]:  # MTP = 1, 2
                     for varlen in [False]:
-                        test_flash_mla_fp8_e5m2(b, s_q, s, h_q, h_kv, d, dv, causal, varlen)
+                        run_once(b, s_q, s, h_q, h_kv, d, dv, causal, varlen)
 
 def get_gcn_arch_name() -> str:
     GPU_ARCH = torch.cuda.get_device_properties("cuda").gcnArchName
@@ -221,7 +239,7 @@ def get_gcn_arch_name() -> str:
 if __name__ == "__main__":
     if get_gcn_arch_name() == "gfx928":
         print("[WARNING] gfx928 architecture is not supported.")
-        exit(0) 
+        exit(0)
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--dtype",
@@ -238,4 +256,5 @@ if __name__ == "__main__":
     if args.dtype == "fp16":
         torch_dtype = torch.float16
 
+    _reset_csv(f"{os.path.splitext(os.path.basename(__file__))[0]}_{dtype_to_name(torch_dtype)}.csv")
     main(torch_dtype, args.prof)
