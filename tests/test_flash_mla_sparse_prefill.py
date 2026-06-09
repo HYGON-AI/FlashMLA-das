@@ -1,6 +1,9 @@
 import time
 import sys
 
+import os
+from csv_generate import _reset_csv, _append_csv, dtype_to_name
+
 import torch
 import kernelkit as kk
 
@@ -51,6 +54,7 @@ def run_test(p: TestParam) -> bool:
     prefill_ans_out, prefill_ans_max_logits, prefill_ans_lse = run_prefill()
     torch.cuda.synchronize()
 
+
     if p.num_runs > 0:
         flops_and_mem_vol = lib.count_flop_and_mem_vol(p, t)
         bench_result = kk.bench_kineto(run_prefill, num_tests=p.num_runs)
@@ -66,9 +70,26 @@ def run_test(p: TestParam) -> bool:
             prefill_kernel_name_candidates[0],
         )
         prefill_ans_time = bench_result.get_kernel_time(prefill_kernel_name)
-        prefill_flops = flops_and_mem_vol.fwd_flop/prefill_ans_time/1e12
-        prefill_mem_bw = flops_and_mem_vol.fwd_mem_vol/prefill_ans_time/1e12
-        print(f"Prefill:  {prefill_ans_time*1e6:4.0f} us, {prefill_flops:6.1f} TFlops, {prefill_mem_bw:4.2f} TBps")
+        prefill_flops = flops_and_mem_vol.fwd_flop / prefill_ans_time / 1e12
+        prefill_mem_bw  = flops_and_mem_vol.fwd_mem_vol / prefill_ans_time / 1e12
+        prefill_time_us = prefill_ans_time * 1e6
+        print(f"Prefill:  {prefill_time_us:4.0f} us, {prefill_flops:6.1f} TFlops, {prefill_mem_bw:4.2f} TBps")
+
+    if p.num_runs > 0:
+        _append_csv({
+            "s_q": p.s_q,
+            "s_kv": p.s_kv,
+            "topk": p.topk,
+            "h_q": p.h_q,
+            "h_kv": p.h_kv,
+            "d_qk": p.d_qk,
+            "d_v": p.d_v,
+            "have_attn_sink": p.have_attn_sink,
+            "have_topk_length": p.have_topk_length,
+            "time_us": prefill_time_us,
+            "tflops": prefill_flops,
+            "tbps": prefill_mem_bw,
+        })
 
     if p.check_correctness:
         torch.cuda.synchronize()
@@ -92,15 +113,18 @@ def get_gcn_arch_name() -> str:
     GPU_ARCH = torch.cuda.get_device_properties("cuda").gcnArchName
     return GPU_ARCH.split(':')[0]
 
+
 if __name__ == '__main__':
     if get_gcn_arch_name() == "gfx928":
         print("[WARNING] gfx928 architecture is not supported.")
         exit(0) 
     device = torch.device("cuda:0")
-    torch.set_default_dtype(torch.bfloat16)
+    dtype = torch.bfloat16
+    torch.set_default_dtype(dtype)
     torch.set_default_device(device)
     torch.cuda.set_device(device)
     torch.set_float32_matmul_precision('high')
+    _reset_csv(f"{os.path.splitext(os.path.basename(__file__))[0]}_{dtype_to_name(dtype)}.csv")
 
     correctness_cases = [
         # Regular shapes
