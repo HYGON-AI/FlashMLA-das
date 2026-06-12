@@ -3183,7 +3183,7 @@ __global__ void __launch_bounds__(256, 1) flash_fwd_mla_decode_kernel_gfx938_dsa
 #endif
 }
 
-template<typename Kernel_traits, bool Is_training, bool Is_dropout, bool Is_prefix, bool Is_causal, bool Is_even_MN, bool Is_even_K, bool Return_softmax, bool Is_MTP, int Layout, bool Has_extra, bool DirectOutput, typename Params>
+template<typename Kernel_traits, bool Is_training, bool Is_dropout, bool Is_prefix, bool Is_causal, bool Is_even_MN, bool Is_even_K, bool Return_softmax, bool Is_MTP, int Layout, bool Has_extra, bool DecodeCLoad, bool DirectOutput, typename Params>
 __device__ __forceinline__ void flash_fwd_mla_decode_kernel_gfx938_dsa_nopage_64_splitkv_body(
     const Params params,
     const int bidb,
@@ -3374,9 +3374,9 @@ __device__ __forceinline__ void flash_fwd_mla_decode_kernel_gfx938_dsa_nopage_64
 
         QK_GEMM_FUNC_new(q_ptr /* q576 */, q_ptr /* q576 */, k_ptr_buffer /* k576 */, v_ptr_buffer /* v512 */, q_lds, k_lds, v_lds, q_reg, warp_id, seqlen_qv_stride, seqlen_q_stride, seqlen_k_stride, seqlen_v_stride, index_ptr, params.k_batch_stride, params.v_batch_stride, warp_seqq_limit);
 
-        auto QK_GEMM_FUNC = &qk_gemm_prefetch_v_mls_ds_576_512_nopage_64_new_888<kHeadDim, kHeadDimV, kBlockM, kBlockN, 64, WARP_M, WARP_N, STAGES, Element, ElementAccum, Is_even_MN, Is_FlashMLA, true>;
+        auto QK_GEMM_FUNC = &qk_gemm_prefetch_v_mls_ds_576_512_nopage_64_new_888<kHeadDim, kHeadDimV, kBlockM, kBlockN, 64, WARP_M, WARP_N, STAGES, Element, ElementAccum, Is_even_MN, Is_FlashMLA, DecodeCLoad>;
         auto PV_GEMM_FUNC = &pv_gemm_prefetch_k_mls_ds_576_512<PREFETCH_K, kHeadDim, kHeadDimV, kBlockM, kBlockK, kBlockN, WARP_M, kBlockK, STAGES, Element, ElementAccum, Is_even_MN>;
-        auto PV_GEMM_FUNC_IN_MASK = &pv_gemm_prefetch_k_mls_ds_576_512_nopage_64_new_999<false, kHeadDim, kHeadDimV, kBlockM, 256, kBlockN, WARP_M, 256, STAGES, Element, ElementAccum, Is_even_MN, true>;
+        auto PV_GEMM_FUNC_IN_MASK = &pv_gemm_prefetch_k_mls_ds_576_512_nopage_64_new_999<false, kHeadDim, kHeadDimV, kBlockM, 256, kBlockN, WARP_M, 256, STAGES, Element, ElementAccum, Is_even_MN, DecodeCLoad>;
  
         int logical_chunk_start = n_block_min;
         while (logical_chunk_start < n_block_max) {
@@ -3561,7 +3561,7 @@ __device__ __forceinline__ void flash_fwd_mla_decode_kernel_gfx938_dsa_nopage_64
 #endif
 }
 
-template<typename Kernel_traits, bool Is_training, bool Is_dropout, bool Is_prefix, bool Is_causal, bool Is_even_MN, bool Is_even_K, bool Return_softmax, bool Is_MTP, int Layout, bool Has_extra, typename Params>
+template<typename Kernel_traits, bool Is_training, bool Is_dropout, bool Is_prefix, bool Is_causal, bool Is_even_MN, bool Is_even_K, bool Return_softmax, bool Is_MTP, int Layout, bool DecodeCLoad, bool Has_extra, typename Params>
 __global__ void __launch_bounds__(256, 1) flash_fwd_mla_decode_kernel_gfx938_dsa_nopage_64_splitkv(const Params params) {
 #if defined(__gfx938__)
     const int bidb = blockIdx.z;
@@ -3570,24 +3570,24 @@ __global__ void __launch_bounds__(256, 1) flash_fwd_mla_decode_kernel_gfx938_dsa
     const int64_t accum_split_idx = int64_t(bidb) * params.num_splits + split_id;
     flash_fwd_mla_decode_kernel_gfx938_dsa_nopage_64_splitkv_body<
         Kernel_traits, Is_training, Is_dropout, Is_prefix, Is_causal,
-        Is_even_MN, Is_even_K, Return_softmax, Is_MTP, Layout, Has_extra, false, Params>(
+        Is_even_MN, Is_even_K, Return_softmax, Is_MTP, Layout, Has_extra, DecodeCLoad, false, Params>(
             params, bidb, split_id, m_block, -1, -1, accum_split_idx);
 #endif
 }
 
-template<typename Kernel_traits, bool Is_training, bool Is_dropout, bool Is_prefix, bool Is_causal, bool Is_even_MN, bool Is_even_K, bool Return_softmax, bool Is_MTP, int Layout, bool Has_extra, typename Params>
+template<typename Kernel_traits, bool Is_training, bool Is_dropout, bool Is_prefix, bool Is_causal, bool Is_even_MN, bool Is_even_K, bool Return_softmax, bool Is_MTP, int Layout, bool DecodeCLoad, bool Has_extra, typename Params>
 __global__ void __launch_bounds__(256, 1) flash_fwd_mla_decode_kernel_gfx938_dsa_nopage_64_splitkv_direct(const Params params) {
 #if defined(__gfx938__)
     const int bidb = blockIdx.z;
     const int m_block = blockIdx.x;
     flash_fwd_mla_decode_kernel_gfx938_dsa_nopage_64_splitkv_body<
         Kernel_traits, Is_training, Is_dropout, Is_prefix, Is_causal,
-        Is_even_MN, Is_even_K, Return_softmax, Is_MTP, Layout, Has_extra, true, Params>(
+        Is_even_MN, Is_even_K, Return_softmax, Is_MTP, Layout, Has_extra, DecodeCLoad, true, Params>(
             params, bidb, 0, m_block, 0, INT_MAX, bidb);
 #endif
 }
 
-template<typename Kernel_traits, bool Is_training, bool Is_dropout, bool Is_prefix, bool Is_causal, bool Is_even_MN, bool Is_even_K, bool Return_softmax, bool Is_MTP, int Layout, bool Has_extra, typename Params>
+template<typename Kernel_traits, bool Is_training, bool Is_dropout, bool Is_prefix, bool Is_causal, bool Is_even_MN, bool Is_even_K, bool Return_softmax, bool Is_MTP, int Layout, bool DecodeCLoad, bool Has_extra, typename Params>
 __global__ void __launch_bounds__(256, 1) flash_fwd_mla_decode_kernel_gfx938_dsa_nopage_64_splitkv_meta_dispatch(const Params params) {
 #if defined(__gfx938__)
     const int partition_idx = blockIdx.z;
@@ -3608,7 +3608,7 @@ __global__ void __launch_bounds__(256, 1) flash_fwd_mla_decode_kernel_gfx938_dsa
         const int64_t accum_split_idx = int64_t(__ldg(params.num_splits_ptr + bidb)) + split_id;
         flash_fwd_mla_decode_kernel_gfx938_dsa_nopage_64_splitkv_body<
             Kernel_traits, Is_training, Is_dropout, Is_prefix, Is_causal,
-            Is_even_MN, Is_even_K, Return_softmax, Is_MTP, Layout, Has_extra, false, Params>(
+            Is_even_MN, Is_even_K, Return_softmax, Is_MTP, Layout, Has_extra, DecodeCLoad, false, Params>(
                 params, bidb, split_id, m_block, n_block_min, n_block_max, accum_split_idx);
     }
 #endif
