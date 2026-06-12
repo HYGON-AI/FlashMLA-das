@@ -5,6 +5,7 @@
 #include <torch/extension.h>
 
 #include <algorithm>
+#include <cstdlib>
 #include <cstring>
 #include <limits>
 #include <optional>
@@ -44,43 +45,116 @@ static int int64_stride_to_int(int64_t stride) {
     return static_cast<int>(stride);
 }
 
-static int default_num_splits(int b, int s_q, int h_q, int topk, int extra_topk) {
+static int default_num_splits(int b, int s_q, int h_q, int topk, int extra_topk, bool decode_use_c_load) {
     const int64_t decode_tasks = static_cast<int64_t>(b) * s_q;
     if (extra_topk > 0) {
-        if (h_q == 64) {
-            if (decode_tasks <= 16) return 16;
-            if (decode_tasks <= 32) return 4;
+        const int total_topk = topk + extra_topk;
+        if (topk < 512) {
+            if (h_q == 64) {
+                if (decode_use_c_load) {
+                    if (total_topk > 4096) {
+                        if (decode_tasks <= 1) return 32;
+                        if (decode_tasks <= 8) return 16;
+                        if (decode_tasks <= 64) return 8;
+                        return 4;
+                    }
+                    if (decode_tasks <= 1) return 16;
+                    if (decode_tasks <= 8) return 8;
+                    if (decode_tasks <= 32) return 4;
+                    return 1;
+                } else if (total_topk > 4096) {
+                    if (decode_tasks <= 8) return 32;
+                    if (decode_tasks <= 16) return 8;
+                    if (decode_tasks <= 64) return 4;
+                    return 1;
+                }
+                if (decode_tasks <= 1) return 32;
+                if (decode_tasks <= 8) return 8;
+                if (decode_tasks <= 16) return 4;
+                if (decode_tasks <= 64) return 2;
+                return 1;
+            }
+            if (decode_tasks <= 4) return 16;
+            if (decode_tasks <= 16) return 8;
             return 1;
         }
-        if (decode_tasks <= 4) {
-            return 16;
+        if (h_q == 64) {
+            if (total_topk > 1024 && decode_tasks <= 1) return 32;
+            if (decode_tasks <= 4) return 16;
+            if (decode_tasks <= 8) return 8;
+            if (total_topk > 1024 && decode_tasks <= 16) return 8;
+            if (decode_tasks <= 32) return 4;
+            if (decode_tasks <= 64) return 2;
+            return 1;
         }
-        if (decode_tasks <= 16) return 8;
+        if (decode_tasks <= 2) return 16;
+        if (decode_tasks <= 4) return 8;
+        if (total_topk > 1024 && decode_tasks <= 8) return 8;
+        if (decode_tasks <= 16) return 4;
+        if (decode_tasks <= 32) return 2;
+        return 1;
+    }
+
+    if (topk < 512) {
+        if (h_q == 64) {
+            if (decode_use_c_load && decode_tasks <= 32) return 2;
+        }
         return 1;
     }
 
     if (topk == 512) {
-        return decode_tasks <= 8 ? 8 : 1;
+        if (h_q == 64) {
+            if (decode_tasks <= 8) return 8;
+            if (decode_tasks <= 16) return 4;
+            if (decode_tasks <= 32) return 2;
+            return 1;
+        }
+        if (decode_tasks <= 1) return 16;
+        if (decode_tasks <= 4) return 8;
+        if (decode_tasks <= 8) return 4;
+        if (decode_tasks <= 16) return 2;
+        return 1;
     }
     if (topk == 1024) {
-        if (decode_tasks <= 4) return 16;
-        if (decode_tasks <= 8) return 8;
+        if (h_q == 64) {
+            if (decode_tasks <= 4) return 16;
+            if (decode_tasks <= 8) return 8;
+            if (decode_tasks <= 32) return 4;
+            if (decode_tasks <= 64) return 2;
+            return 1;
+        }
+        if (decode_tasks <= 2) return 16;
+        if (decode_tasks <= 4) return 8;
+        if (decode_tasks <= 16) return 4;
+        if (decode_tasks <= 32) return 2;
         return 1;
     }
     if (topk > 1024) {
         if (h_q == 64) {
-            if (decode_tasks <= 4) return 32;
-            if (decode_tasks <= 8) return 16;
+            if (decode_tasks <= 1) return 32;
+            if (decode_tasks <= 4) return 16;
             if (decode_tasks <= 16) return 8;
-            if (decode_tasks <= 64) return 4;
-            return 2;
+            if (decode_tasks <= 32) return 4;
+            if (decode_tasks <= 64) return 2;
+            return 1;
         }
-        if (decode_tasks <= 4) return 16;
+        if (decode_tasks <= 2) return 16;
         if (decode_tasks <= 8) return 8;
-        if (decode_tasks <= 64) return 4;
-        return 2;
+        if (decode_tasks <= 16) return 4;
+        if (decode_tasks <= 32) return 2;
+        return 1;
     }
     return 1;
+}
+
+static std::optional<int> force_num_splits_for_tuning() {
+    const char* env = std::getenv("FLASH_MLA_BF16_DSA_FORCE_SPLITS");
+    if (env == nullptr || env[0] == '\0') {
+        return std::nullopt;
+    }
+    const int value = std::atoi(env);
+    TORCH_CHECK(value > 0, "FLASH_MLA_BF16_DSA_FORCE_SPLITS must be positive when set");
+    return value;
 }
 
 static void check_optional_extra(
@@ -197,7 +271,15 @@ run(
     at::Tensor scores_memory = torch::empty({2, b, h_kv, s_q * h_q}, opts.dtype(at::kFloat));
     at::Tensor scores_max = scores_memory.select(0, 0);
     at::Tensor scores_sum = scores_memory.select(0, 1);
-    const int requested_num_splits = default_num_splits(b, s_q, h_q, topk, extra_topk);
+    constexpr int64_t kBufferLoadPaddedTokenLimit = 32LL * 64 * 1024;
+    const int64_t padded_k_tokens = static_cast<int64_t>(kv.size(0)) * page_block_size;
+    const int64_t padded_extra_k_tokens = has_extra ? static_cast<int64_t>(extra_kv->size(0)) * extra_kv->size(1) : 0;
+    const bool decode_use_c_load = padded_k_tokens > kBufferLoadPaddedTokenLimit ||
+                                   padded_extra_k_tokens > kBufferLoadPaddedTokenLimit;
+    int requested_num_splits = default_num_splits(b, s_q, h_q, topk, extra_topk, decode_use_c_load);
+    if (auto forced_num_splits = force_num_splits_for_tuning(); forced_num_splits.has_value()) {
+        requested_num_splits = forced_num_splits.value();
+    }
     TORCH_CHECK(requested_num_splits >= 1 && requested_num_splits <= arch.num_sms,
                 "DSA BF16 sparse decode requires 1 <= num_splits <= num_sms");
 
@@ -269,11 +351,7 @@ run(
     params.seqlenq_ngroups_swapped = true;
     params.is_seqlens_k_cumulative = false;
     params.splitkv_use_meta_dispatch = false;
-    constexpr int64_t kBufferLoadPaddedTokenLimit = 32LL * 64 * 1024;
-    const int64_t padded_k_tokens = static_cast<int64_t>(kv.size(0)) * page_block_size;
-    const int64_t padded_extra_k_tokens = has_extra ? static_cast<int64_t>(extra_kv->size(0)) * extra_kv->size(1) : 0;
-    params.decode_use_c_load = padded_k_tokens > kBufferLoadPaddedTokenLimit ||
-                               padded_extra_k_tokens > kBufferLoadPaddedTokenLimit;
+    params.decode_use_c_load = decode_use_c_load;
     params.num_splits = requested_num_splits;
     params.splitkv_use_fp32_as_accum = params.num_splits > 1;
     params.tile_scheduler_metadata_ptr = nullptr;

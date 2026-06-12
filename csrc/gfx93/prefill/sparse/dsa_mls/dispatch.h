@@ -116,10 +116,12 @@ static inline void run_dsa_prefill_nopage_64_dispatch(Flash_fwd_mla_params_dsa& 
                                 <<<dimGrid, dimBlock, 21 * 1024, stream>>>(params);
                         });
                     } else {
-                        flash::flash_fwd_mla_decode_kernel_gfx938_dsa_nopage_64_splitkv_direct<
-                            Kernel_traits, true, Is_dropout, false, Is_causal,
-                            IsEvenMNConst, true, false, Is_MTP, 0, Has_extra, Flash_fwd_mla_params_dsa>
-                            <<<dimGrid, dimBlock, 21 * 1024, stream>>>(params);
+                        BOOL_SWITCH(params.decode_use_c_load, DecodeCLoad, [&] {
+                            flash::flash_fwd_mla_decode_kernel_gfx938_dsa_nopage_64_splitkv_direct<
+                                Kernel_traits, true, Is_dropout, false, Is_causal,
+                                IsEvenMNConst, true, false, Is_MTP, 0, DecodeCLoad, Has_extra, Flash_fwd_mla_params_dsa>
+                                <<<dimGrid, dimBlock, 21 * 1024, stream>>>(params);
+                        });
                     }
                 });
             });
@@ -134,15 +136,19 @@ static inline void run_dsa_prefill_nopage_64_dispatch(Flash_fwd_mla_params_dsa& 
             BOOL_SWITCH(params.is_causal, Is_causal, [&] {
                 BOOL_SWITCH(has_extra, Has_extra, [&] {
                     if (params.splitkv_use_meta_dispatch) {
-                        flash::flash_fwd_mla_decode_kernel_gfx938_dsa_nopage_64_splitkv_meta_dispatch<
-                            Kernel_traits, true, Is_dropout, false, Is_causal,
-                            IsEvenMNConst, true, false, Is_MTP, 0, Has_extra, Flash_fwd_mla_params_dsa>
-                            <<<dimGrid, dimBlock, 21 * 1024, stream>>>(params);
+                        BOOL_SWITCH(params.decode_use_c_load, DecodeCLoad, [&] {
+                            flash::flash_fwd_mla_decode_kernel_gfx938_dsa_nopage_64_splitkv_meta_dispatch<
+                                Kernel_traits, true, Is_dropout, false, Is_causal,
+                                IsEvenMNConst, true, false, Is_MTP, 0, DecodeCLoad, Has_extra, Flash_fwd_mla_params_dsa>
+                                <<<dimGrid, dimBlock, 21 * 1024, stream>>>(params);
+                        });
                     } else {
-                        flash::flash_fwd_mla_decode_kernel_gfx938_dsa_nopage_64_splitkv<
-                            Kernel_traits, true, Is_dropout, false, Is_causal,
-                            IsEvenMNConst, true, false, Is_MTP, 0, Has_extra, Flash_fwd_mla_params_dsa>
-                            <<<dimGrid, dimBlock, 21 * 1024, stream>>>(params);
+                        BOOL_SWITCH(params.decode_use_c_load, DecodeCLoad, [&] {
+                            flash::flash_fwd_mla_decode_kernel_gfx938_dsa_nopage_64_splitkv<
+                                Kernel_traits, true, Is_dropout, false, Is_causal,
+                                IsEvenMNConst, true, false, Is_MTP, 0, DecodeCLoad, Has_extra, Flash_fwd_mla_params_dsa>
+                                <<<dimGrid, dimBlock, 21 * 1024, stream>>>(params);
+                        });
                     }
                 });
             });
