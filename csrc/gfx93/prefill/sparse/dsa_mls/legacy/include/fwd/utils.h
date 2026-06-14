@@ -156,6 +156,17 @@ __device__ __forceinline__ vec4_uint prepare_for_buffer_load(T* ptr) {
     return res;
 }
 
+template<typename T>
+__device__ __forceinline__ vec4_uint prepare_for_buffer_load_with_stride_bound(T* ptr, int row_stride, int row_bound) {
+    vec4_uint res;
+    *(uint64_t*)&res = reinterpret_cast<uint64_t>(ptr);
+    res[1] |= (row_stride * int(sizeof(T))) << 16;
+    res[1] |= 0x40000000;
+    res[2] = row_bound;
+    res[3] = 0x00020000;
+    return res;
+}
+
 
 // for matrix_load
 template<const int kHeadDim, typename T>

@@ -2956,11 +2956,17 @@ __global__ void __launch_bounds__(256, 1) flash_fwd_mla_decode_kernel_gfx938_dsa
         if constexpr (!Is_FlashMLA)
             qv_ptr = prepare_for_matrix_load<kHeadDim>(reinterpret_cast<Element*>(params.qv_ptr) + row_offset_qv);
         auto k_ptr = prepare_for_matrix_load<kHeadDim>(reinterpret_cast<Element*>(params.k_ptr) + row_offset_k);
-        auto k_ptr_buffer = tcp_cache_swizzle_func<64, Element>(reinterpret_cast<Element*>(params.k_ptr) + row_offset_k);
-        auto extra_k_ptr_buffer = tcp_cache_swizzle_func<64, Element>(reinterpret_cast<Element*>(Has_extra ? params.extra_k_ptr : params.k_ptr));
+        auto k_ptr_buffer = prepare_for_buffer_load_with_stride_bound(reinterpret_cast<Element*>(params.k_ptr) + row_offset_k, params.k_row_stride, params.seqlen_k);
+        auto extra_k_ptr_buffer = prepare_for_buffer_load_with_stride_bound(
+            reinterpret_cast<Element*>(Has_extra ? params.extra_k_ptr : params.k_ptr),
+            Has_extra ? params.extra_k_row_stride : params.k_row_stride,
+            Has_extra ? params.extra_seqlen_k : params.seqlen_k);
         auto v_ptr = prepare_for_matrix_load<kHeadDimV>(reinterpret_cast<Element*>(params.v_ptr) + row_offset_v);
-        auto v_ptr_buffer = tcp_cache_swizzle_func<64, Element>(reinterpret_cast<Element*>(params.v_ptr) + row_offset_v);
-        auto extra_v_ptr_buffer = tcp_cache_swizzle_func<64, Element>(reinterpret_cast<Element*>(Has_extra ? params.extra_v_ptr : params.v_ptr));
+        auto v_ptr_buffer = prepare_for_buffer_load_with_stride_bound(reinterpret_cast<Element*>(params.v_ptr) + row_offset_v, params.v_row_stride, params.seqlen_k);
+        auto extra_v_ptr_buffer = prepare_for_buffer_load_with_stride_bound(
+            reinterpret_cast<Element*>(Has_extra ? params.extra_v_ptr : params.v_ptr),
+            Has_extra ? params.extra_v_row_stride : params.v_row_stride,
+            Has_extra ? params.extra_seqlen_k : params.seqlen_k);
         auto index_ptr_buffer = tcp_cache_swizzle_func<0, int>(reinterpret_cast<int*>(index_ptr));
         int tid = threadIdx.x % 64;
         if constexpr (Has_extra) {
@@ -3313,11 +3319,17 @@ __device__ __forceinline__ void flash_fwd_mla_decode_kernel_gfx938_dsa_nopage_64
         if constexpr (!Is_FlashMLA)
             qv_ptr = prepare_for_matrix_load<kHeadDim>(reinterpret_cast<Element*>(params.qv_ptr) + row_offset_qv);
         auto k_ptr = prepare_for_matrix_load<kHeadDim>(reinterpret_cast<Element*>(params.k_ptr) + row_offset_k);
-        auto k_ptr_buffer = tcp_cache_swizzle_func<64, Element>(reinterpret_cast<Element*>(params.k_ptr) + row_offset_k);
-        auto extra_k_ptr_buffer = tcp_cache_swizzle_func<64, Element>(reinterpret_cast<Element*>(Has_extra ? params.extra_k_ptr : params.k_ptr));
+        auto k_ptr_buffer = prepare_for_buffer_load_with_stride_bound(reinterpret_cast<Element*>(params.k_ptr) + row_offset_k, params.k_row_stride, params.seqlen_k);
+        auto extra_k_ptr_buffer = prepare_for_buffer_load_with_stride_bound(
+            reinterpret_cast<Element*>(Has_extra ? params.extra_k_ptr : params.k_ptr),
+            Has_extra ? params.extra_k_row_stride : params.k_row_stride,
+            Has_extra ? params.extra_seqlen_k : params.seqlen_k);
         auto v_ptr = prepare_for_matrix_load<kHeadDimV>(reinterpret_cast<Element*>(params.v_ptr) + row_offset_v);
-        auto v_ptr_buffer = tcp_cache_swizzle_func<64, Element>(reinterpret_cast<Element*>(params.v_ptr) + row_offset_v);
-        auto extra_v_ptr_buffer = tcp_cache_swizzle_func<64, Element>(reinterpret_cast<Element*>(Has_extra ? params.extra_v_ptr : params.v_ptr));
+        auto v_ptr_buffer = prepare_for_buffer_load_with_stride_bound(reinterpret_cast<Element*>(params.v_ptr) + row_offset_v, params.v_row_stride, params.seqlen_k);
+        auto extra_v_ptr_buffer = prepare_for_buffer_load_with_stride_bound(
+            reinterpret_cast<Element*>(Has_extra ? params.extra_v_ptr : params.v_ptr),
+            Has_extra ? params.extra_v_row_stride : params.v_row_stride,
+            Has_extra ? params.extra_seqlen_k : params.seqlen_k);
         int tid = threadIdx.x % 64;
         auto k_faker = reinterpret_cast<Element*>(params.k_ptr) + row_offset_k;
         auto v_faker = reinterpret_cast<Element*>(params.v_ptr) + row_offset_v;

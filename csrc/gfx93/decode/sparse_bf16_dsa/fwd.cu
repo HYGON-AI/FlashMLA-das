@@ -343,6 +343,7 @@ run(
     params.o_head_stride = int64_stride_to_int(out.stride(2));
     params.seqlen_q = s_q * params.ngroups;
     params.seqlen_k = kv.size(0) * kv.size(1);
+    params.extra_seqlen_k = has_extra ? extra_kv->size(0) * extra_kv->size(1) : 0;
     params.max_seqlen = s_q;
     params.is_bf16 = true;
     params.is_e4m3 = false;

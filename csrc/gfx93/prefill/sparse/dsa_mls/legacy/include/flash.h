@@ -377,7 +377,7 @@ struct Flash_fwd_mla_params_dsa {
     float *__restrict__ scores_sum_ptr;
     float *__restrict__ softmax_lse_ptr;
 
-    int b, seqlen_q, seqlen_k, d, d_v;
+    int b, seqlen_q, seqlen_k, extra_seqlen_k, d, d_v;
     int h, h_k, h_h_k_ratio, ngroups, total_q;
     int topk, extra_topk;
     float scale_softmax, scale_softmax_log2;
