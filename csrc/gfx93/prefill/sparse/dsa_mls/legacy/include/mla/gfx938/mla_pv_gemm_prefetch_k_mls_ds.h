@@ -1902,7 +1902,10 @@ __forceinline__ __device__ void pv_gemm_prefetch_k_mls_ds_576_512_nopage_64_new_
     invalid_topk[2] = index_topk[2] == -1;
     invalid_topk[3] = index_topk[3] == -1;
 
-    int fallback_index = index_ptr[0] == -1 ? 0 : index_ptr[0];
+    int fallback_index = v_ptr[2];
+    if constexpr (DecodeCLoad) {
+        fallback_index = index_ptr[0] == -1 ? 0 : index_ptr[0];
+    }
     index_topk[0] = (index_topk[0] == -1) ? fallback_index : index_topk[0];
     index_topk[1] = (index_topk[1] == -1) ? fallback_index : index_topk[1];
     index_topk[2] = (index_topk[2] == -1) ? fallback_index : index_topk[2];
@@ -1912,8 +1915,8 @@ __forceinline__ __device__ void pv_gemm_prefetch_k_mls_ds_576_512_nopage_64_new_
     int lds_offset_2 = __builtin_amdgcn_readfirstlane((warp_id * 32 * 16 + 128 * 16) * ELEMENT_BYTES / 4);
     int index_block = index_topk[0] / page_block_size;
     int index_offset = index_topk[0] - index_block * page_block_size;
-    int g_offset_v = tid % 4 * 4
-        + (index_block * batch_stride + index_offset * seqlen_v_stride) * ELEMENT_BYTES / 4;
+    int lane_dword = tid % 4 * 4;
+    int g_offset_v = lane_dword + (index_block * batch_stride + index_offset * seqlen_v_stride) * ELEMENT_BYTES / 4;
     int g_offset_s = warp_id * 32 * ELEMENT_BYTES / 4;
     int g_offset_s_2 = warp_id * 32 * ELEMENT_BYTES / 4 + 128 * ELEMENT_BYTES / 4;
     using uint4_t = unsigned int __attribute__((ext_vector_type(4)));
@@ -1929,8 +1932,8 @@ __forceinline__ __device__ void pv_gemm_prefetch_k_mls_ds_576_512_nopage_64_new_
         *reinterpret_cast<uint4_t*>(v_lds + dst0_elem) = invalid_topk[0] ? zero4 : *reinterpret_cast<const uint4_t*>(v_ptr_raw + src0_elem);
         *reinterpret_cast<uint4_t*>(v_lds + dst1_elem) = invalid_topk[0] ? zero4 : *reinterpret_cast<const uint4_t*>(v_ptr_raw + src1_elem);
     } else {
-        inline_buffer_load_dwordx4_lds(v_lds, v_ptr, lds_offset, g_offset_s, g_offset_v); 
-        inline_buffer_load_dwordx4_lds(v_lds, v_ptr, lds_offset_2, g_offset_s_2, g_offset_v); 
+        inline_buffer_load_dwordx4_idxen_lds(v_lds, v_ptr, lds_offset, index_topk[0], g_offset_s, lane_dword);
+        inline_buffer_load_dwordx4_idxen_lds(v_lds, v_ptr, lds_offset_2, index_topk[0], g_offset_s_2, lane_dword);
     }
 
     int lds_stage_id = 1;
@@ -1940,8 +1943,8 @@ __forceinline__ __device__ void pv_gemm_prefetch_k_mls_ds_576_512_nopage_64_new_
         {
             index_block = index_topk[total_loop / 2] / page_block_size;
             index_offset = index_topk[total_loop / 2] - index_block * page_block_size;
-            g_offset_v = tid % 4 * 4
-                + (index_block * batch_stride + index_offset * seqlen_v_stride) * ELEMENT_BYTES / 4;
+            lane_dword = tid % 4 * 4;
+            g_offset_v = lane_dword + (index_block * batch_stride + index_offset * seqlen_v_stride) * ELEMENT_BYTES / 4;
             lds_offset = __builtin_amdgcn_readfirstlane((lds_stage_id * WARP_K * WARP_N + warp_id * 32 * 16) * ELEMENT_BYTES / 4);
             lds_offset_2 = __builtin_amdgcn_readfirstlane((lds_stage_id * WARP_K * WARP_N + warp_id * 32 * 16 + 128 * 16) * ELEMENT_BYTES / 4);
             g_offset_s = (total_loop % 2) * WARP_N * ELEMENT_BYTES / 4 + warp_id * 32 * ELEMENT_BYTES / 4;
@@ -1958,8 +1961,8 @@ __forceinline__ __device__ void pv_gemm_prefetch_k_mls_ds_576_512_nopage_64_new_
                 *reinterpret_cast<uint4_t*>(v_lds + dst0_elem) = invalid_index ? zero4 : *reinterpret_cast<const uint4_t*>(v_ptr_raw + src0_elem);
                 *reinterpret_cast<uint4_t*>(v_lds + dst1_elem) = invalid_index ? zero4 : *reinterpret_cast<const uint4_t*>(v_ptr_raw + src1_elem);
             } else {
-                inline_buffer_load_dwordx4_lds(v_lds, v_ptr, lds_offset, g_offset_s, g_offset_v); 
-                inline_buffer_load_dwordx4_lds(v_lds, v_ptr, lds_offset_2, g_offset_s_2, g_offset_v); 
+                inline_buffer_load_dwordx4_idxen_lds(v_lds, v_ptr, lds_offset, index_topk[total_loop / 2], g_offset_s, lane_dword);
+                inline_buffer_load_dwordx4_idxen_lds(v_lds, v_ptr, lds_offset_2, index_topk[total_loop / 2], g_offset_s_2, lane_dword);
             }
         }
 

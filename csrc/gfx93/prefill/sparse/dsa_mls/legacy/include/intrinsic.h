@@ -77,6 +77,22 @@ __forceinline__ __device__ void inline_buffer_load_dwordx4_lds(DataType *const s
 }
 
 template<class DataType, const int shfl_count=2>
+__forceinline__ __device__ void inline_buffer_load_dwordx4_idxen_lds(DataType *const shared_addr, const vec4_uint global_addr, const int &lds_offset, const int &idx, const int &gvOffset_s, const int &gvOffset_v) {
+
+  int ldsAddrPerWave = reinterpret_cast<size_t>(shared_addr) + (lds_offset << shfl_count);
+  uint32_t offset_s = gvOffset_s << shfl_count;
+  typedef uint32_t uint32x2_t __attribute__((ext_vector_type(2)));
+  uint32x2_t index_offset;
+  index_offset[0] = uint32_t(idx);
+  index_offset[1] = uint32_t(gvOffset_v << shfl_count);
+
+  asm volatile("s_mov_b32 m0, %1 \n\t"
+               "buffer_load_dwordx4 %0, %2, %3 ,idxen offen  offset:0, lds \n"
+               :: "v"(index_offset), "s"(ldsAddrPerWave), "s"(global_addr), "s"(offset_s)
+               :);
+}
+
+template<class DataType, const int shfl_count=2>
 __forceinline__ __device__ void safe_inline_buffer_load_dwordx4_lds(DataType *const shared_addr, const vec4_uint global_addr, const int &lds_offset, const int &offset_s, const int &offset_v) {
 
   int lds_addr_per_wave = reinterpret_cast<size_t>(shared_addr) + (lds_offset << shfl_count);
