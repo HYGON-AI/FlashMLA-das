@@ -118,12 +118,14 @@ __device__ void KernelTemplate<MODEL_TYPE, NUM_HEADS>::compute_attn_1rowblock_sp
             const int offset_s = 0;
             int ldsAddrPerWave = reinterpret_cast<size_t>(s_q) + warp_idx * bytes_per_warp + k_idx * bytes_per_block
                 + offset_k * 3 * bytes_per_block;
+            __builtin_amdgcn_sched_barrier(0);
             asm volatile(
                 "s_mov_b32 m0, %1 \n\t"
                 "s_nop 0 \n\t"
                 "buffer_load_dwordx4 %0, %2, %3 ,offen  offset:0, lds \n" ::"v"(offset_v),
                 "s"(ldsAddrPerWave), "s"(global_addr), "s"(offset_s)
             :);  
+            __builtin_amdgcn_sched_barrier(0);
         }
         else
         {
@@ -136,12 +138,14 @@ __device__ void KernelTemplate<MODEL_TYPE, NUM_HEADS>::compute_attn_1rowblock_sp
             const int offset_s = 0;
             int ldsAddrPerWave = reinterpret_cast<size_t>(s_q) + warp_idx * bytes_per_warp + k_idx * bytes_per_block
                 + offset_k * 2 * bytes_per_block;
+            __builtin_amdgcn_sched_barrier(0);
             asm volatile(
                 "s_mov_b32 m0, %1 \n\t"
                 "s_nop 0 \n\t"
                 "buffer_load_dwordx4 %0, %2, %3 ,offen  offset:0, lds \n" ::"v"(offset_v),
                 "s"(ldsAddrPerWave), "s"(global_addr), "s"(offset_s)
             :);  
+            __builtin_amdgcn_sched_barrier(0);
         }
   
     };
@@ -155,7 +159,9 @@ __device__ void KernelTemplate<MODEL_TYPE, NUM_HEADS>::compute_attn_1rowblock_sp
         lds_direct_copy_q(1, 1);
         lds_direct_copy_q(2, 0);
         Element* s_q_read_ptr = s_q + lane_idx * 8;
+        __builtin_amdgcn_sched_barrier(0);
         asm volatile("s_waitcnt vmcnt(4) \n s_barrier"); 
+        __builtin_amdgcn_sched_barrier(0);
         for (int k = 0; k < 4; k++)
         {
             for (int i = 0; i < 8; i++)
@@ -164,7 +170,9 @@ __device__ void KernelTemplate<MODEL_TYPE, NUM_HEADS>::compute_attn_1rowblock_sp
             }
             s_q_read_ptr += 16 * 32;
         }
+        __builtin_amdgcn_sched_barrier(0);
         asm volatile("s_waitcnt vmcnt(3) \n s_barrier"); 
+        __builtin_amdgcn_sched_barrier(0);
         for (int k = 4; k < 8; k++)
         {
             for (int i = 0; i < 8; i++)
@@ -173,7 +181,9 @@ __device__ void KernelTemplate<MODEL_TYPE, NUM_HEADS>::compute_attn_1rowblock_sp
             }
             s_q_read_ptr += 16 * 32;
         }
+        __builtin_amdgcn_sched_barrier(0);
         asm volatile("s_waitcnt vmcnt(2) \n s_barrier"); 
+        __builtin_amdgcn_sched_barrier(0);
         s_q_read_ptr = s_q + lane_idx * 8 + 3 * 4 * 16 * 4 * 8;
         for (int k = 0; k < 4; k++)
         {
@@ -183,7 +193,9 @@ __device__ void KernelTemplate<MODEL_TYPE, NUM_HEADS>::compute_attn_1rowblock_sp
             }
             s_q_read_ptr += 16 * 32;
         }
+        __builtin_amdgcn_sched_barrier(0);
         asm volatile("s_waitcnt vmcnt(1) \n s_barrier"); 
+        __builtin_amdgcn_sched_barrier(0);
         for (int k = 4; k < 8; k++)
         {
             for (int i = 8; i < 16; i++)
@@ -192,7 +204,9 @@ __device__ void KernelTemplate<MODEL_TYPE, NUM_HEADS>::compute_attn_1rowblock_sp
             }
             s_q_read_ptr += 16 * 32;
         }
+        __builtin_amdgcn_sched_barrier(0);
         asm volatile("s_waitcnt vmcnt(0) \n s_barrier"); 
+        __builtin_amdgcn_sched_barrier(0);
         s_q_read_ptr = s_q + lane_idx * 8 + 2 * 4 * 16 * 4 * 8;
         for (int k = 8; k < 9; k++)
         {
@@ -211,7 +225,10 @@ __device__ void KernelTemplate<MODEL_TYPE, NUM_HEADS>::compute_attn_1rowblock_sp
             s_q_read_ptr += 16 * 32;
         }
         // __syncthreads();
+        __builtin_amdgcn_sched_barrier(0);
         asm volatile("s_waitcnt lgkmcnt(0) \n s_barrier"); 
+        __builtin_amdgcn_sched_barrier(0);
+
         // __builtin_amdgcn_sched_barrier(0);
     }
     else
@@ -223,7 +240,9 @@ __device__ void KernelTemplate<MODEL_TYPE, NUM_HEADS>::compute_attn_1rowblock_sp
         lds_direct_copy_q(1, 1);
 
         Element* s_q_read_ptr = s_q + lane_idx * 8;
+        __builtin_amdgcn_sched_barrier(0);
         asm volatile("s_waitcnt vmcnt(3) \n s_barrier"); 
+        __builtin_amdgcn_sched_barrier(0);
         for (int k = 0; k < 4; k++)
         {
             for (int i = 0; i < 8; i++)
@@ -232,7 +251,9 @@ __device__ void KernelTemplate<MODEL_TYPE, NUM_HEADS>::compute_attn_1rowblock_sp
             }
             s_q_read_ptr += 16 * 32;
         }
+        __builtin_amdgcn_sched_barrier(0);
         asm volatile("s_waitcnt vmcnt(2) \n s_barrier"); 
+        __builtin_amdgcn_sched_barrier(0);
         for (int k = 4; k < 8; k++)
         {
             for (int i = 0; i < 8; i++)
@@ -241,7 +262,9 @@ __device__ void KernelTemplate<MODEL_TYPE, NUM_HEADS>::compute_attn_1rowblock_sp
             }
             s_q_read_ptr += 16 * 32;
         }
+        __builtin_amdgcn_sched_barrier(0);
         asm volatile("s_waitcnt vmcnt(1) \n s_barrier"); 
+        __builtin_amdgcn_sched_barrier(0);
         for (int k = 0; k < 4; k++)
         {
             for (int i = 8; i < 16; i++)
@@ -250,7 +273,9 @@ __device__ void KernelTemplate<MODEL_TYPE, NUM_HEADS>::compute_attn_1rowblock_sp
             }
             s_q_read_ptr += 16 * 32;
         }
+        __builtin_amdgcn_sched_barrier(0);
         asm volatile("s_waitcnt vmcnt(0) \n s_barrier"); 
+        __builtin_amdgcn_sched_barrier(0);
         for (int k = 4; k < 8; k++)
         {
             for (int i = 8; i < 16; i++)
@@ -259,8 +284,9 @@ __device__ void KernelTemplate<MODEL_TYPE, NUM_HEADS>::compute_attn_1rowblock_sp
             }
             s_q_read_ptr += 16 * 32;
         }
+        __builtin_amdgcn_sched_barrier(0);
         asm volatile("s_waitcnt lgkmcnt(0) \n s_barrier"); 
-        // __builtin_amdgcn_sched_barrier(0);
+        __builtin_amdgcn_sched_barrier(0);
     }
    
 #endif
@@ -635,7 +661,7 @@ __device__ void KernelTemplate<MODEL_TYPE, NUM_HEADS>::compute_attn_1rowblock_sp
         flash::__ds_read_m32x16_row_col_rrow_alt<1, 1, 3>(tOsVt, tOrVt_copy_view);
         flash::__ds_read_m32x16_row_col_rrow_alt<1, 2, 3>(tOsVt, tOrVt_copy_view);
         flash::__ds_read_m32x16_row_col_rrow_alt<1, 3, 3>(tOsVt, tOrVt_copy_view);
-
+        __builtin_amdgcn_sched_barrier(0);
         __syncthreads();
         // if (block0() && threadIdx.x >= 192)
         // {
@@ -681,11 +707,12 @@ __device__ void KernelTemplate<MODEL_TYPE, NUM_HEADS>::compute_attn_1rowblock_sp
         }
 
         __syncthreads();
+        __builtin_amdgcn_sched_barrier(0);
         flash::__ds_read_m32x16_row_col_rrow_alt<0, 0, 0>(tOsVt, tOrVt_copy_view);
         flash::__ds_read_m32x16_row_col_rrow_alt<0, 1, 0>(tOsVt, tOrVt_copy_view);
         flash::__ds_read_m32x16_row_col_rrow_alt<0, 2, 0>(tOsVt, tOrVt_copy_view);
         flash::__ds_read_m32x16_row_col_rrow_alt<0, 3, 0>(tOsVt, tOrVt_copy_view);
-
+        __builtin_amdgcn_sched_barrier(0);
         if constexpr (MODEL_TYPE == ModelType::V32)
         {
             bf16_storage bf16_data0;
@@ -708,7 +735,9 @@ __device__ void KernelTemplate<MODEL_TYPE, NUM_HEADS>::compute_attn_1rowblock_sp
         // {
         //     printf("tidx = %d, %.2f %.2f %.2f %.2f \n", tidx, float(acc_s(0)), float(acc_s(1)), float(acc_s(2)), float(acc_s(3)));
         // }
+        __builtin_amdgcn_sched_barrier(0);
         asm volatile("s_waitcnt lgkmcnt(0) \n\t s_barrier\n\t");
+        __builtin_amdgcn_sched_barrier(0);
 
         Tensor cS = make_identity_tensor(Shape<Int<BLOCK_M>, Int<TOPK_BLOCK_SIZE>>{});
         Tensor tScS = thr_mma.partition_C(cS);
