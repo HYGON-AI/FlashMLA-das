@@ -728,14 +728,17 @@ __device__ void KernelTemplate_B_H_64<D_QK, HAVE_TOPK_LENGTH, IS_TOPK_2048, USE_
                     }
                     #endif
                 }
-                gLSE[row] = lse(mi);
-                if constexpr (HAVE_TOPK_LENGTH)
+                if (lane_idx / 16 == 0)
                 {
-                    gMax_logits[row] = topk_length == 0 ? -INFINITY : softmax.row_max(mi) * params.sm_scale;
-                }
-                else
-                {
-                    gMax_logits[row] = softmax.row_max(mi) * params.sm_scale;
+                    gLSE[row] = lse(mi);
+                    if constexpr (HAVE_TOPK_LENGTH)
+                    {
+                        gMax_logits[row] = topk_length == 0 ? -INFINITY : softmax.row_max(mi) * params.sm_scale;
+                    }
+                    else
+                    {
+                        gMax_logits[row] = softmax.row_max(mi) * params.sm_scale;
+                    }
                 }
             }
         }
@@ -1317,8 +1320,11 @@ __device__ void KernelTemplate<D_QK, HAVE_TOPK_LENGTH>::devfunc(const SparseAttn
                     //     col += 4;
                     // }
                 }
-                gLSE[row] = lse(mi);
-                gMax_logits[row] = topk_length == 0 ? -INFINITY : softmax.row_max(mi) * params.sm_scale;
+                if (tidx / 16 == 0)
+                {
+                    gLSE[row] = lse(mi);
+                    gMax_logits[row] = topk_length == 0 ? -INFINITY : softmax.row_max(mi) * params.sm_scale;
+                }
             }
         }
     }

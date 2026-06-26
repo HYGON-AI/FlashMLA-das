@@ -911,7 +911,8 @@ __device__ void KernelTemplate<MODEL_TYPE, NUM_HEADS>::compute_attn_1rowblock_sp
                         //     col += 4;
                         // }
                     }
-                    gSoftmaxLse[row] = lse(mi);
+                    if (tidx / 16 == 0)
+                        gSoftmaxLse[row] = lse(mi);
                 }
 
 
@@ -963,8 +964,8 @@ __device__ void KernelTemplate<MODEL_TYPE, NUM_HEADS>::compute_attn_1rowblock_sp
                             col += 16;
                         }
                     }
-
-                    gSoftmaxLseAccum[row] = lse(mi);
+                    if (tidx / 16 == 0)
+                        gSoftmaxLseAccum[row] = lse(mi);
                 }
 
                 // gMax_logits[row] = softmax.row_max(mi) * params.sm_scale_div_log2;
