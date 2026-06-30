@@ -5,18 +5,37 @@
 #include <cutlass/numeric_types.h>
 #include <cutlass/barrier.h>
 
-#include "config.h"
-
 using namespace cute;
 
-template<typename InputT_, bool Is_causal_>
+template<typename InputT_, bool Is_causal_, int HeadDimK, int HeadDimV>
 struct Traits {
     using InputT = InputT_;
     static constexpr bool Is_causal = Is_causal_;
-    static constexpr int BLOCK_SIZE_M = Config::BLOCK_SIZE_M;
-    static constexpr int PAGE_BLOCK_SIZE = Config::PAGE_BLOCK_SIZE;
-    static constexpr int HEAD_DIM_K = Config::HEAD_DIM_K;
-    static constexpr int HEAD_DIM_V = Config::HEAD_DIM_V;
+
+    static constexpr int BLOCK_SIZE_M = 16;
+    static constexpr int PAGE_BLOCK_SIZE = 64;
+    static constexpr int HEAD_DIM_K = HeadDimK;
+    static constexpr int HEAD_DIM_V = HeadDimV;
+
+    static constexpr int NUM_K_TILES = HEAD_DIM_K / 32;
+    // d576: 15 LDS + 3 VGPR (mask) / 16 LDS + 2 VGPR (non-mask).
+    // d512: 15 LDS + 1 VGPR (mask) / 16 LDS + 0 VGPR (non-mask, K==V).
+    static constexpr int K_LDS_STAGE =
+        (HEAD_DIM_K == 512) ? (NUM_K_TILES - 1) : (NUM_K_TILES - 3);
+    static constexpr int K_LDS_LOOPS_NON_MASK =
+        (HEAD_DIM_K == 512) ? NUM_K_TILES : (NUM_K_TILES - 2);
+    static constexpr int K_BUFFER_SIZE_MASK =
+        (HEAD_DIM_K == 512) ? 1 : 3;
+    static constexpr int K_BUFFER_SIZE_NON_MASK =
+        (HEAD_DIM_K == 512) ? 0 : 2;
+    static constexpr int K0_LDS_LOOPS_GFX928 = NUM_K_TILES - 2;
+
+    static constexpr int SMEM_K_COLS = 16 * 32;
+    // Union placeholder follows mask-path LDS depth (not non-mask), so smem_p offsets stay stable.
+    static constexpr int SMEM_K_PLACEHOLDER_COLS = K_LDS_STAGE * 32;
+
+    static_assert(HEAD_DIM_K == 576 || HEAD_DIM_K == 512);
+    static_assert(HEAD_DIM_V == 512);
 
     static constexpr int NUM_THREADS = 256;
 
@@ -38,11 +57,11 @@ struct Traits {
         Layout<Shape<Int<8>, Int<32>>, Stride<Int<32>, _1>>{}));
     using SmemLayoutK = decltype(tile_to_shape(
         SmemLayoutAtomK{},
-        Shape<Int<kBlockN>, Int<16 * 32>>{}));
+        Shape<Int<kBlockN>, Int<SMEM_K_COLS>>{}));
       
     using SmemLayoutK_place_holder = decltype(tile_to_shape(
         SmemLayoutAtomK{},
-        Shape<Int<kBlockN>, Int<15 * 32>>{}));
+        Shape<Int<kBlockN>, Int<SMEM_K_PLACEHOLDER_COLS>>{}));
     using SmemLayoutAtomV = SmemLayoutAtomK;
     using SmemLayoutV = decltype(tile_to_shape(
         SmemLayoutAtomV{},
@@ -110,8 +129,6 @@ struct Traits {
             Layout<Shape<_1, _8>>{})); 
     using GmemTiledCopyV = GmemTiledCopyK;
 
-
-
     struct SharedMemoryPlan {
         union {
             struct {
@@ -133,16 +150,16 @@ struct Traits {
 
 };
 
-
-
-template<typename InputT_, bool Is_causal_>
+template<typename InputT_, bool Is_causal_, int HeadDimK, int HeadDimV>
 struct Traits_Block_M_64 {
     using InputT = InputT_;
     static constexpr bool Is_causal = Is_causal_;
     static constexpr int BLOCK_SIZE_M = 64;
     static constexpr int PAGE_BLOCK_SIZE = 64;
-    static constexpr int HEAD_DIM_K = 576;
-    static constexpr int HEAD_DIM_V = 512;
+    static constexpr int HEAD_DIM_K = HeadDimK;
+    static constexpr int HEAD_DIM_V = HeadDimV;
+    static_assert(HeadDimK == 576);
+    static_assert(HeadDimV == 512);
 
     static constexpr int NUM_THREADS = 256;
 

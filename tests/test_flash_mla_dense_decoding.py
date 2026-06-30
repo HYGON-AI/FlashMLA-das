@@ -23,7 +23,7 @@ class TestParam:
     block_size: int = 64
     h_q: int = 128    # Number of q heads
     h_kv: int = 1     # Number of kv heads
-    d: int = 576      # Q/K head dim (= dv + RoPE dim)
+    d: int = 576      # Q/K head dim (= dv + RoPE dim for MLA; equals dv for dense MHA)
     dv: int = 512     # V head dim
     seed: int = 0
 
@@ -240,14 +240,57 @@ def main(torch_dtype):
     ]
 
     performance_cases = [
-        TestParam(128, s_q, s_k, is_varlen=True, is_causal=is_causal, h_q = h_q, test_performance=True)
+        TestParam(128, s_q, s_k, is_varlen=True, is_causal=is_causal, h_q=h_q, test_performance=True)
         for is_causal in [False, True]
         for s_q in [1, 2]
         for h_q in [16, 64, 128]
         for s_k in [4096, 8192, 16384, 32768]
     ]
 
-    testcases = correctness_cases + corner_cases + performance_cases
+    correctness_cases_d512 = [
+        TestParam(b, s_q, s_k, is_varlen, is_causal, test_performance=False, have_zero_seqlen_k=False, block_size=64, h_q=h_q, h_kv=h_kv, d=512, dv=512)
+        for b in [1, 2, 6, 32]
+        for s_q in [1, 2, 4]
+        for s_k in [20, 140, 4096]
+        for h_q in [1, 3, 8, 16, 32, 63]
+        for h_kv in [1, 2, 4]
+        for is_varlen in [False, True]
+        for is_causal in [False, True]
+        if h_q % h_kv == 0
+    ]
+
+    corner_cases_d512 = [
+        TestParam(32, 2, 4096, is_varlen=True, is_causal=is_causal, test_performance=False, have_zero_seqlen_k=True, h_q=h_q, h_kv=h_kv, d=512, dv=512)
+        for h_q in [8, 16, 32]
+        for h_kv in [1, 2, 4]
+        for is_causal in [False, True]
+        if h_q % h_kv == 0
+    ]
+
+    performance_cases_d512 = [
+        TestParam(32, s_q, s_k, is_varlen=True, is_causal=is_causal, h_q=h_q, test_performance=True, d=512, dv=512)
+        for is_causal in [False, True]
+        for s_q in [1, 2]
+        for h_q in [8, 16, 32]
+        for s_k in [4096, 8192, 16384]
+    ]
+
+    # d512 production decode: q=(32,1,8,512), kv blocks ~14662*64 tokens
+    d512_extra_cases = [
+        TestParam(32, 1, 14662, False, False, test_performance=False, h_q=8, h_kv=1, d=512, dv=512, seed=0),
+        TestParam(32, 1, 4096, False, False, test_performance=False, h_q=8, h_kv=1, d=512, dv=512, seed=0),
+        TestParam(32, 1, 8192, True, False, test_performance=False, h_q=8, h_kv=1, d=512, dv=512, seed=1),
+        TestParam(64, 1, 16384, False, False, test_performance=False, h_q=16, h_kv=1, d=512, dv=512, seed=2),
+        TestParam(4, 1, 65, False, False, test_performance=False, h_q=8, h_kv=1, d=512, dv=512, seed=3),
+        TestParam(4, 1, 127, True, False, test_performance=False, h_q=8, h_kv=1, d=512, dv=512, seed=4),
+        TestParam(4, 2, 130, False, True, test_performance=False, h_q=8, h_kv=1, d=512, dv=512, seed=5),
+    ]
+
+    testcases = (
+        correctness_cases + corner_cases + performance_cases
+        + correctness_cases_d512 + corner_cases_d512 + performance_cases_d512
+        + d512_extra_cases
+    )
 
     for testcase in testcases:
         test_flash_mla(testcase)
