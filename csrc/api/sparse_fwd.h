@@ -164,7 +164,14 @@ static std::vector<at::Tensor> sparse_attn_prefill_interface(
         (float*)lse.data_ptr(),
 
         arch.num_sms,
-        at::cuda::getCurrentCUDAStream().stream()
+        at::cuda::getCurrentCUDAStream().stream(),
+
+        0, 0, 0, 0, 0,
+        nullptr,
+        nullptr,
+        0, 0,
+        0, 0, 0,
+        false
     };
 
     std::vector<FwdFeatures> required_features;

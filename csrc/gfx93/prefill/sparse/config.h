@@ -124,7 +124,7 @@ static void run(const SparseAttnFwdParams &params);
 
 };
 
-template<int D_QK, bool HAVE_TOPK_LENGTH, bool IS_TOPK_2048, bool USE_ATTN_SINK = false, bool CACHE_INDICES_IN_LDS = false>
+template<int D_QK, bool HAVE_TOPK_LENGTH, bool IS_TOPK_2048, bool USE_ATTN_SINK = false, bool CACHE_INDICES_IN_LDS = false, bool SPLIT_KV = false, bool DECODE_C_LOAD = false>
 class KernelTemplate_B_H_64
 {
 public:

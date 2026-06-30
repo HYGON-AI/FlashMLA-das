@@ -181,11 +181,17 @@ def test_flash_mla(p: TestParam) -> Result:
         result = kk.bench_kineto(run_decode, p.num_runs)
 
         if lib.is_decode_bf16_kvcache():
-            main_kernel_names = [
-                "flash_fwd_mla_decode_kernel_gfx938_dsa_nopage_64_splitkv",
-                "flash_fwd_mla_decode_kernel_gfx938_dsa_nopage_64<",
-            ]
-            combine_kernel_name = "flash_mla_splitkv_reduce_kernel"
+            if get_gcn_arch_name() == "gfx936":
+                main_kernel_names = [
+                    "gfx93::fwd::sparse_attn_fwd_kernel<gfx93::fwd::KernelTemplate_B_H_64<",
+                ]
+                combine_kernel_name = "flash_fwd_mla_combine_kernel"
+            else:
+                main_kernel_names = [
+                    "flash_fwd_mla_decode_kernel_gfx938_dsa_nopage_64_splitkv",
+                    "flash_fwd_mla_decode_kernel_gfx938_dsa_nopage_64<",
+                ]
+                combine_kernel_name = "flash_mla_splitkv_reduce_kernel"
         else:
             main_kernel_names = ["flash_fwd_splitkv_mla_fp8_sparse_kernel"]
             combine_kernel_name = "flash_fwd_mla_combine_kernel"

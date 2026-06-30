@@ -13,6 +13,7 @@
 
 #include "kerutils/supplemental/torch_tensors.h"
 #include "gfx93/prefill/sparse/dsa_mls/dispatch.h"
+#include "gfx93/prefill/sparse/phase1.h"
 #include "gfx9/decode/combine/combine_bf16_dsa.h"
 
 namespace gfx93::decode::sparse_bf16_dsa {
@@ -32,6 +33,11 @@ struct LocalArch {
     bool is_gfx93x() const {
         const auto base = arch_name.substr(0, arch_name.find(':'));
         return base == "gfx936" || base == "gfx938";
+    }
+
+    bool is_gfx936() const {
+        const auto base = arch_name.substr(0, arch_name.find(':'));
+        return base == "gfx936";
     }
 
     bool is_gfx938() const {
@@ -147,6 +153,41 @@ static int default_num_splits(int b, int s_q, int h_q, int topk, int extra_topk,
     return 1;
 }
 
+static int default_num_splits_gfx936_decode(int b, int s_q, int h_q, int topk, int extra_topk) {
+    if (h_q != 64) {
+        return default_num_splits(b, s_q, h_q, topk, extra_topk, false);
+    }
+
+    const int64_t decode_tasks = static_cast<int64_t>(b) * s_q;
+    const int total_topk = topk + extra_topk;
+
+    if (total_topk <= 256) {
+        if (decode_tasks <= 4) return 4;
+        if (decode_tasks <= 32) return 2;
+        return 1;
+    }
+    if (total_topk <= 512) {
+        if (decode_tasks <= 8) return 8;
+        if (decode_tasks <= 16) return 4;
+        if (decode_tasks <= 32) return 2;
+        return 1;
+    }
+    if (total_topk <= 1024) {
+        if (decode_tasks <= 2) return 16;
+        if (decode_tasks <= 8) return 8;
+        if (decode_tasks <= 16) return 4;
+        if (decode_tasks <= 32) return 2;
+        return 1;
+    }
+
+    if (decode_tasks <= 1) return 32;
+    if (decode_tasks <= 4) return 16;
+    if (decode_tasks <= 8) return 8;
+    if (decode_tasks <= 16) return 4;
+    if (decode_tasks <= 32) return 2;
+    return 1;
+}
+
 static std::optional<int> force_num_splits_for_tuning() {
     const char* env = std::getenv("FLASH_MLA_BF16_DSA_FORCE_SPLITS");
     if (env == nullptr || env[0] == '\0') {
@@ -169,6 +210,198 @@ static void check_optional_extra(
     }
 }
 
+static std::tuple<at::Tensor, at::Tensor, std::optional<at::Tensor>, std::optional<at::Tensor>>
+run_gfx936_prefill_kernel_decode(
+    const at::Tensor& q,
+    const at::Tensor& kv,
+    const at::Tensor& indices,
+    const std::optional<at::Tensor>& topk_length,
+    const std::optional<at::Tensor>& attn_sink,
+    std::optional<at::Tensor>& tile_scheduler_metadata,
+    std::optional<at::Tensor>& num_splits,
+    const std::optional<at::Tensor>& extra_kv,
+    const std::optional<at::Tensor>& extra_indices,
+    const std::optional<at::Tensor>& extra_topk_length,
+    int d_v,
+    float sm_scale,
+    const LocalArch& arch) {
+    KU_CHECK_NDIM(q, 4);
+    KU_CHECK_NDIM(kv, 4);
+    KU_CHECK_NDIM(indices, 3);
+
+    const int b = q.size(0);
+    const int s_q = q.size(1);
+    const int h_q = q.size(2);
+    const int d_qk = q.size(3);
+    const int page_block_size = kv.size(1);
+    const int h_kv = kv.size(2);
+    const int topk = indices.size(2);
+
+    TORCH_CHECK(!extra_kv.has_value() && !extra_indices.has_value() && !extra_topk_length.has_value(),
+                "gfx936 BF16 DSA decode via prefill kernel does not support extra_kv yet");
+    TORCH_CHECK(b > 0 && s_q > 0 && h_q > 0, "Invalid q shape for gfx936 BF16 DSA decode");
+    TORCH_CHECK(h_kv == 1, "gfx936 BF16 DSA decode only supports h_kv == 1");
+    TORCH_CHECK(h_q == 64 || h_q == 128, "gfx936 BF16 DSA decode only supports h_q == 64 or 128");
+    TORCH_CHECK(d_qk == 512, "gfx936 BF16 DSA decode only supports d_qk == 512");
+    TORCH_CHECK(d_v == 512, "gfx936 BF16 DSA decode only supports d_v == 512");
+    TORCH_CHECK(topk > 0, "topk must be positive");
+
+    KU_CHECK_DEVICE(q);
+    KU_CHECK_DEVICE(kv);
+    KU_CHECK_DEVICE(indices);
+    KU_CHECK_DEVICE(topk_length);
+    KU_CHECK_DEVICE(attn_sink);
+    KU_CHECK_DEVICE(tile_scheduler_metadata);
+    KU_CHECK_DEVICE(num_splits);
+
+    KU_CHECK_DTYPE(q, torch::kBFloat16);
+    KU_CHECK_DTYPE(kv, torch::kBFloat16);
+    KU_CHECK_DTYPE(indices, torch::kInt32);
+    KU_CHECK_DTYPE(topk_length, torch::kInt32);
+    KU_CHECK_DTYPE(attn_sink, torch::kFloat32);
+    KU_CHECK_DTYPE(tile_scheduler_metadata, torch::kInt32);
+    KU_CHECK_DTYPE(num_splits, torch::kInt32);
+
+    KU_CHECK_LAST_DIM_CONTIGUOUS(q);
+    KU_CHECK_LAST_DIM_CONTIGUOUS(kv);
+    KU_CHECK_LAST_DIM_CONTIGUOUS(indices);
+    KU_CHECK_CONTIGUOUS(topk_length);
+    KU_CHECK_CONTIGUOUS(attn_sink);
+
+    KU_CHECK_SHAPE(q, b, s_q, h_q, d_qk);
+    KU_CHECK_SHAPE(kv, kv.size(0), page_block_size, h_kv, d_qk);
+    KU_CHECK_SHAPE(indices, b, s_q, topk);
+    KU_CHECK_SHAPE(topk_length, b);
+    KU_CHECK_SHAPE(attn_sink, h_q);
+
+    c10::cuda::CUDAGuard device_guard{q.device()};
+    auto opts = q.options();
+    at::Tensor out = torch::empty({b, s_q, h_q, d_v}, opts);
+    at::Tensor lse_tmp = torch::empty({b, s_q, h_q}, opts.dtype(at::kFloat));
+    at::Tensor max_logits = torch::empty({b, s_q, h_q}, opts.dtype(at::kFloat));
+    at::Tensor lse;
+
+    int requested_num_splits = default_num_splits_gfx936_decode(b, s_q, h_q, topk, 0);
+    if (auto forced_num_splits = force_num_splits_for_tuning(); forced_num_splits.has_value()) {
+        requested_num_splits = forced_num_splits.value();
+    }
+    TORCH_CHECK(requested_num_splits >= 1 && requested_num_splits <= arch.num_sms,
+                "gfx936 BF16 DSA decode requires 1 <= num_splits <= num_sms");
+    constexpr int64_t kGfx936BufferLoadAddressBytes = 1LL << 32;
+    const int64_t padded_k_tokens = static_cast<int64_t>(kv.size(0)) * page_block_size;
+    const int64_t padded_k_bytes = padded_k_tokens * d_qk * static_cast<int64_t>(sizeof(cutlass::bfloat16_t));
+    const bool decode_use_c_load = padded_k_bytes > kGfx936BufferLoadAddressBytes;
+
+    at::Tensor topk_length_flat;
+    int* topk_length_ptr = nullptr;
+    if (topk_length.has_value()) {
+        if (s_q == 1) {
+            topk_length_ptr = topk_length->data_ptr<int>();
+        } else {
+            topk_length_flat = topk_length->view({b, 1}).expand({b, s_q}).reshape({b * s_q}).contiguous();
+            topk_length_ptr = topk_length_flat.data_ptr<int>();
+        }
+    }
+
+    SparseAttnFwdParams fwd_params = {
+        s_q, static_cast<int>(kv.size(0) * page_block_size), h_q, h_kv, d_qk, d_v, topk,
+        sm_scale, sm_scale * LOG_2_E,
+
+        reinterpret_cast<cutlass::bfloat16_t*>(q.data_ptr()),
+        reinterpret_cast<cutlass::bfloat16_t*>(kv.data_ptr()),
+        reinterpret_cast<int*>(indices.data_ptr()),
+        ku::get_optional_tensor_ptr<float>(attn_sink),
+        topk_length_ptr,
+
+        int64_stride_to_int(q.stride(1)), int64_stride_to_int(q.stride(2)),
+        int64_stride_to_int(kv.stride(1)), int64_stride_to_int(kv.stride(2)),
+        int64_stride_to_int(indices.stride(1)), topk,
+
+        reinterpret_cast<cutlass::bfloat16_t*>(out.data_ptr()),
+        max_logits.data_ptr<float>(),
+        lse_tmp.data_ptr<float>(),
+
+        arch.num_sms,
+        at::cuda::getCurrentCUDAStream().stream(),
+
+        b,
+        requested_num_splits,
+        topk,
+        int64_stride_to_int(q.stride(0)),
+        int64_stride_to_int(indices.stride(0)),
+        nullptr,
+        nullptr,
+        0, 0,
+        0, 0, 0,
+        decode_use_c_load
+    };
+
+    if (requested_num_splits == 1) {
+        if (topk_length.has_value()) {
+            if (decode_use_c_load) {
+                gfx93::fwd::run_fwd_phase1_c_load_kernel<512, true>(fwd_params);
+            } else {
+                gfx93::fwd::run_fwd_phase1_kernel<512, true>(fwd_params);
+            }
+        } else {
+            if (decode_use_c_load) {
+                gfx93::fwd::run_fwd_phase1_c_load_kernel<512, false>(fwd_params);
+            } else {
+                gfx93::fwd::run_fwd_phase1_kernel<512, false>(fwd_params);
+            }
+        }
+        lse = lse_tmp.permute({0, 2, 1}).contiguous();
+    } else {
+        fwd_params.split_partition_size = std::max(64, (topk + requested_num_splits - 1) / requested_num_splits);
+        fwd_params.split_partition_size = ((fwd_params.split_partition_size + 63) / 64) * 64;
+        at::Tensor lse_accum = torch::empty({b * requested_num_splits, s_q, h_q}, opts.dtype(at::kFloat));
+        at::Tensor out_accum = torch::empty({b * requested_num_splits, s_q, h_q, d_v}, opts.dtype(at::kFloat));
+        fwd_params.split_lse_accum = lse_accum.data_ptr<float>();
+        fwd_params.split_o_accum = out_accum.data_ptr<float>();
+        fwd_params.split_stride_lse_accum_split = int64_stride_to_int(lse_accum.stride(0));
+        fwd_params.split_stride_lse_accum_s_q = int64_stride_to_int(lse_accum.stride(1));
+        fwd_params.split_stride_o_accum_split = int64_stride_to_int(out_accum.stride(0));
+        fwd_params.split_stride_o_accum_s_q = int64_stride_to_int(out_accum.stride(1));
+        fwd_params.split_stride_o_accum_h_q = int64_stride_to_int(out_accum.stride(2));
+
+        if (topk_length.has_value()) {
+            gfx93::fwd::run_fwd_phase1_splitkv_kernel<512, true>(fwd_params);
+        } else {
+            gfx93::fwd::run_fwd_phase1_splitkv_kernel<512, false>(fwd_params);
+        }
+
+        CombineParams combine_params = {
+            b, s_q, h_q, d_v,
+
+            lse_tmp.data_ptr<float>(),
+            out.data_ptr(),
+            int64_stride_to_int(lse_tmp.stride(0)), int64_stride_to_int(lse_tmp.stride(1)),
+            int64_stride_to_int(out.stride(0)), int64_stride_to_int(out.stride(1)), int64_stride_to_int(out.stride(2)),
+
+            lse_accum.data_ptr<float>(),
+            out_accum.data_ptr<float>(),
+            int64_stride_to_int(lse_accum.stride(0)), int64_stride_to_int(lse_accum.stride(1)),
+            int64_stride_to_int(out_accum.stride(0)), int64_stride_to_int(out_accum.stride(1)), int64_stride_to_int(out_accum.stride(2)),
+
+            nullptr,
+            nullptr,
+            requested_num_splits,
+
+            ku::get_optional_tensor_ptr<float>(attn_sink),
+            at::cuda::getCurrentCUDAStream().stream(),
+
+            true,
+            requested_num_splits,
+            nullptr,
+            0
+        };
+        gfx9::decode::bf16_dsa::run_flash_mla_combine_kernel<cutlass::bfloat16_t>(combine_params);
+        lse = lse_tmp.permute({0, 2, 1}).contiguous();
+    }
+
+    return {out, lse, tile_scheduler_metadata, num_splits};
+}
+
 std::tuple<at::Tensor, at::Tensor, std::optional<at::Tensor>, std::optional<at::Tensor>>
 run(
     const at::Tensor& q,
@@ -184,6 +417,13 @@ run(
     int d_v,
     float sm_scale) {
     LocalArch arch;
+    if (arch.is_gfx936()) {
+        return run_gfx936_prefill_kernel_decode(
+            q, kv, indices, topk_length, attn_sink,
+            tile_scheduler_metadata, num_splits,
+            extra_kv, extra_indices, extra_topk_length,
+            d_v, sm_scale, arch);
+    }
     TORCH_CHECK(arch.is_gfx938(), "DSA BF16 sparse decode is only supported on gfx938");
 
     KU_CHECK_NDIM(q, 4);

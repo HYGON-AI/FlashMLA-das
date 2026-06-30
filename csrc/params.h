@@ -180,6 +180,18 @@ struct SparseAttnFwdParams {
 
     int num_sm;
     cudaStream_t stream;
+
+    // Optional split-kv decode path for gfx936 phase1 reuse.
+    int split_b;
+    int split_num_splits;
+    int split_partition_size;
+    int split_stride_q_b;
+    int split_stride_indices_b;
+    float* __restrict__ split_lse_accum;
+    float* __restrict__ split_o_accum;
+    int split_stride_lse_accum_split, split_stride_lse_accum_s_q;
+    int split_stride_o_accum_split, split_stride_o_accum_s_q, split_stride_o_accum_h_q;
+    bool split_decode_c_load;
 };
 
 // We have some kernels that implement both prefill and decode modes in a single kernel (with different template instantiations). The following enum helps to distinguish the modes.
