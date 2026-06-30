@@ -89,8 +89,11 @@ ext_modules.append(
             "csrc/gfx9/decode/combine/combine_bf16_dsa.cu",
 
             # # gfx93 dense decode
-            "csrc/gfx93/decode/dense/instantiations/fp16.cu",
-            "csrc/gfx93/decode/dense/instantiations/bf16.cu",
+            "csrc/gfx93/decode/dense/instantiations/fp16_d576.cu",
+            "csrc/gfx93/decode/dense/instantiations/fp16_d512.cu",
+            "csrc/gfx93/decode/dense/instantiations/bf16_d576.cu",
+            "csrc/gfx93/decode/dense/instantiations/bf16_d512.cu",
+            "csrc/gfx93/decode/dense/dense_decode_run.cu",
 
             ## gfx93 dense qkvfp8 decode
             "csrc/gfx93/decode/dense_qkvfp8/instantiations/fp8e4m3.cu",

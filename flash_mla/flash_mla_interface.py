@@ -19,6 +19,8 @@ class FlashMLASchedMeta:
         h_q: int
         page_block_size: int
         h_k: int
+        d_qk: int
+        d_v: int
 
         causal: bool
         is_fp8_kvcache: bool
@@ -186,6 +188,10 @@ def flash_mla_with_kvcache(
         # Sanity check. We only perform sanity check during the first invocation to save CPU time.
         if indices_in_kvcache is not None:
             assert not causal, "causal must be False when indices_in_kvcache is not None (i.e. sparse attention is enabled)"
+        else:
+            d_qk = q.shape[-1]
+            assert (d_qk == 576 and head_dim_v == 512) or (d_qk == 512 and head_dim_v == 512), \
+                "Dense decode supports (d_qk=576, d_v=512) or (d_qk=512, d_v=512)"
             
         # Initialize the tile scheduler metadata during the first invocation.
         sched_meta.have_initialized = True
@@ -195,6 +201,8 @@ def flash_mla_with_kvcache(
             q.shape[2],
             k_cache.shape[1],
             k_cache.shape[2],
+            q.shape[-1],
+            head_dim_v,
 
             causal,
             is_fp8_kvcache,
@@ -212,6 +220,8 @@ def flash_mla_with_kvcache(
         assert sched_meta.config.h_q == q.shape[2], "sched_meta.config.h_q must be equal to num_heads_q." + helper_msg
         assert sched_meta.config.page_block_size == k_cache.shape[1], "sched_meta.config.page_block_size must be equal to page_block_size." + helper_msg
         assert sched_meta.config.h_k == k_cache.shape[2], "sched_meta.config.h_k must be equal to num_heads_k." + helper_msg
+        assert sched_meta.config.d_qk == q.shape[-1], "sched_meta.config.d_qk must be equal to q head dim." + helper_msg
+        assert sched_meta.config.d_v == head_dim_v, "sched_meta.config.d_v must be equal to head_dim_v." + helper_msg
         assert sched_meta.config.causal == causal, "sched_meta.config.causal must be equal to causal." + helper_msg
         assert sched_meta.config.is_fp8_kvcache == is_fp8_kvcache, "sched_meta.config.is_fp8_kvcache must be equal to is_fp8_kvcache." + helper_msg
         assert sched_meta.config.topk == topk, "sched_meta.config.topk must be equal to the last dim of indices_in_kvcache." + helper_msg
