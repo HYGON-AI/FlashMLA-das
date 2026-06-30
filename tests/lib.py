@@ -48,6 +48,8 @@ class TestParam:
 def is_bf16_decode_supported_param(t: TestParam) -> bool:
     if t.decode is None:
         return False
+    if t.decode.extra_s_k is not None or t.decode.extra_topk is not None or t.decode.have_extra_topk_length:
+        return False
     if t.is_all_indices_invalid or t.decode.have_zero_seqlen_k:
         return False
     if t.h_kv != 1 or t.d_v != 512:

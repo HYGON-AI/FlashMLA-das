@@ -10,8 +10,8 @@ namespace gfx93::fwd {
 
 using namespace cute;
 
-template<int D_QK, bool HAVE_TOPK_LENGTH, bool IS_TOPK_2048, bool USE_ATTN_SINK, bool CACHE_INDICES_IN_LDS>
-__device__ void KernelTemplate_B_H_64<D_QK, HAVE_TOPK_LENGTH, IS_TOPK_2048, USE_ATTN_SINK, CACHE_INDICES_IN_LDS>::devfunc(const SparseAttnFwdParams &params) {
+template<int D_QK, bool HAVE_TOPK_LENGTH, bool IS_TOPK_2048, bool USE_ATTN_SINK, bool CACHE_INDICES_IN_LDS, bool SPLIT_KV, bool DECODE_C_LOAD>
+__device__ void KernelTemplate_B_H_64<D_QK, HAVE_TOPK_LENGTH, IS_TOPK_2048, USE_ATTN_SINK, CACHE_INDICES_IN_LDS, SPLIT_KV, DECODE_C_LOAD>::devfunc(const SparseAttnFwdParams &params) {
 
     const int tidx = threadIdx.x;
     static constexpr int kBlockM = B_H;
@@ -22,6 +22,11 @@ __device__ void KernelTemplate_B_H_64<D_QK, HAVE_TOPK_LENGTH, IS_TOPK_2048, USE_
     const int s_q_idx = blockIdx.y;
     const int bidh = blockIdx.x;
     const int lane_idx = tidx % 64;
+    const int split_batch_idx = blockIdx.z;
+    const bool direct_decode = (!SPLIT_KV) && params.split_b > 0;
+    const int batch_idx = SPLIT_KV ? split_batch_idx / params.split_num_splits : (direct_decode ? split_batch_idx : 0);
+    const int split_idx = SPLIT_KV ? split_batch_idx - batch_idx * params.split_num_splits : 0;
+    const int split_begin = SPLIT_KV ? split_idx * params.split_partition_size : 0;
 
     extern __shared__ Element smem[];
     Element* q_lds = (Element*)&(smem);   
@@ -29,7 +34,9 @@ __device__ void KernelTemplate_B_H_64<D_QK, HAVE_TOPK_LENGTH, IS_TOPK_2048, USE_
     Element* v_lds = q_lds;     
     int* sIndices = (int *)(q_lds + 8192); 
   
-    const index_t row_offset_q = s_q_idx * static_cast<index_t>(params.stride_q_s_q) + bidh * kBlockM * params.stride_q_h_q;
+    const index_t row_offset_q = ((SPLIT_KV || direct_decode) ? batch_idx * static_cast<index_t>(params.split_stride_q_b) : 0) +
+                                 s_q_idx * static_cast<index_t>(params.stride_q_s_q) +
+                                 bidh * kBlockM * params.stride_q_h_q;
     Tensor gQ = make_tensor(make_gmem_ptr(reinterpret_cast<Element *>(params.q) + row_offset_q),
                                 Shape<Int<kBlockM>, Int<kHeadDim>>{},
                                 make_stride(params.stride_q_h_q, _1{}));
@@ -40,7 +47,9 @@ __device__ void KernelTemplate_B_H_64<D_QK, HAVE_TOPK_LENGTH, IS_TOPK_2048, USE_
     Tensor gK = make_tensor(make_gmem_ptr(reinterpret_cast<Element *>(params.kv) + row_offset_k),
                                 Shape<Int<kBlockN>, Int<kHeadDim>>{},
                                 make_stride(params.stride_kv_s_kv, _1{}));
-    const index_t row_offset_topk = s_q_idx * params.stride_indices_s_q;
+    const index_t row_offset_topk = ((SPLIT_KV || direct_decode) ? batch_idx * static_cast<index_t>(params.split_stride_indices_b) : 0) +
+                                    s_q_idx * static_cast<index_t>(params.stride_indices_s_q) +
+                                    split_begin;
     int* gIndices = reinterpret_cast<int *>(params.indices) + row_offset_topk;
     typedef  __bf16  __fp16x8_t __attribute__((ext_vector_type(8)));
     typedef  __bf16  __fp16x4_t __attribute__((ext_vector_type(4)));
@@ -59,8 +68,11 @@ __device__ void KernelTemplate_B_H_64<D_QK, HAVE_TOPK_LENGTH, IS_TOPK_2048, USE_
     };  
 
 
-    const int topk_length = HAVE_TOPK_LENGTH ? __ldg(params.topk_length + s_q_idx) : params.topk;
-    const int num_topk_blocks = IS_TOPK_2048? 2048 / B_TOPK : HAVE_TOPK_LENGTH ? ku::ceil_div(topk_length, (int)B_TOPK) : (int)((unsigned int)params.topk/(unsigned int)B_TOPK);
+    const int topk_length_idx = (SPLIT_KV || direct_decode) ? batch_idx * params.s_q + s_q_idx : s_q_idx;
+    const int global_topk_length = HAVE_TOPK_LENGTH ? __ldg(params.topk_length + topk_length_idx) : params.topk;
+    const int topk_length = SPLIT_KV ? max(0, min(global_topk_length, split_begin + params.split_partition_size) - split_begin) : global_topk_length;
+    const int static_topk = SPLIT_KV ? max(0, min(params.topk, split_begin + params.split_partition_size) - split_begin) : params.topk;
+    const int num_topk_blocks = IS_TOPK_2048? 2048 / B_TOPK : HAVE_TOPK_LENGTH ? ku::ceil_div(topk_length, (int)B_TOPK) : ku::ceil_div(static_topk, (int)B_TOPK);
     // TiledMMA tiled_mma = TiledMma{}; 
     // auto thr_mma = tiled_mma.get_thread_slice(tidx);
     flash::Softmax<1> softmax;
@@ -107,14 +119,18 @@ __device__ void KernelTemplate_B_H_64<D_QK, HAVE_TOPK_LENGTH, IS_TOPK_2048, USE_
     auto calc_row_and_col_v = [&](const int block_idx, int i) -> int {
         int row = lane_idx / 4;
         // int col = lane_idx % 4;
-        int row_offset = row + i * 16 + block_idx * kBlockN;;
+        int offs = row + i * 16 + block_idx * kBlockN;
+        int row_offset = offs;
         // int col_offset = col * 8 + warp_idx * 32;
         if constexpr (IS_TOPK_2048 || CACHE_INDICES_IN_LDS) {
             row_offset = sIndices[row_offset % 1024];
         } else {
             row_offset = gIndices[row_offset];
         }
-        row_offset = row_offset == -1 ? params.s_kv : row_offset;
+        if constexpr (HAVE_TOPK_LENGTH) {
+            row_offset = offs < topk_length ? row_offset : params.s_kv;
+        }
+        row_offset = (row_offset < 0 || row_offset >= params.s_kv) ? params.s_kv : row_offset;
         return row_offset;
     };
     
@@ -161,7 +177,7 @@ __device__ void KernelTemplate_B_H_64<D_QK, HAVE_TOPK_LENGTH, IS_TOPK_2048, USE_
         }
     };
     if constexpr (IS_TOPK_2048 || CACHE_INDICES_IN_LDS) {
-        buffer_load_lds_indices(0, IS_TOPK_2048 ? 1024 : params.topk);
+        buffer_load_lds_indices(0, IS_TOPK_2048 ? 1024 : static_topk);
         __builtin_amdgcn_sched_barrier(0);
         asm volatile("s_waitcnt vmcnt(0) \n\t s_barrier\n\t");
         __builtin_amdgcn_sched_barrier(0);
@@ -206,12 +222,26 @@ __device__ void KernelTemplate_B_H_64<D_QK, HAVE_TOPK_LENGTH, IS_TOPK_2048, USE_
         const int offset_s = k_idx * 32 * 2;
         __builtin_amdgcn_sched_barrier(0);
 
-        asm volatile(
-            "s_mov_b32 m0, %1 \n\t"
-            "s_nop 0 \n\t"
-            "buffer_load_dwordx4 %0, %2, %3 , idxen offen  offset:0, lds \n" ::"v"(index_offset),
-            "s"(ldsAddrPerWave), "s"(global_addr_k), "s"(offset_s)
-        :);  
+        if constexpr (DECODE_C_LOAD) {
+            using uint4_t = unsigned int __attribute__((ext_vector_type(4)));
+            const uint4_t zero4 = {0u, 0u, 0u, 0u};
+            const bool valid_row = row_offset >= 0 && row_offset < params.s_kv;
+            const uint64_t src_elem = static_cast<uint64_t>(row_offset) * static_cast<uint64_t>(params.stride_kv_s_kv) +
+                                      static_cast<uint64_t>(col_offset + k_idx * 32);
+            const uint64_t lane_store_elem = static_cast<uint64_t>(lane_idx) * 16 / sizeof(Element);
+            const uint64_t dst_elem = (static_cast<uint64_t>(ldsAddrPerWave) -
+                                       static_cast<uint64_t>(reinterpret_cast<size_t>(k_lds))) / sizeof(Element) +
+                                      lane_store_elem;
+            *reinterpret_cast<uint4_t*>(k_lds + dst_elem) =
+                valid_row ? *reinterpret_cast<const uint4_t*>(reinterpret_cast<Element*>(params.kv) + src_elem) : zero4;
+        } else {
+            asm volatile(
+                "s_mov_b32 m0, %1 \n\t"
+                "s_nop 0 \n\t"
+                "buffer_load_dwordx4 %0, %2, %3 , idxen offen  offset:0, lds \n" ::"v"(index_offset),
+                "s"(ldsAddrPerWave), "s"(global_addr_k), "s"(offset_s)
+            :);
+        }
         __builtin_amdgcn_sched_barrier(0);
 
 
@@ -246,12 +276,26 @@ __device__ void KernelTemplate_B_H_64<D_QK, HAVE_TOPK_LENGTH, IS_TOPK_2048, USE_
         index_offset[1] = offset_v;
         const int offset_s = n_idx * 128 * 2;
         __builtin_amdgcn_sched_barrier(0);
-        asm volatile(
-            "s_mov_b32 m0, %1 \n\t"
-            "s_nop 0 \n\t"
-            "buffer_load_dwordx4 %0, %2, %3 , idxen offen  offset:0, lds \n" ::"v"(index_offset),
-            "s"(ldsAddrPerWave), "s"(global_addr_k), "s"(offset_s)
-        :);
+        if constexpr (DECODE_C_LOAD) {
+            using uint4_t = unsigned int __attribute__((ext_vector_type(4)));
+            const uint4_t zero4 = {0u, 0u, 0u, 0u};
+            const bool valid_row = row_offset >= 0 && row_offset < params.s_kv;
+            const uint64_t src_elem = static_cast<uint64_t>(row_offset) * static_cast<uint64_t>(params.stride_kv_s_kv) +
+                                      static_cast<uint64_t>(col_offset + n_idx * 128);
+            const uint64_t lane_store_elem = static_cast<uint64_t>(lane_idx) * 16 / sizeof(Element);
+            const uint64_t dst_elem = (static_cast<uint64_t>(ldsAddrPerWave) -
+                                       static_cast<uint64_t>(reinterpret_cast<size_t>(v_lds))) / sizeof(Element) +
+                                      lane_store_elem;
+            *reinterpret_cast<uint4_t*>(v_lds + dst_elem) =
+                valid_row ? *reinterpret_cast<const uint4_t*>(reinterpret_cast<Element*>(params.kv) + src_elem) : zero4;
+        } else {
+            asm volatile(
+                "s_mov_b32 m0, %1 \n\t"
+                "s_nop 0 \n\t"
+                "buffer_load_dwordx4 %0, %2, %3 , idxen offen  offset:0, lds \n" ::"v"(index_offset),
+                "s"(ldsAddrPerWave), "s"(global_addr_k), "s"(offset_s)
+            :);
+        }
         __builtin_amdgcn_sched_barrier(0);
 
   
@@ -658,17 +702,23 @@ __device__ void KernelTemplate_B_H_64<D_QK, HAVE_TOPK_LENGTH, IS_TOPK_2048, USE_
     //         acco_f32[0].w
     //     );
     // }
-    const index_t row_offset_o = s_q_idx * static_cast<index_t>(params.h_q * params.d_v) + bidh * kBlockM * params.d_v;
+    const index_t row_offset_o = (direct_decode ? batch_idx * static_cast<index_t>(params.s_q * params.h_q * params.d_v) : 0) +
+                                 s_q_idx * static_cast<index_t>(params.h_q * params.d_v) + bidh * kBlockM * params.d_v;
     Tensor gO = make_tensor(make_gmem_ptr(reinterpret_cast<Element *>(params.out) + row_offset_o),
                                 Shape<Int<kBlockM>, Int<kHeadDimV>>{},
                                 make_stride(params.d_v, _1{}));
-    const index_t row_offset_lse = s_q_idx * params.h_q + bidh * kBlockM;
+    const index_t row_offset_lse = (direct_decode ? batch_idx * static_cast<index_t>(params.s_q * params.h_q) : 0) +
+                                   s_q_idx * params.h_q + bidh * kBlockM;
     float* gLSE = reinterpret_cast<float *>(params.lse) + row_offset_lse;
+    float* gLSEAccum = SPLIT_KV ? params.split_lse_accum + split_batch_idx * params.split_stride_lse_accum_split +
+                                      s_q_idx * params.split_stride_lse_accum_s_q + bidh * kBlockM : nullptr;
+    float* gOAccum = SPLIT_KV ? params.split_o_accum + split_batch_idx * params.split_stride_o_accum_split +
+                                    s_q_idx * params.split_stride_o_accum_s_q + bidh * kBlockM * params.split_stride_o_accum_h_q : nullptr;
     // const index_t row_offset_lse = m_block * params.h_q;
     float* gMax_logits = reinterpret_cast<float *>(params.max_logits) + row_offset_lse;
 
     float attn_sink_o_scale = 1.0f;
-    if constexpr (USE_ATTN_SINK) {
+    if constexpr (USE_ATTN_SINK && !SPLIT_KV) {
         float rAttn_sink = __ldg((float*)params.attn_sink + bidh * kBlockM + lane_idx % 16 + warp_idx * 16);
         if (flash::is_positive_infinity(rAttn_sink)) {
             attn_sink_o_scale = 0.0f;
@@ -697,6 +747,15 @@ __device__ void KernelTemplate_B_H_64<D_QK, HAVE_TOPK_LENGTH, IS_TOPK_2048, USE_
             // if (row < params.h_q) 
             {
                 for (int ni = 0; ni < 16; ++ni) {
+                    if constexpr (SPLIT_KV) {
+                        col = (lane_idx / 16) * 2 + ni * 32;
+                        for (int ei = 0; ei < 4; ei++)
+                        {
+                            gOAccum[row * params.split_stride_o_accum_h_q + col] = topk_length == 0 ? 0.0f : acco_f32[ni * 2][ei];
+                            gOAccum[row * params.split_stride_o_accum_h_q + col + 1] = topk_length == 0 ? 0.0f : acco_f32[ni * 2 + 1][ei];
+                            col += 8;
+                        }
+                    } else {
                     #if defined(__gfx938__)
                     Bf16_storage res;
                     col = (lane_idx / 16) * 8 + ni * 32 ;
@@ -727,17 +786,22 @@ __device__ void KernelTemplate_B_H_64<D_QK, HAVE_TOPK_LENGTH, IS_TOPK_2048, USE_
                         col += 8;
                     }
                     #endif
+                    }
                 }
                 if (lane_idx / 16 == 0)
                 {
-                    gLSE[row] = lse(mi);
-                    if constexpr (HAVE_TOPK_LENGTH)
-                    {
-                        gMax_logits[row] = topk_length == 0 ? -INFINITY : softmax.row_max(mi) * params.sm_scale;
-                    }
-                    else
-                    {
-                        gMax_logits[row] = softmax.row_max(mi) * params.sm_scale;
+                    if constexpr (SPLIT_KV) {
+                        gLSEAccum[row] = topk_length == 0 ? -INFINITY : lse(mi);
+                    } else {
+                        gLSE[row] = lse(mi);
+                        if constexpr (HAVE_TOPK_LENGTH)
+                        {
+                            gMax_logits[row] = topk_length == 0 ? -INFINITY : softmax.row_max(mi) * params.sm_scale;
+                        }
+                        else
+                        {
+                            gMax_logits[row] = softmax.row_max(mi) * params.sm_scale;
+                        }
                     }
                 }
             }
@@ -1353,15 +1417,16 @@ void KernelTemplate<D_QK, HAVE_TOPK_LENGTH>::run(const SparseAttnFwdParams &para
     KU_CHECK_KERNEL_LAUNCH();
 }
 
-template<int D_QK, bool HAVE_TOPK_LENGTH, bool IS_TOPK_2048, bool USE_ATTN_SINK, bool CACHE_INDICES_IN_LDS>
-void KernelTemplate_B_H_64<D_QK, HAVE_TOPK_LENGTH, IS_TOPK_2048, USE_ATTN_SINK, CACHE_INDICES_IN_LDS>::run(const SparseAttnFwdParams &params) {
+template<int D_QK, bool HAVE_TOPK_LENGTH, bool IS_TOPK_2048, bool USE_ATTN_SINK, bool CACHE_INDICES_IN_LDS, bool SPLIT_KV, bool DECODE_C_LOAD>
+void KernelTemplate_B_H_64<D_QK, HAVE_TOPK_LENGTH, IS_TOPK_2048, USE_ATTN_SINK, CACHE_INDICES_IN_LDS, SPLIT_KV, DECODE_C_LOAD>::run(const SparseAttnFwdParams &params) {
     KU_ASSERT(params.h_kv == 1);
     // KU_ASSERT(params.topk % (2*B_TOPK) == 0);   // To save some boundry checkings
     KU_ASSERT(params.topk > 0);
     // KU_ASSERT(params.h_q % B_H == 0);
-    auto kernel = &sparse_attn_fwd_kernel<KernelTemplate_B_H_64<D_QK, HAVE_TOPK_LENGTH, IS_TOPK_2048, USE_ATTN_SINK, CACHE_INDICES_IN_LDS>>;
+    auto kernel = &sparse_attn_fwd_kernel<KernelTemplate_B_H_64<D_QK, HAVE_TOPK_LENGTH, IS_TOPK_2048, USE_ATTN_SINK, CACHE_INDICES_IN_LDS, SPLIT_KV, DECODE_C_LOAD>>;
     constexpr size_t smem_size = 16384 + 4096; // 做了lds复用
-    dim3 grid((params.h_q + B_H - 1) / B_H, params.s_q, 1);
+    dim3 grid((params.h_q + B_H - 1) / B_H, params.s_q,
+              SPLIT_KV ? params.split_b * params.split_num_splits : (params.split_b > 0 ? params.split_b : 1));
     kernel<<<grid, NUM_THREADS, smem_size, params.stream>>>(params);
     KU_CHECK_KERNEL_LAUNCH();
 }
@@ -1377,6 +1442,17 @@ static void run_h64_fast_path(const SparseAttnFwdParams& params) {
     }
 }
 
+template<int D_QK, bool HAVE_TOPK_LENGTH, bool USE_ATTN_SINK>
+static void run_h64_c_load_fast_path(const SparseAttnFwdParams& params) {
+    if (params.topk == 2048) {
+        KernelTemplate_B_H_64<D_QK, HAVE_TOPK_LENGTH, true, USE_ATTN_SINK, false, false, true>::run(params);
+    } else if (params.topk <= 1024) {
+        KernelTemplate_B_H_64<D_QK, HAVE_TOPK_LENGTH, false, USE_ATTN_SINK, true, false, true>::run(params);
+    } else {
+        KernelTemplate_B_H_64<D_QK, HAVE_TOPK_LENGTH, false, USE_ATTN_SINK, false, false, true>::run(params);
+    }
+}
+
 template<int D_QK, bool HAVE_TOPK_LENGTH>
 void run_fwd_phase1_kernel(const SparseAttnFwdParams& params) {
     if (params.h_q == 64 || params.h_q == 128) {
@@ -1388,6 +1464,41 @@ void run_fwd_phase1_kernel(const SparseAttnFwdParams& params) {
         return;
     }
     KernelTemplate<D_QK, HAVE_TOPK_LENGTH>::run(params);
+}
+
+template<int D_QK, bool HAVE_TOPK_LENGTH>
+void run_fwd_phase1_c_load_kernel(const SparseAttnFwdParams& params) {
+    KU_ASSERT(params.h_q == 64 || params.h_q == 128);
+    KU_ASSERT(params.h_kv == 1);
+    KU_ASSERT(params.topk > 0);
+    if (params.attn_sink) {
+        run_h64_c_load_fast_path<D_QK, HAVE_TOPK_LENGTH, true>(params);
+    } else {
+        run_h64_c_load_fast_path<D_QK, HAVE_TOPK_LENGTH, false>(params);
+    }
+}
+
+template<int D_QK, bool HAVE_TOPK_LENGTH>
+void run_fwd_phase1_splitkv_kernel(const SparseAttnFwdParams& params) {
+    KU_ASSERT(params.h_q == 64 || params.h_q == 128);
+    KU_ASSERT(params.h_kv == 1);
+    KU_ASSERT(params.topk > 0);
+    KU_ASSERT(params.split_b > 0);
+    KU_ASSERT(params.split_num_splits >= 1);
+    KU_ASSERT(params.split_partition_size > 0);
+    if (params.split_partition_size <= 1024) {
+        if (params.split_decode_c_load) {
+            KernelTemplate_B_H_64<D_QK, HAVE_TOPK_LENGTH, false, false, true, true, true>::run(params);
+        } else {
+            KernelTemplate_B_H_64<D_QK, HAVE_TOPK_LENGTH, false, false, true, true>::run(params);
+        }
+    } else {
+        if (params.split_decode_c_load) {
+            KernelTemplate_B_H_64<D_QK, HAVE_TOPK_LENGTH, false, false, false, true, true>::run(params);
+        } else {
+            KernelTemplate_B_H_64<D_QK, HAVE_TOPK_LENGTH, false, false, false, true>::run(params);
+        }
+    }
 }
 
 }
