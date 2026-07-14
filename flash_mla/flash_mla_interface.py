@@ -298,6 +298,8 @@ def flash_mla_sparse_fwd(
         - lse: [s_q, h_q], float, log-sum-exp of attention scores
     """
     _print_sparse_prefill_debug(q, kv, indices, sm_scale, d_v, attn_sink, topk_length)
+    if topk_length is None:
+        indices = torch.sort(indices, dim=-1).values
     results = flash_mla_cuda.sparse_prefill_fwd(
         q, kv, indices, sm_scale, d_v, attn_sink, topk_length
     )
@@ -573,4 +575,3 @@ def flash_mla_with_kvcache_quantization_q_nope_pe(
         kv_cache_dtype
     )
     return out, softmax_lse
-
