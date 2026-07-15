@@ -57,6 +57,19 @@ def _is_dsa_debug_enabled() -> bool:
     return os.environ.get("FLASH_MLA_DSA_DEBUG", "").lower() in ["1", "true", "yes", "y", "on"]
 
 
+def _is_gfx936_tensor(t: torch.Tensor) -> bool:
+    if not t.is_cuda:
+        return False
+    try:
+        props = torch.cuda.get_device_properties(t.device)
+        arch = getattr(props, "gcnArchName", "") or getattr(props, "gcn_arch_name", "")
+        if "gfx936" in str(arch):
+            return True
+        return "gfx936" in torch.cuda.get_device_name(t.device)
+    except Exception:
+        return False
+
+
 def _tensor_desc(t: Optional[torch.Tensor]) -> str:
     if t is None:
         return "None"
@@ -298,7 +311,12 @@ def flash_mla_sparse_fwd(
         - lse: [s_q, h_q], float, log-sum-exp of attention scores
     """
     _print_sparse_prefill_debug(q, kv, indices, sm_scale, d_v, attn_sink, topk_length)
-    if topk_length is None:
+    if (
+        topk_length is None
+        and attn_sink is None
+        and _is_gfx936_tensor(q)
+        and kv.shape[0] > indices.shape[-1]
+    ):
         indices = torch.sort(indices, dim=-1).values
     results = flash_mla_cuda.sparse_prefill_fwd(
         q, kv, indices, sm_scale, d_v, attn_sink, topk_length
