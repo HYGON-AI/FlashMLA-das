@@ -4,6 +4,13 @@ import os
 
 import torch
 
+try:
+    import triton
+    import triton.language as tl
+except Exception:
+    triton = None
+    tl = None
+
 import flash_mla.cuda as flash_mla_cuda
 
 @dataclasses.dataclass
@@ -68,6 +75,80 @@ def _is_gfx936_tensor(t: torch.Tensor) -> bool:
         return "gfx936" in torch.cuda.get_device_name(t.device)
     except Exception:
         return False
+
+
+if triton is not None:
+    @triton.jit
+    def _sort_sparse_indices_kernel(
+        indices,
+        out,
+        s_kv: tl.constexpr,
+        topk: tl.constexpr,
+        block: tl.constexpr,
+        in_stride_row: tl.constexpr,
+        in_stride_head: tl.constexpr,
+        out_stride_row: tl.constexpr,
+        out_stride_head: tl.constexpr,
+    ):
+        row = tl.program_id(0)
+        head = tl.program_id(1)
+        offs = tl.arange(0, block)
+        mask = offs < topk
+        vals = tl.load(indices + row * in_stride_row + head * in_stride_head + offs, mask=mask, other=2147483647)
+        valid = (vals >= 0) & (vals < s_kv)
+        keys = tl.where(valid, vals, 2147483647)
+        keys = tl.sort(keys)
+        sorted_vals = tl.where(keys == 2147483647, -1, keys)
+        tl.store(out + row * out_stride_row + head * out_stride_head + offs, sorted_vals, mask=mask)
+
+
+def _safe_sort_sparse_indices(indices: torch.Tensor, s_kv: int) -> torch.Tensor:
+    if triton is None:
+        valid = (indices >= 0) & (indices < s_kv)
+        max_value = torch.iinfo(indices.dtype).max
+        keys = torch.where(valid, indices, torch.full_like(indices, max_value))
+        sorted_indices = torch.sort(keys, dim=-1).values
+        return torch.where(sorted_indices == max_value, torch.full_like(sorted_indices, -1), sorted_indices)
+    topk = indices.shape[-1]
+    block = triton.next_power_of_2(topk)
+    out = torch.empty_like(indices)
+    rows = indices.shape[0]
+    heads = indices.shape[1]
+    _sort_sparse_indices_kernel[(rows, heads)](
+        indices,
+        out,
+        s_kv,
+        topk,
+        block,
+        indices.stride(0),
+        indices.stride(1),
+        out.stride(0),
+        out.stride(1),
+        num_warps=4,
+        num_stages=2,
+    )
+    return out
+
+
+def _should_sort_d576_sparse_prefill(
+    q: torch.Tensor,
+    kv: torch.Tensor,
+    indices: torch.Tensor,
+    d_v: int,
+    attn_sink: Optional[torch.Tensor],
+    topk_length: Optional[torch.Tensor],
+) -> bool:
+    return (
+        q.is_cuda
+        and indices.is_cuda
+        and indices.dtype == torch.int32
+        and q.shape[-1] == 576
+        and q.shape[1] == 64
+        and d_v == 512
+        and indices.shape[-1] == 2048
+        and topk_length is None
+        and attn_sink is None
+    )
 
 
 def _tensor_desc(t: Optional[torch.Tensor]) -> str:
@@ -311,13 +392,15 @@ def flash_mla_sparse_fwd(
         - lse: [s_q, h_q], float, log-sum-exp of attention scores
     """
     _print_sparse_prefill_debug(q, kv, indices, sm_scale, d_v, attn_sink, topk_length)
-    if (
+    if _should_sort_d576_sparse_prefill(q, kv, indices, d_v, attn_sink, topk_length):
+        indices = _safe_sort_sparse_indices(indices, kv.shape[0])
+    elif (
         topk_length is None
         and attn_sink is None
         and _is_gfx936_tensor(q)
         and kv.shape[0] > indices.shape[-1]
     ):
-        indices = torch.sort(indices, dim=-1).values
+        indices = _safe_sort_sparse_indices(indices, kv.shape[0])
     results = flash_mla_cuda.sparse_prefill_fwd(
         q, kv, indices, sm_scale, d_v, attn_sink, topk_length
     )
