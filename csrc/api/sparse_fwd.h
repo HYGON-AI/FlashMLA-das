@@ -50,7 +50,7 @@ protected:
         if (enable_dsa_mls_prefill_ &&
             !disable_dsa_mls_prefill &&
             ((std::getenv("FLASH_MLA_FORCE_DSA_MLS_PREFILL") != nullptr && gfx93::fwd::dsa_mls::can_run(params)) ||
-             gfx93::fwd::dsa_mls::should_run(params))) {
+             (params.d_qk != 576 && gfx93::fwd::dsa_mls::should_run(params)))) {
             gfx93::fwd::dsa_mls::run(params);
             return;
         }
