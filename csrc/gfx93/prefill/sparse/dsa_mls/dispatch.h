@@ -15,10 +15,10 @@
 namespace gfx93::fwd::dsa_mls {
 
 static inline bool dsa_decode_single_kernel_supports(const Flash_fwd_mla_params_dsa& params) {
-    if (params.extra_sparse_indices != nullptr && params.extra_topk > 0) {
-        return params.topk <= 256 && params.extra_topk <= 1024;
-    }
-    return params.topk <= 1024;
+    // The single-kernel path preloads a fixed-width index tile and can read
+    // past the logical indices tensor for small topk cases. Route the
+    // num_splits == 1 path through splitkv_direct, which guards index loads.
+    return false;
 }
 
 template<typename Kernel_traits, const bool Tail, typename Params>
