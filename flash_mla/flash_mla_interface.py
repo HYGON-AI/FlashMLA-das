@@ -78,17 +78,23 @@ def _is_gfx936_tensor(t: torch.Tensor) -> bool:
 
 
 if triton is not None:
-    @triton.jit
+    @triton.jit(do_not_specialize=[
+        "s_kv",
+        "in_stride_row",
+        "in_stride_head",
+        "out_stride_row",
+        "out_stride_head",
+    ])
     def _sort_sparse_indices_kernel(
         indices,
         out,
-        s_kv: tl.constexpr,
+        s_kv,
         topk: tl.constexpr,
         block: tl.constexpr,
-        in_stride_row: tl.constexpr,
-        in_stride_head: tl.constexpr,
-        out_stride_row: tl.constexpr,
-        out_stride_head: tl.constexpr,
+        in_stride_row,
+        in_stride_head,
+        out_stride_row,
+        out_stride_head,
     ):
         row = tl.program_id(0)
         head = tl.program_id(1)
@@ -103,6 +109,8 @@ if triton is not None:
 
 
 def _safe_sort_sparse_indices(indices: torch.Tensor, s_kv: int) -> torch.Tensor:
+    if indices.stride(-1) != 1:
+        indices = indices.contiguous()
     if triton is None:
         valid = (indices >= 0) & (indices < s_kv)
         max_value = torch.iinfo(indices.dtype).max
