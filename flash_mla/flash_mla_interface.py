@@ -138,6 +138,39 @@ def _safe_sort_sparse_indices(indices: torch.Tensor, s_kv: int) -> torch.Tensor:
     return out
 
 
+def _safe_sort_sparse_indices_inplace(indices: torch.Tensor, s_kv: int) -> torch.Tensor:
+    if indices.stride(-1) != 1:
+        # The Triton kernel assumes contiguous topk rows. If the input is not
+        # row-contiguous, fall back to the out-of-place path rather than writing
+        # through a temporary and silently losing the original tensor update.
+        return _safe_sort_sparse_indices(indices, s_kv)
+    if triton is None:
+        valid = (indices >= 0) & (indices < s_kv)
+        max_value = torch.iinfo(indices.dtype).max
+        keys = torch.where(valid, indices, torch.full_like(indices, max_value))
+        sorted_indices = torch.sort(keys, dim=-1).values
+        indices.copy_(torch.where(sorted_indices == max_value, torch.full_like(sorted_indices, -1), sorted_indices))
+        return indices
+    topk = indices.shape[-1]
+    block = triton.next_power_of_2(topk)
+    rows = indices.shape[0]
+    heads = indices.shape[1]
+    _sort_sparse_indices_kernel[(rows, heads)](
+        indices,
+        indices,
+        s_kv,
+        topk,
+        block,
+        indices.stride(0),
+        indices.stride(1),
+        indices.stride(0),
+        indices.stride(1),
+        num_warps=4,
+        num_stages=2,
+    )
+    return indices
+
+
 def _should_sort_d576_sparse_prefill(
     q: torch.Tensor,
     kv: torch.Tensor,
@@ -401,14 +434,14 @@ def flash_mla_sparse_fwd(
     """
     _print_sparse_prefill_debug(q, kv, indices, sm_scale, d_v, attn_sink, topk_length)
     if _should_sort_d576_sparse_prefill(q, kv, indices, d_v, attn_sink, topk_length):
-        indices = _safe_sort_sparse_indices(indices, kv.shape[0])
+        indices = _safe_sort_sparse_indices_inplace(indices, kv.shape[0])
     elif (
         topk_length is None
         and attn_sink is None
         and _is_gfx936_tensor(q)
         and kv.shape[0] > indices.shape[-1]
     ):
-        indices = _safe_sort_sparse_indices(indices, kv.shape[0])
+        indices = _safe_sort_sparse_indices_inplace(indices, kv.shape[0])
     results = flash_mla_cuda.sparse_prefill_fwd(
         q, kv, indices, sm_scale, d_v, attn_sink, topk_length
     )
