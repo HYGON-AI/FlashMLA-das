@@ -40,7 +40,7 @@ build:flashmla-wheel:
     - git merge "origin/${CI_MERGE_REQUEST_TARGET_BRANCH_NAME}" --no-edit
     # Detach-avoidance: create a named branch so optest --test_dir can
     # identify the branch for its output directory.
-    - git checkout -b _ci_mr
+    - git checkout -B _ci_mr
   script:
     - bash ci_script/build_wheel_and_manylinux.sh
     - python -m pip install --force-reinstall --no-deps dist/*manylinux*.whl
