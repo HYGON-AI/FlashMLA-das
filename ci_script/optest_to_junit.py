@@ -6,6 +6,8 @@ optest output structure:
     ├── .optest-results.json
     ├── acc/
     └── *.csv
+
+Logs mirror the same version directory under /op_test_log/flashmla/.
 """
 
 from __future__ import annotations
@@ -17,11 +19,14 @@ from xml.etree.ElementTree import Element, SubElement, tostring
 import xml.dom.minidom
 
 RESULTS_ROOT = Path("/op_test_output/flashmla")
+LOG_ROOT = Path("/op_test_log/flashmla")
 JUNIT_OUTPUT = (
     Path(sys.argv[1]) / "tests/flashmla_performance_output.xml"
     if len(sys.argv) > 1
     else Path("tests/flashmla_performance_output.xml")
 )
+
+_LOG_TAIL_LINES = 80
 
 
 def find_latest_results() -> Path | None:
@@ -41,7 +46,22 @@ def make_error_suite(message: str) -> str:
     return xml.dom.minidom.parseString(tostring(testsuite)).toprettyxml()
 
 
-def build_junit(data: dict) -> str:
+def _read_log_tail(log_dir: Path, log_rel: str) -> str:
+    """Return the tail of a log file, safe for embedding in XML."""
+    log_file = log_dir / log_rel
+    if not log_file.is_file():
+        return f"(log file not found: {log_file})"
+    try:
+        content = log_file.read_text(encoding="utf-8", errors="replace")
+    except OSError as exc:
+        return f"(failed to read log: {exc})"
+    all_lines = content.splitlines()
+    if len(all_lines) > _LOG_TAIL_LINES:
+        return "...\n" + "\n".join(all_lines[-_LOG_TAIL_LINES:])
+    return content
+
+
+def build_junit(data: dict, log_dir: Path) -> str:
     testsuite = Element(
         "testsuite", name="flashmla.performance",
         tests="0", failures="0", errors="0", skipped="0",
@@ -55,15 +75,19 @@ def build_junit(data: dict) -> str:
     for test in per_data.get("tests", []):
         total += 1
         name = test["name"]
-        tc = SubElement(
-            testsuite, "testcase",
-            classname="flashmla.per", name=name,
-        )
+        duration = test.get("duration_s")
+        attrs = {"classname": "flashmla.per", "name": name}
+        if duration is not None:
+            attrs["time"] = str(duration)
+        tc = SubElement(testsuite, "testcase", **attrs)
         if test.get("status") == "FAIL":
             failed += 1
-            log_path = test.get("log", "")
-            SubElement(tc, "failure",
-                       message=f"{name} failed (log: {log_path})")
+            log_rel = test.get("log", "")
+            failure = SubElement(
+                tc, "failure",
+                message=f"{name} failed (log: {log_rel})",
+            )
+            failure.text = _read_log_tail(log_dir, log_rel)
 
     per_summary = per_data.get("summary", {})
     per_failed = per_summary.get("failed", 0)
@@ -88,8 +112,11 @@ def build_junit(data: dict) -> str:
         )
         if row_failed > 0:
             failed += 1
-            SubElement(tc, "failure",
-                       message=f"{name}: {row_failed}/{row.get('total', 0)} failed")
+            failure = SubElement(
+                tc, "failure",
+                message=f"{name}: {row_failed}/{row.get('total', 0)} failed",
+            )
+            failure.text = _read_log_tail(log_dir, f"acc/{name}.log")
         if row_skipped > 0:
             skipped += 1
             SubElement(tc, "skipped",
@@ -114,9 +141,11 @@ def main() -> int:
     data = json.loads(results_file.read_text(encoding="utf-8"))
     branch = data.get("branch", "?")
     commit = data.get("commit", "?")[:8]
-    print(f"Converting optest results: {branch=} commit={commit}")
+    version_dir = results_file.parent.name  # e.g. ci_mr_d6f49e99_260805114057
+    log_dir = LOG_ROOT / version_dir
+    print(f"Converting optest results: {branch=} commit={commit} {version_dir=}")
 
-    xml_str = build_junit(data)
+    xml_str = build_junit(data, log_dir)
 
     JUNIT_OUTPUT.parent.mkdir(parents=True, exist_ok=True)
     JUNIT_OUTPUT.write_text(xml_str, encoding="utf-8")
