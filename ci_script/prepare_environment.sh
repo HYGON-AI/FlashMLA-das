@@ -49,7 +49,7 @@ pip3 install packaging -i https://mirrors.huaweicloud.com/artifactory/pypi-publi
 pip3 install einops -i https://mirrors.huaweicloud.com/artifactory/pypi-public/simple
 pip3 install pytest -i https://mirrors.huaweicloud.com/artifactory/pypi-public/simple
 pip3 install setuptools  --force-reinstall --no-deps -i https://mirrors.huaweicloud.com/artifactory/pypi-public/simple
-python -m pip install torch=="${TORCH_VERSION}" triton ciupload auditwheel patchelf cismi
+python -m pip install torch=="${TORCH_VERSION}" triton ciupload auditwheel patchelf
 
 export PYTHON_VERSION="$(python --version 2>&1 | awk -F '[ .]' '{print $2 "." $3}')"
 
