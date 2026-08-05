@@ -40,6 +40,7 @@ fi
 
 cd "${CI_PROJECT_DIR:?CI_PROJECT_DIR must be set by GitLab}"
 
+pip3 install rich -i https://mirrors.huaweicloud.com/artifactory/pypi-public/simple
 pip3 install pyyaml -i https://mirrors.huaweicloud.com/artifactory/pypi-public/simple
 pip3 install hypothesis -i https://mirrors.huaweicloud.com/artifactory/pypi-public/simple
 pip3 install Ninja -i https://mirrors.huaweicloud.com/artifactory/pypi-public/simple
