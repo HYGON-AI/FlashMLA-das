@@ -16,7 +16,7 @@ build:flashmla-wheel:
   tags:
     - nmz
   rules:
-    - if: '$CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_TARGET_BRANCH_NAME == "main"'
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_TARGET_BRANCH_NAME == "master-aicc"'
   before_script:
     # Install DTK, AICC, Torch and Python dependencies.
     - source ci_script/prepare_environment.sh
@@ -58,7 +58,7 @@ publish:
   tags:
     - nmz
   rules:
-    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_REF_NAME == "main"'
+    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_REF_NAME == "master-aicc"'
   before_script:
     # Install DTK, AICC, Torch and Python dependencies.
     - source ci_script/prepare_environment.sh
