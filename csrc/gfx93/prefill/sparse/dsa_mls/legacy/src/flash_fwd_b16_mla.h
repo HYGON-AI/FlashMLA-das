@@ -2578,7 +2578,7 @@ __global__ void __launch_bounds__(256, 1) flash_fwd_mla_decode_kernel_gfx938_dsa
         int seqlen_o_stride = params.o_head_stride;
         int seqlen_qv_stride = params.qv_row_stride;    // 当走FlashMLA接口时，不会使用
 
-        int row_offset_q, row_offset_k, row_offset_v, row_offset_o, row_offset_lse, row_offset_qv;
+        int64_t row_offset_q, row_offset_k, row_offset_v, row_offset_o, row_offset_lse, row_offset_qv;
         int headdim_split_id = 0;
 
         // const int page_block_size = params.page_block_size;
