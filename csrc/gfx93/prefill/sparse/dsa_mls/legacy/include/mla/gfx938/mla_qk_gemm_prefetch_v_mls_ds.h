@@ -2121,6 +2121,7 @@ __forceinline__ __device__ void qk_gemm_prefetch_v_mls_ds_576_512_nopage_64_new_
         int seqlen_k_stride,
         int seqlen_v_stride,
         int* index_ptr,
+        int fallback_index,
         int batch_stride_k,
         int batch_stride_v,
         int n_loop,
@@ -2160,7 +2161,6 @@ __forceinline__ __device__ void qk_gemm_prefetch_v_mls_ds_576_512_nopage_64_new_
     index_topk[3] = index_ptr[(n_loop * 64) + 3 * 16 + (tid / 4)];
 
     if constexpr (NeedIndexGuard) {
-        int fallback_index = index_ptr[0] == -1 ? 0 : index_ptr[0];
         index_topk[0] = (index_topk[0] == -1) ? fallback_index : index_topk[0];
         index_topk[1] = (index_topk[1] == -1) ? fallback_index : index_topk[1];
         index_topk[2] = (index_topk[2] == -1) ? fallback_index : index_topk[2];
