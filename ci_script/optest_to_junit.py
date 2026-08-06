@@ -13,10 +13,18 @@ Logs mirror the same version directory under /op_test_log/flashmla/.
 from __future__ import annotations
 
 import json
+import re
 import sys
 from pathlib import Path
 from xml.etree.ElementTree import Element, SubElement, tostring
 import xml.dom.minidom
+
+_ANSI_RE = re.compile(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
+_FATAL_RE = re.compile(r"^Fatal Python error:")
+_SUMMARY_RE = re.compile(r"^=* short test summary info =*$")
+_TRACEBACK = "Traceback (most recent call last):"
+_MAX_FULL_LINES = 2000
+_FATAL_CONTEXT = 100
 
 RESULTS_ROOT = Path("/op_test_output/flashmla")
 LOG_ROOT = Path("/op_test_log/flashmla")
@@ -26,7 +34,6 @@ JUNIT_OUTPUT = (
     else Path("tests/flashmla_performance_output.xml")
 )
 
-_LOG_TAIL_LINES = 80
 
 
 def find_latest_results() -> Path | None:
@@ -46,8 +53,13 @@ def make_error_suite(message: str) -> str:
     return xml.dom.minidom.parseString(tostring(testsuite)).toprettyxml()
 
 
-def _read_log_tail(log_dir: Path, log_rel: str) -> str:
-    """Return the tail of a log file, safe for embedding in XML."""
+def _read_error_context(log_dir: Path, log_rel: str) -> str:
+    """Extract the most relevant error information from a log file.
+
+    - Total lines ≤ _MAX_FULL_LINES → full content.
+    - Larger logs → smart extraction (see inline comments).
+    ANSI escape codes are stripped for readability in GitLab's JUnit viewer.
+    """
     log_file = log_dir / log_rel
     if not log_file.is_file():
         return f"(log file not found: {log_file})"
@@ -55,10 +67,36 @@ def _read_log_tail(log_dir: Path, log_rel: str) -> str:
         content = log_file.read_text(encoding="utf-8", errors="replace")
     except OSError as exc:
         return f"(failed to read log: {exc})"
-    all_lines = content.splitlines()
-    if len(all_lines) > _LOG_TAIL_LINES:
-        return "...\n" + "\n".join(all_lines[-_LOG_TAIL_LINES:])
-    return content
+
+    lines = content.splitlines()
+
+    # ── small enough → return everything ─────────────────────────────
+    if len(lines) <= _MAX_FULL_LINES:
+        return "\n".join(_ANSI_RE.sub("", line) for line in lines)
+
+    # ── smart extraction for large logs ──────────────────────────────
+
+    # 1. Fatal Python error (SIGSEGV / SIGABRT / …).
+    #    Include 100 lines before the marker for debugging context.
+    for i, line in enumerate(lines):
+        if _FATAL_RE.match(line):
+            start = max(0, i - _FATAL_CONTEXT)
+            return "\n".join(_ANSI_RE.sub("", l) for l in lines[start:])
+
+    # 2. pytest short test summary (per-failure reasons + final tally).
+    for i, line in enumerate(lines):
+        if _SUMMARY_RE.match(line):
+            return "\n".join(_ANSI_RE.sub("", l) for l in lines[i:])
+
+    # 3. First Python traceback (unhandled exception).
+    #    Include 100 lines before for context.
+    for i, line in enumerate(lines):
+        if line == _TRACEBACK:
+            start = max(0, i - _FATAL_CONTEXT)
+            return "\n".join(_ANSI_RE.sub("", l) for l in lines[start:])
+
+    # 4. Fallback: last 200 lines.
+    return "\n".join(_ANSI_RE.sub("", line) for line in lines[-200:])
 
 
 def build_junit(data: dict, log_dir: Path) -> str:
@@ -87,7 +125,7 @@ def build_junit(data: dict, log_dir: Path) -> str:
                 tc, "failure",
                 message=f"{name} failed (log: {log_rel})",
             )
-            failure.text = _read_log_tail(log_dir, log_rel)
+            failure.text = _read_error_context(log_dir, log_rel)
 
     per_summary = per_data.get("summary", {})
     per_failed = per_summary.get("failed", 0)
@@ -116,7 +154,7 @@ def build_junit(data: dict, log_dir: Path) -> str:
                 tc, "failure",
                 message=f"{name}: {row_failed}/{row.get('total', 0)} failed",
             )
-            failure.text = _read_log_tail(log_dir, f"acc/{name}.log")
+            failure.text = _read_error_context(log_dir, f"acc/{name}.log")
         if row_skipped > 0:
             skipped += 1
             SubElement(tc, "skipped",
