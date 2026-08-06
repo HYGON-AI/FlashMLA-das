@@ -184,7 +184,7 @@ def _should_sort_d576_sparse_prefill(
         and indices.is_cuda
         and indices.dtype == torch.int32
         and q.shape[-1] == 576
-        and q.shape[1] in (8, 16, 32, 64, 128)
+        and q.shape[1] == 64
         and d_v == 512
         and indices.shape[-1] == 2048
         and topk_length is None
