@@ -57,7 +57,7 @@ if not (cutlass_dir / "include").exists():
 if False:
     cxx_args = ["/O2", "/std:c++20", "/DNDEBUG", "/W0"]
 else:
-    asm_define = "-D" + "D" + "CU_ASM"
+    asm_define = "-DHCU_ASM"
     cxx_args = ["-O3", "-std=c++20", "-DNDEBUG", "-Wno-deprecated-declarations", asm_define, "-Wno-return-type", ]
 
 gpu_llvm_prefix = "-" + "a" + "mdgpu"
