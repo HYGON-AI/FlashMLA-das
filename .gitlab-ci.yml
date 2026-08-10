@@ -62,6 +62,9 @@ publish:
     - nmz
   rules:
     - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_REF_NAME == "master-aicc"'
+  parallel:
+    matrix:
+      - TORCH_VERSION: ["2.10.0", "2.11.0"]
   before_script:
     # Install DTK, AICC, Torch and Python dependencies.
     - source ci_script/prepare_environment.sh
