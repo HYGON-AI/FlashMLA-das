@@ -13,8 +13,11 @@ variables:
 build:flashmla-wheel:
   stage: build
   timeout: 3h
+  parallel:
+    matrix:
+      - RUNNER_TAG: [nmz, bw]
   tags:
-    - nmz
+    - ${RUNNER_TAG}
   rules:
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_TARGET_BRANCH_NAME == "master-aicc"'
   before_script:
@@ -45,14 +48,14 @@ build:flashmla-wheel:
     - bash ci_script/build_wheel_and_manylinux.sh
     - python -m pip install --force-reinstall --no-deps dist/*manylinux*.whl
     - optest --op_name flashmla --test_mode all --test_dir "${CI_PROJECT_DIR}" || true
-    - python ci_script/optest_to_junit.py "${CI_PROJECT_DIR}"
+    - python ci_script/optest_to_junit.py "${CI_PROJECT_DIR}" "${RUNNER_TAG}"
   artifacts:
     when: always
     paths:
       - dist/*manylinux*.whl
-      - tests/flashmla_performance_output.xml
+      - tests/${RUNNER_TAG}_flashmla_performance_output.xml
     reports:
-      junit: tests/flashmla_performance_output.xml
+      junit: tests/${RUNNER_TAG}_flashmla_performance_output.xml
     expire_in: 7 days
 
 publish:
