@@ -28,10 +28,11 @@ _FATAL_CONTEXT = 100
 
 RESULTS_ROOT = Path("/op_test_output/flashmla")
 LOG_ROOT = Path("/op_test_log/flashmla")
+_RUNNER_TAG = sys.argv[2] if len(sys.argv) >= 3 else "unknown"
 JUNIT_OUTPUT = (
-    Path(sys.argv[1]) / "tests/flashmla_performance_output.xml"
+    Path(sys.argv[1]) / f"tests/{_RUNNER_TAG}_flashmla_performance_output.xml"
     if len(sys.argv) > 1
-    else Path("tests/flashmla_performance_output.xml")
+    else Path(f"tests/{_RUNNER_TAG}_flashmla_performance_output.xml")
 )
 
 
