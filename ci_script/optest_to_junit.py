@@ -45,11 +45,11 @@ def find_latest_results() -> Path | None:
 
 def make_error_suite(message: str) -> str:
     testsuite = Element(
-        "testsuite", name="flashmla.performance",
+        "testsuite", name=f"{_RUNNER_TAG}.flashmla.performance",
         tests="1", failures="1", errors="0", skipped="0",
     )
     tc = SubElement(testsuite, "testcase",
-                    classname="flashmla.performance", name="no_results")
+                    classname=f"{_RUNNER_TAG}.flashmla.performance", name="no_results")
     SubElement(tc, "failure", message=message)
     return xml.dom.minidom.parseString(tostring(testsuite)).toprettyxml()
 
@@ -102,7 +102,7 @@ def _read_error_context(log_dir: Path, log_rel: str) -> str:
 
 def build_junit(data: dict, log_dir: Path) -> str:
     testsuite = Element(
-        "testsuite", name="flashmla.performance",
+        "testsuite", name=f"{_RUNNER_TAG}.flashmla.performance",
         tests="0", failures="0", errors="0", skipped="0",
     )
     total = 0
@@ -115,7 +115,7 @@ def build_junit(data: dict, log_dir: Path) -> str:
         total += 1
         name = test["name"]
         duration = test.get("duration_s")
-        attrs = {"classname": "flashmla.per", "name": name}
+        attrs = {"classname": f"{_RUNNER_TAG}.flashmla.per", "name": name}
         if duration is not None:
             attrs["time"] = str(duration)
         tc = SubElement(testsuite, "testcase", **attrs)
@@ -146,7 +146,7 @@ def build_junit(data: dict, log_dir: Path) -> str:
 
         tc = SubElement(
             testsuite, "testcase",
-            classname="flashmla.acc",
+            classname=f"{_RUNNER_TAG}.flashmla.acc",
             name=f"{name} (p:{row_passed} f:{row_failed} s:{row_skipped})",
         )
         if row_failed > 0:
