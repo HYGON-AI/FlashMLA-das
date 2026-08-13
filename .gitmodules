@@ -1,4 +1,4 @@
 [submodule "csrc/cutlass/cutlass_3.2.1"]
 	path = csrc/cutlass/cutlass_3.2.1
 	url = http://42.228.13.241:10068/dcutoolkit/deeplearing/cutlass_3.2.1.git
-	branch = feature/16x64-mmac
+	branch = feature/16x64-mmac-aicc
