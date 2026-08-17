@@ -437,7 +437,7 @@ def flash_mla_sparse_fwd(
     skip_sort_for_small_d576_gfx936 = (
         is_gfx936
         and q.shape[-1] == 576
-        and q.shape[0] < 128
+        and q.shape[0] <= 128
     )
     if (
         not skip_sort_for_small_d576_gfx936
