@@ -6,6 +6,7 @@
 
 #include "params.h"
 
+#include "gfx9/decode/combine/combine_bf16_dsa.h"
 #include "gfx93/prefill/sparse/dsa_mls/fwd.h"
 #include "gfx93/prefill/sparse/phase1.h"
 
@@ -50,7 +51,7 @@ protected:
         if (enable_dsa_mls_prefill_ &&
             !disable_dsa_mls_prefill &&
             ((std::getenv("FLASH_MLA_FORCE_DSA_MLS_PREFILL") != nullptr && gfx93::fwd::dsa_mls::can_run(params)) ||
-             (params.d_qk != 576 && gfx93::fwd::dsa_mls::should_run(params)))) {
+             gfx93::fwd::dsa_mls::should_run(params))) {
             gfx93::fwd::dsa_mls::run(params);
             return;
         }
@@ -171,8 +172,81 @@ static std::vector<at::Tensor> sparse_attn_prefill_interface(
         nullptr,
         0, 0,
         0, 0, 0,
-        false
+        false,
+
+        0, 0,
+        nullptr,
+        nullptr,
+        nullptr,
+        0, 0,
+        0, 0, 0
     };
+
+    const bool disable_small_d576_splitkv = std::getenv("FLASH_MLA_DISABLE_PREFILL_SPLITKV_SMALL") != nullptr;
+    const bool use_small_d576_splitkv = (
+        !disable_small_d576_splitkv &&
+        arch.is_gfx936() &&
+        s_q <= 48 &&
+        h_kv == 1 &&
+        (h_q == 64 || h_q == 128) &&
+        d_qk == 576 &&
+        d_v == 512 &&
+        topk == 2048 &&
+        !attn_sink.has_value() &&
+        !topk_length.has_value()
+    );
+    if (use_small_d576_splitkv) {
+        constexpr int requested_num_splits = 2;
+        int split_partition_size = (topk + requested_num_splits - 1) / requested_num_splits;
+        split_partition_size = std::max(64, split_partition_size);
+        split_partition_size = ((split_partition_size + 63) / 64) * 64;
+
+        at::Tensor lse_accum = torch::empty({requested_num_splits, s_q, h_q}, opts.dtype(torch::kFloat));
+        at::Tensor out_accum = torch::empty({requested_num_splits, s_q, h_q, d_v}, opts.dtype(torch::kFloat));
+        params.split_b = 1;
+        params.split_num_splits = requested_num_splits;
+        params.split_partition_size = split_partition_size;
+        params.split_stride_q_b = 0;
+        params.split_stride_indices_b = 0;
+        params.split_lse_accum = lse_accum.data_ptr<float>();
+        params.split_o_accum = out_accum.data_ptr<float>();
+        params.split_stride_lse_accum_split = int64_stride_to_int(lse_accum.stride(0));
+        params.split_stride_lse_accum_s_q = int64_stride_to_int(lse_accum.stride(1));
+        params.split_stride_o_accum_split = int64_stride_to_int(out_accum.stride(0));
+        params.split_stride_o_accum_s_q = int64_stride_to_int(out_accum.stride(1));
+        params.split_stride_o_accum_h_q = int64_stride_to_int(out_accum.stride(2));
+        params.split_decode_c_load = false;
+
+        gfx93::fwd::run_fwd_phase1_splitkv_kernel<576, false>(params);
+
+        CombineParams combine_params = {
+            1, s_q, h_q, d_v,
+
+            (float*)lse.data_ptr(),
+            out.data_ptr(),
+            s_q * h_q, int64_stride_to_int(lse.stride(0)),
+            s_q * h_q * d_v, int64_stride_to_int(out.stride(0)), int64_stride_to_int(out.stride(1)),
+
+            lse_accum.data_ptr<float>(),
+            out_accum.data_ptr<float>(),
+            int64_stride_to_int(lse_accum.stride(0)), int64_stride_to_int(lse_accum.stride(1)),
+            int64_stride_to_int(out_accum.stride(0)), int64_stride_to_int(out_accum.stride(1)), int64_stride_to_int(out_accum.stride(2)),
+
+            nullptr,
+            nullptr,
+            requested_num_splits,
+
+            nullptr,
+            at::cuda::getCurrentCUDAStream().stream(),
+
+            true,
+            requested_num_splits,
+            nullptr,
+            0
+        };
+        gfx9::decode::bf16_dsa::run_flash_mla_combine_kernel<cutlass::bfloat16_t>(combine_params);
+        return {out, max_logits, lse};
+    }
 
     std::vector<FwdFeatures> required_features;
     if (h_q <= 16) {

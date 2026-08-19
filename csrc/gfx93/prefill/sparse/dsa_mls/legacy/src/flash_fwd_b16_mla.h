@@ -2578,7 +2578,7 @@ __global__ void __launch_bounds__(256, 1) flash_fwd_mla_decode_kernel_gfx938_dsa
         int seqlen_o_stride = params.o_head_stride;
         int seqlen_qv_stride = params.qv_row_stride;    // 当走FlashMLA接口时，不会使用
 
-        int row_offset_q, row_offset_k, row_offset_v, row_offset_o, row_offset_lse, row_offset_qv;
+        int64_t row_offset_q, row_offset_k, row_offset_v, row_offset_o, row_offset_lse, row_offset_qv;
         int headdim_split_id = 0;
 
         // const int page_block_size = params.page_block_size;
@@ -2619,6 +2619,7 @@ __global__ void __launch_bounds__(256, 1) flash_fwd_mla_decode_kernel_gfx938_dsa
         int g_offset_v = tid * 4;
         int g_offset_s = warp_id * 256;
         inline_buffer_load_dwordx4_lds(index_lds, index_ptr_buffer, lds_offset, g_offset_s, g_offset_v); 
+        int fallback_index = 0;
         if constexpr (NeedIndexGuard) {
             flash::wait_buffer_data_arrived<true>(0);
             int index_offset = warp_id * 256 + tid * 4;
@@ -2629,6 +2630,13 @@ __global__ void __launch_bounds__(256, 1) flash_fwd_mla_decode_kernel_gfx938_dsa
                 index_lds[local_index] = (index_value < 0 || index_value >= params.seqlen_k) ? -1 : index_value;
             }
             flash::wait_all_warp_arrived();
+
+            int fallback_index_v = index_lds[0];
+            fallback_index = __builtin_amdgcn_readfirstlane(fallback_index_v);
+
+            if (fallback_index < 0 || fallback_index >= params.seqlen_k) {
+                return;
+            }
         }
 
         // 是否做 prefetch K, PV 结束后, prefetch K 有风险
@@ -2709,7 +2717,7 @@ __global__ void __launch_bounds__(256, 1) flash_fwd_mla_decode_kernel_gfx938_dsa
 
             // QK gemm
             if constexpr (Is_FlashMLA) {
-                QK_GEMM_FUNC(q_ptr /* q576 */, q_ptr /* q576 */, k_ptr_buffer /* k576 */, v_faker /* v512 */, q_lds, k_lds, v_lds, q_reg, s_reg, warp_id, seqlen_qv_stride, seqlen_q_stride, seqlen_k_stride, seqlen_v_stride, index_lds, params.k_batch_stride, params.v_batch_stride, n_block_loop, warp_seqq_limit, warp_seqkv_limit);
+                QK_GEMM_FUNC(q_ptr /* q576 */, q_ptr /* q576 */, k_ptr_buffer /* k576 */, v_faker /* v512 */, q_lds, k_lds, v_lds, q_reg, s_reg, warp_id, seqlen_qv_stride, seqlen_q_stride, seqlen_k_stride, seqlen_v_stride, index_lds, fallback_index, params.k_batch_stride, params.v_batch_stride, n_block_loop, warp_seqq_limit, warp_seqkv_limit);
             } else {
                 // QK_GEMM_FUNC(qv_ptr /* qv512 */, q_ptr /* q64 */, v_ptr /* k512 */, v_ptr /* kv512 */, q_lds, k_lds, v_lds, s_reg, warp_id, seqlen_qv_stride, seqlen_q_stride, seqlen_k_stride, seqlen_v_stride, warp_seqq_limit, warp_seqkv_limit);
             }
@@ -2740,7 +2748,7 @@ __global__ void __launch_bounds__(256, 1) flash_fwd_mla_decode_kernel_gfx938_dsa
             prefill_mla_convert_pk_type<WARP_M, kBlockN, Element, ElementAccum, 1/* M_MMAC_COUNT */>(p_reg, s_reg);
 
             // PV gemm
-            PV_GEMM_FUNC_IN_MASK(k_faker, k_ptr, v_ptr_buffer, q_lds, k_lds, v_lds, p_reg, acc_o, warp_id, seqlen_q_stride, seqlen_k_stride, seqlen_v_stride, index_lds, params.v_batch_stride, n_block_loop, warp_seqq_limit, warp_seqkv_limit);
+            PV_GEMM_FUNC_IN_MASK(k_faker, k_ptr, v_ptr_buffer, q_lds, k_lds, v_lds, p_reg, acc_o, warp_id, seqlen_q_stride, seqlen_k_stride, seqlen_v_stride, index_lds, fallback_index, params.v_batch_stride, n_block_loop, warp_seqq_limit, warp_seqkv_limit);
 
             // int abc[1];
             // int index_topk = index_ptr[(n_block_loop * 64) + warp_id * 16];
@@ -2783,7 +2791,7 @@ __global__ void __launch_bounds__(256, 1) flash_fwd_mla_decode_kernel_gfx938_dsa
 
             // QK gemm
             if constexpr (Is_FlashMLA) {
-                QK_GEMM_FUNC(q_ptr /* q576 */, q_ptr /* q576 */, k_ptr_buffer /* k576 */, v_faker /* v512 */, q_lds, k_lds, v_lds, q_reg, s_reg, warp_id, seqlen_qv_stride, seqlen_q_stride, seqlen_k_stride, seqlen_v_stride, index_lds, params.k_batch_stride, params.v_batch_stride, n_loop_real, warp_seqq_limit, warp_seqkv_limit);
+                QK_GEMM_FUNC(q_ptr /* q576 */, q_ptr /* q576 */, k_ptr_buffer /* k576 */, v_faker /* v512 */, q_lds, k_lds, v_lds, q_reg, s_reg, warp_id, seqlen_qv_stride, seqlen_q_stride, seqlen_k_stride, seqlen_v_stride, index_lds, fallback_index, params.k_batch_stride, params.v_batch_stride, n_loop_real, warp_seqq_limit, warp_seqkv_limit);
             } else {
                 // QK_GEMM_FUNC(qv_ptr /* qv512 */, q_ptr /* q64 */, v_ptr /* k512 */, v_ptr /* kv512 */, q_lds, k_lds, v_lds, s_reg, warp_id, seqlen_qv_stride, seqlen_q_stride, seqlen_k_stride, seqlen_v_stride, warp_seqq_limit, warp_seqkv_limit);
             }
@@ -2814,7 +2822,7 @@ __global__ void __launch_bounds__(256, 1) flash_fwd_mla_decode_kernel_gfx938_dsa
             prefill_mla_convert_pk_type<WARP_M, kBlockN, Element, ElementAccum, 1/* M_MMAC_COUNT */>(p_reg, s_reg);
 
             // PV gemm
-            PV_GEMM_FUNC_IN_MASK(k_faker, k_ptr, v_ptr_buffer, q_lds, k_lds, v_lds, p_reg, acc_o, warp_id, seqlen_q_stride, seqlen_k_stride, seqlen_v_stride, index_lds, params.v_batch_stride, n_loop_real, warp_seqq_limit, warp_seqkv_limit);
+            PV_GEMM_FUNC_IN_MASK(k_faker, k_ptr, v_ptr_buffer, q_lds, k_lds, v_lds, p_reg, acc_o, warp_id, seqlen_q_stride, seqlen_k_stride, seqlen_v_stride, index_lds, fallback_index, params.v_batch_stride, n_loop_real, warp_seqq_limit, warp_seqkv_limit);
 
             // int abc[1];
             // int32_t offset_m = (((n_block_loop + 1) % 32) * 64) + warp_id * 16 + (tid / 4); 

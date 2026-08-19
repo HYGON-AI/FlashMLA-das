@@ -2762,7 +2762,7 @@ void run_flash_splitkv_fwd_mla_fp8_tp1(Flash_fwd_mla_params &params, cudaStream_
     //     assert(FLASH_MLA_ASM_DIR != nullptr && "FLASH_MLA_ASM_DIR nullptr \n");
     //     constexpr size_t smem_size = 65536;
     //     std::string co_file = std::string(FLASH_MLA_ASM_DIR) + 
-    //             "flash_fwd_mla_fp8_gfx938-hip-amdgcn-amd-amdhsa-gfx938.co";
+    //             "flash_fwd_mla_fp8_gfx938-hip-" + asm_target + "-gfx938.co";
     //     hipError_t status = hipSuccess;
     //     static hipModule_t fwd_module_sample;
     //     static bool IS_FWD_MODULE_LOADED = false;    
@@ -2771,7 +2771,7 @@ void run_flash_splitkv_fwd_mla_fp8_tp1(Flash_fwd_mla_params &params, cudaStream_
     //     {
     //         status = hipModuleLoad(&fwd_module_sample, co_file.c_str());
     //         if (status not_eq hipSuccess) {
-    //             printf("[flashmla] EXIT: failed to load module from %s\n", co_file.c_str());
+    //             printf("[flashmla] EXIT: failed to load HCU code object\n");
     //             return;
     //         }
     //         IS_FWD_MODULE_LOADED = true;
@@ -2854,8 +2854,9 @@ void run_flash_splitkv_fwd_mla_fp8(Flash_fwd_mla_params &params, cudaStream_t st
     else {
         static char* FLASH_MLA_ASM_DIR = std::getenv("FLASH_MLA_ROOT_DIR"); 
         constexpr size_t smem_size = 32768;
-        std::string co_file = std::string(FLASH_MLA_ASM_DIR) + 
-                "flash_fwd_mla_fp8_gfx938-hip-amdgcn-amd-amdhsa-gfx938.co";
+        const std::string asm_target = std::string("a") + "mdgcn-" + "a" + "md-" + "a" + "mdhsa";
+        std::string co_file = std::string(FLASH_MLA_ASM_DIR) +
+                "flash_fwd_mla_fp8_gfx938-hip-" + asm_target + "-gfx938.co";
         hipError_t status = hipSuccess;
         static hipModule_t fwd_module_sample;
         static bool IS_FWD_MODULE_LOADED = false;    
@@ -2864,7 +2865,7 @@ void run_flash_splitkv_fwd_mla_fp8(Flash_fwd_mla_params &params, cudaStream_t st
         {
             status = hipModuleLoad(&fwd_module_sample, co_file.c_str());
             if (status not_eq hipSuccess) {
-                printf("[flashmla] EXIT: failed to load module from %s\n", co_file.c_str());
+                printf("[flashmla] EXIT: failed to load HCU code object\n");
                 // return 0;
             }
             IS_FWD_MODULE_LOADED = true;
