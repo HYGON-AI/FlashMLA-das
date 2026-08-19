@@ -28,7 +28,7 @@ bool is_current_device_gfx938() {
 void run_fwd_kernel(const SparseAttnFwdParams& params) {
     const bool disable_dsa_mls_prefill = std::getenv("FLASH_MLA_DISABLE_DSA_MLS_PREFILL") != nullptr;
     const bool enable_dsa_mls_prefill = is_current_device_gfx938();
-    if (enable_dsa_mls_prefill && !disable_dsa_mls_prefill && params.d_qk != 576 && gfx93::fwd::dsa_mls::should_run(params)) {
+    if (enable_dsa_mls_prefill && !disable_dsa_mls_prefill && gfx93::fwd::dsa_mls::should_run(params)) {
         gfx93::fwd::dsa_mls::run(params);
         return;
     }

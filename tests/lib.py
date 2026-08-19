@@ -276,7 +276,12 @@ def generate_testcase_for_decode(t: TestParam) -> TestcaseForDecode:
         block_table = torch.arange(b * max_seqlen_pad // block_size, dtype=torch.int32).view(b, max_seqlen_pad // block_size)
         block_table = block_table.view(-1)[torch.randperm(block_table.numel())].view(b, -1)
 
-        blocked_k = kk.gen_non_contiguous_randn_tensor((block_table.numel(), block_size, t.h_kv, t.d_qk)) / 10
+        blocked_k_shape = (block_table.numel(), block_size, t.h_kv, t.d_qk)
+        blocked_k_numel = block_table.numel() * block_size * t.h_kv * t.d_qk
+        if blocked_k_numel >= 1 << 30:
+            blocked_k = torch.randn(blocked_k_shape) / 10
+        else:
+            blocked_k = kk.gen_non_contiguous_randn_tensor(blocked_k_shape) / 10
         blocked_k.clamp_(min=-1.0, max=1.0)
     
         abs_indices = torch.empty((b, t.s_q, topk), dtype=torch.int32)

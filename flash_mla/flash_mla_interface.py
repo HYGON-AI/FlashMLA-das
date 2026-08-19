@@ -184,7 +184,7 @@ def _should_sort_d576_sparse_prefill(
         and indices.is_cuda
         and indices.dtype == torch.int32
         and q.shape[-1] == 576
-        and q.shape[1] in (8, 16, 32, 64, 128)
+        and (q.shape[1] == 64 or q.shape[1] <= 16)
         and d_v == 512
         and indices.shape[-1] == 2048
         and topk_length is None
@@ -433,12 +433,22 @@ def flash_mla_sparse_fwd(
         - lse: [s_q, h_q], float, log-sum-exp of attention scores
     """
     _print_sparse_prefill_debug(q, kv, indices, sm_scale, d_v, attn_sink, topk_length)
-    if _should_sort_d576_sparse_prefill(q, kv, indices, d_v, attn_sink, topk_length):
+    is_gfx936 = _is_gfx936_tensor(q)
+    skip_sort_for_small_d576_gfx936 = (
+        is_gfx936
+        and q.shape[-1] == 576
+        and q.shape[0] <= 128
+    )
+    if (
+        not skip_sort_for_small_d576_gfx936
+        and _should_sort_d576_sparse_prefill(q, kv, indices, d_v, attn_sink, topk_length)
+    ):
         indices = _safe_sort_sparse_indices_inplace(indices, kv.shape[0])
     elif (
-        topk_length is None
+        not skip_sort_for_small_d576_gfx936
+        and topk_length is None
         and attn_sink is None
-        and _is_gfx936_tensor(q)
+        and is_gfx936
         and kv.shape[0] > indices.shape[-1]
     ):
         indices = _safe_sort_sparse_indices_inplace(indices, kv.shape[0])

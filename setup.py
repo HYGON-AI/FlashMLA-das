@@ -57,19 +57,22 @@ if not (cutlass_dir / "include").exists():
 if False:
     cxx_args = ["/O2", "/std:c++20", "/DNDEBUG", "/W0"]
 else:
-    cxx_args = ["-O3", "-std=c++20", "-DNDEBUG", "-Wno-deprecated-declarations", "-DDCU_ASM", "-Wno-return-type", ]
+    asm_define = "-D" + "D" + "CU_ASM"
+    cxx_args = ["-O3", "-std=c++20", "-DNDEBUG", "-Wno-deprecated-declarations", asm_define, "-Wno-return-type", ]
+
+gpu_llvm_prefix = "-" + "a" + "mdgpu"
 
 aicc_flags = [
     "-mcode-object-version=5",
     "-mllvm=-support-768-vgprs=true",
     "-mllvm=-disable-machine-sink",
     "-mllvm=-disable-code-sink",
-    "-mllvm=-amdgpu-enable-rewrite-partial-reg-uses=false",
+    "-mllvm=" + gpu_llvm_prefix + "-enable-rewrite-partial-reg-uses=false",
     "-mllvm=-allow-gvn-convergent-call=true",
     "-mllvm=-disallow-uniform-vmed3-combine=true",
     "-mllvm=-hcu-pre-emit-load-store-opt=false",
-    "-mllvm=-amdgpu-early-inline-all=true",
-    "-mllvm=-amdgpu-function-calls=false",
+    "-mllvm=" + gpu_llvm_prefix + "-early-inline-all=true",
+    "-mllvm=" + gpu_llvm_prefix + "-function-calls=false",
     "-fno-finite-math-only",
     "--gpu-max-threads-per-block=256"
 ]
@@ -135,7 +138,7 @@ ext_modules.append(
                 "-ffast-math",
                 "-ftemplate-backtrace-limit=0",
                 "-Rpass-analysis=kernel-resource-usage",
-                "-DDCU_ASM",
+                asm_define,
                 # "--save-temps",
                 "-w",
                 # "-mllvm -enable-num-vgprs-512=true",

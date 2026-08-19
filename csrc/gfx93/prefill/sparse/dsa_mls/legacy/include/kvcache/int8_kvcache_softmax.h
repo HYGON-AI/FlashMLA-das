@@ -59,7 +59,7 @@ inline __device__ void int8_kvcache_apply_dropout(DataType tensor[(WARP_M/32)*(W
                         #pragma unroll
                         for(uint32_t min_tile_m=0; min_tile_m<M_MMAC_COUNT; min_tile_m++) {
                             uint32_t cur_pos = (min_tile_n*2 + min_tile_m) * 4 + vec_idx;
-                            uint32_t cur_rand = random_uint4.u8[cur_pos] & 0xffffffff; // uint8 -> u32, since DCU has no compare instructions with 8/16 bits
+                            uint32_t cur_rand = random_uint4.u8[cur_pos] & 0xffffffff; // uint8 -> u32, since HCU has no compare instructions with 8/16 bits
                             if (cur_rand >= p_dropout_in_8bits_value) {
                                 tensor[mi + ni*(WARP_M/32)][min_tile_n*2 + min_tile_m].f32[vec_idx] = 0x0;
                                 ++cnt;

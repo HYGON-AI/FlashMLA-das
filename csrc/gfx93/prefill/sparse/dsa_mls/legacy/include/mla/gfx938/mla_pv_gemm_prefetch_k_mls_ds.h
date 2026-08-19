@@ -2291,6 +2291,7 @@ __forceinline__ __device__ void pv_gemm_prefetch_k_mls_ds_576_512_nopage_64_new_
         int seqlen_k_stride,
         int seqlen_v_stride,
         int* index_ptr,
+        int fallback_index,
         int batch_stride,
         int n_loop_real,
         int max_seq_q_offset=0,
@@ -2331,7 +2332,6 @@ __forceinline__ __device__ void pv_gemm_prefetch_k_mls_ds_576_512_nopage_64_new_
     index_topk[3] = index_ptr[(n_loop_real * 64) + 3 * 16 + (tid / 4)];
 
     if constexpr (NeedIndexGuard) {
-        int fallback_index = index_ptr[0] == -1 ? 0 : index_ptr[0];
         index_topk[0] = (index_topk[0] == -1) ? fallback_index : index_topk[0];
         index_topk[1] = (index_topk[1] == -1) ? fallback_index : index_topk[1];
         index_topk[2] = (index_topk[2] == -1) ? fallback_index : index_topk[2];
@@ -2630,11 +2630,11 @@ __forceinline__ __device__ void pv_gemm_prefetch_k_mls_ds_576_512_nopage_64_new_
     // flash::lower_priority();
     flash::wait_lds_data_arrived<false>(0);
 
-    int abc[1];
-    int index_topk_qk = index_ptr[(((n_loop_real+1) % 16) * 64) + warp_id * 16];
-    int offset_m = index_topk_qk * seqlen_k_stride;
-    auto g_abc = (reinterpret_cast<uint64_t>(k_faker + offset_m)); 
-    inline_s_load_dword(abc[0], g_abc, 0); 
+    // int abc[1];
+    // int index_topk_qk = index_ptr[(((n_loop_real+1) % 16) * 64) + warp_id * 16];
+    // int offset_m = index_topk_qk * seqlen_k_stride;
+    // auto g_abc = (reinterpret_cast<uint64_t>(k_faker + offset_m)); 
+    // inline_s_load_dword(abc[0], g_abc, 0); 
 
     // flash::raise_priority();
 

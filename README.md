@@ -10,7 +10,7 @@ FlashMLA is DeepSeek's library of optimized attention kernels, powering the [Dee
 
 - Token-level sparse attention for the prefill stage
 - Token-level sparse attention for the decoding stage, with FP8 KV cache
-- DSA MLS sparse prefill and DSA BF16 sparse decoding on Hygon DCU gfx93
+- DSA MLS sparse prefill and DSA BF16 sparse decoding on Hygon HCU gfx93
 
 **Dense Attention Kernels**
 
@@ -58,7 +58,7 @@ It achieves up to 640 TFlops in forward computation on H800 SXM5 with CUDA 12.8,
 - CUDA 12.8 and above (CUDA 12.9+ is required for SM100 kernels)
 - PyTorch 2.0 and above
 
-For the Hygon DCU gfx93 path in this branch, build with the local AICC/ROCm
+For the Hygon HCU gfx93 path in this branch, build with the local AICC/ROCm
 toolchain and the pinned CUTLASS submodule described below.
 
 Support matrix:
@@ -226,8 +226,8 @@ For the Moore Threads GPU, visit the official website: [Moore Threads](https://w
 The corresponding FlashMLA version is available on GitHub: [MooreThreads/MT-flashMLA](https://github.com/MooreThreads/MT-flashMLA).
 
 
-### Hygon DCU
-For the Hygon DCU, visit the official website: [Hygon Developer](https://developer.sourcefind.cn/).
+### Hygon HCU
+For the Hygon HCU, visit the official website: [Hygon Developer](https://developer.sourcefind.cn/).
 
 The corresponding FlashMLA version is available here: [OpenDAS/MLAttention](https://developer.sourcefind.cn/codes/OpenDAS/MLAttention).
 
