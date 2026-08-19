@@ -292,7 +292,7 @@ get_mla_decoding_metadata_dense_fp8(
     int sm_count = dprops->multiProcessorCount*(block_size_m == 16 ? 2 : 1);
   
     
-    int num_sm_parts = sm_count / num_heads_k / cutlass::ceil_div(num_heads_per_head_k, block_size_m);
+    int num_sm_parts = std::max(sm_count / num_heads_k / cutlass::ceil_div(num_heads_per_head_k, block_size_m), 1);
     if (print_param)
     {
         fprintf(stderr, "[flashmla] [get_mla_decoding_metadata_dense_fp8] block_size_m=%d sm_count=%d num_sm_parts=%d\n", 
