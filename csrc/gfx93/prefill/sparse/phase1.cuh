@@ -27,13 +27,15 @@ __device__ void KernelTemplate_B_H_64<D_QK, HAVE_TOPK_LENGTH, IS_TOPK_2048, USE_
     const int batch_idx = SPLIT_KV ? split_batch_idx / params.split_num_splits : (direct_decode ? split_batch_idx : 0);
     const int split_idx = SPLIT_KV ? split_batch_idx - batch_idx * params.split_num_splits : 0;
     const int split_begin = SPLIT_KV ? split_idx * params.split_partition_size : 0;
+    const bool has_extra = params.extra_topk > 0 && params.extra_kv != nullptr && params.extra_indices != nullptr;
+    const int total_topk = params.topk + (has_extra ? params.extra_topk : 0);
 
     extern __shared__ Element smem[];
-    Element* q_lds = (Element*)&(smem);   
+    Element* q_lds = (Element*)&(smem);
     Element* k_lds = q_lds;
-    Element* v_lds = q_lds;     
-    int* sIndices = (int *)(q_lds + 8192); 
-  
+    Element* v_lds = q_lds;
+    int* sIndices = (int *)(q_lds + 8192);
+
     const index_t row_offset_q = ((SPLIT_KV || direct_decode) ? batch_idx * static_cast<index_t>(params.split_stride_q_b) : 0) +
                                  s_q_idx * static_cast<index_t>(params.stride_q_s_q) +
                                  bidh * kBlockM * params.stride_q_h_q;
@@ -42,15 +44,22 @@ __device__ void KernelTemplate_B_H_64<D_QK, HAVE_TOPK_LENGTH, IS_TOPK_2048, USE_
                                 make_stride(params.stride_q_h_q, _1{}));
 
 
-    const index_t row_offset_k = 0 * params.stride_kv_h_kv; 
+    const index_t row_offset_k = 0 * params.stride_kv_h_kv;
 
     Tensor gK = make_tensor(make_gmem_ptr(reinterpret_cast<Element *>(params.kv) + row_offset_k),
                                 Shape<Int<kBlockN>, Int<kHeadDim>>{},
                                 make_stride(params.stride_kv_s_kv, _1{}));
+    Element* extra_kv_ptr = has_extra ? reinterpret_cast<Element *>(params.extra_kv) : reinterpret_cast<Element *>(params.kv);
+    const int extra_kv_stride = has_extra ? params.stride_extra_kv_s_kv : params.stride_kv_s_kv;
+    Tensor gExtraK = make_tensor(make_gmem_ptr(extra_kv_ptr),
+                                Shape<Int<kBlockN>, Int<kHeadDim>>{},
+                                make_stride(extra_kv_stride, _1{}));
     const index_t row_offset_topk = ((SPLIT_KV || direct_decode) ? batch_idx * static_cast<index_t>(params.split_stride_indices_b) : 0) +
-                                    s_q_idx * static_cast<index_t>(params.stride_indices_s_q) +
-                                    split_begin;
+                                    s_q_idx * static_cast<index_t>(params.stride_indices_s_q);
     int* gIndices = reinterpret_cast<int *>(params.indices) + row_offset_topk;
+    const index_t row_offset_extra_topk = ((SPLIT_KV || direct_decode) ? batch_idx * static_cast<index_t>(params.stride_extra_indices_b) : 0) +
+                                          s_q_idx * static_cast<index_t>(params.stride_extra_indices_s_q);
+    int* gExtraIndices = has_extra ? reinterpret_cast<int *>(params.extra_indices) + row_offset_extra_topk : nullptr;
     typedef  __bf16  __fp16x8_t __attribute__((ext_vector_type(8)));
     typedef  __bf16  __fp16x4_t __attribute__((ext_vector_type(4)));
     typedef  __bf16  __fp16x2_t __attribute__((ext_vector_type(2)));
@@ -60,20 +69,35 @@ __device__ void KernelTemplate_B_H_64<D_QK, HAVE_TOPK_LENGTH, IS_TOPK_2048, USE_
         __fp16x4_t data_64[2];
         __fp16x2_t data_32[4];
         uint16_t data_array[8];
-    };  
+    };
     union Bf16_storage_x4 {
         __fp16x4_t data_64;
         __fp16x2_t data_32[2];
         uint16_t data[4];
-    };  
+    };
 
 
     const int topk_length_idx = (SPLIT_KV || direct_decode) ? batch_idx * params.s_q + s_q_idx : s_q_idx;
-    const int global_topk_length = HAVE_TOPK_LENGTH ? __ldg(params.topk_length + topk_length_idx) : params.topk;
-    const int topk_length = SPLIT_KV ? max(0, min(global_topk_length, split_begin + params.split_partition_size) - split_begin) : global_topk_length;
-    const int static_topk = SPLIT_KV ? max(0, min(params.topk, split_begin + params.split_partition_size) - split_begin) : params.topk;
-    const int num_topk_blocks = IS_TOPK_2048? 2048 / B_TOPK : HAVE_TOPK_LENGTH ? ku::ceil_div(topk_length, (int)B_TOPK) : ku::ceil_div(static_topk, (int)B_TOPK);
-    // TiledMMA tiled_mma = TiledMma{}; 
+    const int global_topk_length = (HAVE_TOPK_LENGTH && params.topk_length != nullptr) ?
+                                   __ldg(params.topk_length + topk_length_idx) :
+                                   params.topk;
+    const int global_extra_topk_length = (HAVE_TOPK_LENGTH && has_extra && params.extra_topk_length != nullptr) ?
+                                         __ldg(params.extra_topk_length + topk_length_idx) :
+                                         (has_extra ? params.extra_topk : 0);
+    const int split_end = SPLIT_KV ? min(total_topk, split_begin + params.split_partition_size) : total_topk;
+    const int main_active_begin = min(split_end, params.topk);
+    const int main_active_end = min(main_active_begin, global_topk_length);
+    const int extra_active_begin = max(split_begin, params.topk);
+    const int extra_active_end = has_extra ? min(split_end, params.topk + global_extra_topk_length) : params.topk;
+    const int active_topk_length =
+        max(0, main_active_end - min(split_begin, params.topk)) +
+        max(0, extra_active_end - extra_active_begin);
+    const int topk_length = active_topk_length;
+    const int static_topk = SPLIT_KV ? max(0, split_end - split_begin) : total_topk;
+    const int num_topk_blocks = IS_TOPK_2048 ? 2048 / B_TOPK :
+                                (has_extra ? ku::ceil_div(static_topk, (int)B_TOPK) :
+                                 (HAVE_TOPK_LENGTH ? ku::ceil_div(topk_length, (int)B_TOPK) : ku::ceil_div(static_topk, (int)B_TOPK)));
+    // TiledMMA tiled_mma = TiledMma{};
     // auto thr_mma = tiled_mma.get_thread_slice(tidx);
     flash::Softmax<1> softmax;
 //  #if 1
@@ -87,7 +111,24 @@ __device__ void KernelTemplate_B_H_64<D_QK, HAVE_TOPK_LENGTH, IS_TOPK_2048, USE_
     // row_ = (row_ >= 8 ) ^ row_;
     int col_ = swizzle_col_ % 4;
 // #endif
-    auto calc_row_and_col_k = [&](const int block_idx) -> std::tuple<int, int> {
+    auto logical_index_is_valid = [&](const int logical_idx) -> bool {
+        if (logical_idx < params.topk) {
+            return logical_idx < global_topk_length;
+        }
+        const int extra_idx = logical_idx - params.topk;
+        return has_extra && extra_idx >= 0 && extra_idx < global_extra_topk_length;
+    };
+    auto load_sparse_index = [&](const int logical_idx) -> int {
+        if (logical_idx < 0 || logical_idx >= total_topk) {
+            return -1;
+        }
+        if (logical_idx < params.topk) {
+            return gIndices[logical_idx];
+        }
+        const int extra_idx = logical_idx - params.topk;
+        return (has_extra && extra_idx < params.extra_topk) ? gExtraIndices[extra_idx] : -1;
+    };
+    auto calc_row_and_col_k = [&](const int block_idx) -> std::tuple<int, int, bool> {
         constexpr int elements_per_thread = 8;
         // int row = lane_idx % 16;
         // int col = lane_idx / 16;
@@ -96,52 +137,60 @@ __device__ void KernelTemplate_B_H_64<D_QK, HAVE_TOPK_LENGTH, IS_TOPK_2048, USE_
     #if defined(__gfx938__)
         // int row = lane_idx / 4;
         // int col = lane_idx % 4;
-        // col = (col + (4 - (row / 2) % 4)) % 4;   
+        // col = (col + (4 - (row / 2) % 4)) % 4;
         // int row_offset = row + warp_idx * 16 + block_idx * kBlockN;
         // int col_offset = col * 8;
         int row_offset = row_ + warp_idx * 16 + block_idx * kBlockN;
         int col_offset = col_ * 8;
     #else
-        
+
         int row_offset = row_ * 4 + warp_idx + block_idx * kBlockN;
         int col_offset = col_ * 8;
     #endif
         // int row_offset = row + warp_idx * 16 + block_idx * kBlockN;
-        
+
+        const int logical_idx = split_begin + row_offset;
+        const bool is_extra_scope = has_extra && logical_idx >= params.topk;
         if constexpr (IS_TOPK_2048 || CACHE_INDICES_IN_LDS) {
             row_offset = sIndices[row_offset % 1024];
         } else {
-            row_offset = gIndices[row_offset];
+            row_offset = load_sparse_index(logical_idx);
         }
-        return {row_offset, col_offset};
+        if constexpr (HAVE_TOPK_LENGTH) {
+            row_offset = logical_index_is_valid(logical_idx) ? row_offset : (is_extra_scope ? params.extra_s_kv : params.s_kv);
+        }
+        return {row_offset, col_offset, is_extra_scope};
     };
 
-    auto calc_row_and_col_v = [&](const int block_idx, int i) -> int {
+    auto calc_row_and_col_v = [&](const int block_idx, int i) -> std::tuple<int, bool> {
         int row = lane_idx / 4;
         // int col = lane_idx % 4;
         int offs = row + i * 16 + block_idx * kBlockN;
         int row_offset = offs;
+        const int logical_idx = split_begin + offs;
+        const bool is_extra_scope = has_extra && logical_idx >= params.topk;
         // int col_offset = col * 8 + warp_idx * 32;
         if constexpr (IS_TOPK_2048 || CACHE_INDICES_IN_LDS) {
             row_offset = sIndices[row_offset % 1024];
         } else {
-            row_offset = gIndices[row_offset];
+            row_offset = load_sparse_index(logical_idx);
         }
         if constexpr (HAVE_TOPK_LENGTH) {
-            row_offset = offs < topk_length ? row_offset : params.s_kv;
+            row_offset = logical_index_is_valid(logical_idx) ? row_offset : (is_extra_scope ? params.extra_s_kv : params.s_kv);
         }
-        row_offset = (row_offset < 0 || row_offset >= params.s_kv) ? params.s_kv : row_offset;
-        return row_offset;
+        const int current_s_kv = is_extra_scope ? params.extra_s_kv : params.s_kv;
+        row_offset = (row_offset < 0 || row_offset >= current_s_kv) ? current_s_kv : row_offset;
+        return {row_offset, is_extra_scope};
     };
-    
+
     struct PtrWrapper {
         uint32_t former;
         uint32_t latter;
     };
     PtrWrapper glob_ptr_q;
     *(uint64_t*)&glob_ptr_q = reinterpret_cast<uint64_t>(gQ.data().get());
-    glob_ptr_q.latter |= ((params.stride_q_h_q * 2) << 16); 
-    glob_ptr_q.latter |= 0x40000000; 
+    glob_ptr_q.latter |= ((params.stride_q_h_q * 2) << 16);
+    glob_ptr_q.latter |= 0x40000000;
     uint32x4_t global_addr_q = {0};
     global_addr_q[0] = (glob_ptr_q.former);
     global_addr_q[1] = (glob_ptr_q.latter);
@@ -162,7 +211,7 @@ __device__ void KernelTemplate_B_H_64<D_QK, HAVE_TOPK_LENGTH, IS_TOPK_2048, USE_
             int ldsAddrPerWave = reinterpret_cast<size_t>(sIndices) + warp_idx * 64 * 4 * 4;
             ldsAddrPerWave = __builtin_amdgcn_readfirstlane(ldsAddrPerWave);
             const int offset_v = lane_idx * 4 * 4 + warp_idx * 64 * 4 * 4;
-            const int offset_s = n * 1024 * 4;
+            const int offset_s = (split_begin + n * 1024) * 4;
             const int first_index = warp_idx * 256 + lane_idx * 4;
             if (first_index < num_indices) {
                 __builtin_amdgcn_sched_barrier(0);
@@ -185,15 +234,24 @@ __device__ void KernelTemplate_B_H_64<D_QK, HAVE_TOPK_LENGTH, IS_TOPK_2048, USE_
 
     PtrWrapper glob_ptr_k;
     *(uint64_t*)&glob_ptr_k = reinterpret_cast<uint64_t>(gK.data().get());
-    glob_ptr_k.latter |= ((params.stride_kv_s_kv * 2) << 16); 
-    glob_ptr_k.latter |= 0x40000000; 
+    glob_ptr_k.latter |= ((params.stride_kv_s_kv * 2) << 16);
+    glob_ptr_k.latter |= 0x40000000;
     uint32x4_t global_addr_k = {0};
     global_addr_k[0] = (glob_ptr_k.former);
     global_addr_k[1] = (glob_ptr_k.latter);
     global_addr_k[2] = params.s_kv;
     global_addr_k[3] = 0x00020000;
-    
-    auto buffer_load_lds_k = [&](int row_offset, int col, int k_idx) {
+    PtrWrapper glob_ptr_extra_k;
+    *(uint64_t*)&glob_ptr_extra_k = reinterpret_cast<uint64_t>(gExtraK.data().get());
+    glob_ptr_extra_k.latter |= ((params.stride_extra_kv_s_kv * 2) << 16);
+    glob_ptr_extra_k.latter |= 0x40000000;
+    uint32x4_t global_addr_extra_k = {0};
+    global_addr_extra_k[0] = (glob_ptr_extra_k.former);
+    global_addr_extra_k[1] = (glob_ptr_extra_k.latter);
+    global_addr_extra_k[2] = params.extra_s_kv;
+    global_addr_extra_k[3] = 0x00020000;
+
+    auto buffer_load_lds_k = [&](int row_offset, int col, int k_idx, bool is_extra_scope) {
         constexpr int element_size = 2;
         // int k_idx = __builtin_amdgcn_readfirstlane(k_idx_);
         // struct PtrWrapper {
@@ -202,7 +260,7 @@ __device__ void KernelTemplate_B_H_64<D_QK, HAVE_TOPK_LENGTH, IS_TOPK_2048, USE_
         // };
         // PtrWrapper glob_ptr;
         // *(uint64_t*)&glob_ptr = reinterpret_cast<uint64_t>(gK.data().get());
-        // glob_ptr.latter |= ((row_stride * 2) << 16); 
+        // glob_ptr.latter |= ((row_stride * 2) << 16);
         // uint32x4_t global_addr = {0};
         // global_addr[0] = (glob_ptr.former);
         // global_addr[1] = (glob_ptr.latter);
@@ -225,21 +283,25 @@ __device__ void KernelTemplate_B_H_64<D_QK, HAVE_TOPK_LENGTH, IS_TOPK_2048, USE_
         if constexpr (DECODE_C_LOAD) {
             using uint4_t = unsigned int __attribute__((ext_vector_type(4)));
             const uint4_t zero4 = {0u, 0u, 0u, 0u};
-            const bool valid_row = row_offset >= 0 && row_offset < params.s_kv;
-            const uint64_t src_elem = static_cast<uint64_t>(row_offset) * static_cast<uint64_t>(params.stride_kv_s_kv) +
+            const int current_s_kv = is_extra_scope ? params.extra_s_kv : params.s_kv;
+            const int current_stride_kv = is_extra_scope ? params.stride_extra_kv_s_kv : params.stride_kv_s_kv;
+            Element* current_kv = is_extra_scope ? reinterpret_cast<Element*>(params.extra_kv) : reinterpret_cast<Element*>(params.kv);
+            const bool valid_row = row_offset >= 0 && row_offset < current_s_kv;
+            const uint64_t src_elem = static_cast<uint64_t>(row_offset) * static_cast<uint64_t>(current_stride_kv) +
                                       static_cast<uint64_t>(col_offset + k_idx * 32);
             const uint64_t lane_store_elem = static_cast<uint64_t>(lane_idx) * 16 / sizeof(Element);
             const uint64_t dst_elem = (static_cast<uint64_t>(ldsAddrPerWave) -
                                        static_cast<uint64_t>(reinterpret_cast<size_t>(k_lds))) / sizeof(Element) +
                                       lane_store_elem;
             *reinterpret_cast<uint4_t*>(k_lds + dst_elem) =
-                valid_row ? *reinterpret_cast<const uint4_t*>(reinterpret_cast<Element*>(params.kv) + src_elem) : zero4;
+                valid_row ? *reinterpret_cast<const uint4_t*>(current_kv + src_elem) : zero4;
         } else {
+            const uint32x4_t global_addr = is_extra_scope ? global_addr_extra_k : global_addr_k;
             asm volatile(
                 "s_mov_b32 m0, %1 \n\t"
                 "s_nop 0 \n\t"
                 "buffer_load_dwordx4 %0, %2, %3 , idxen offen  offset:0, lds \n" ::"v"(index_offset),
-                "s"(ldsAddrPerWave), "s"(global_addr_k), "s"(offset_s)
+                "s"(ldsAddrPerWave), "s"(global_addr), "s"(offset_s)
             :);
         }
         __builtin_amdgcn_sched_barrier(0);
@@ -247,7 +309,7 @@ __device__ void KernelTemplate_B_H_64<D_QK, HAVE_TOPK_LENGTH, IS_TOPK_2048, USE_
 
     };
 
-    auto buffer_load_lds_v = [&](int row_offset, int col, int k_idx, int n_idx) {
+    auto buffer_load_lds_v = [&](int row_offset, int col, int k_idx, int n_idx, bool is_extra_scope) {
         constexpr int element_size = 2;
         // int k_idx = __builtin_amdgcn_readfirstlane(k_idx_);
         // struct PtrWrapper {
@@ -256,7 +318,7 @@ __device__ void KernelTemplate_B_H_64<D_QK, HAVE_TOPK_LENGTH, IS_TOPK_2048, USE_
         // };
         // PtrWrapper glob_ptr;
         // *(uint64_t*)&glob_ptr = reinterpret_cast<uint64_t>(gK.data().get());
-        // glob_ptr.latter |= ((row_stride * 2) << 16); 
+        // glob_ptr.latter |= ((row_stride * 2) << 16);
         // uint32x4_t global_addr = {0};
         // global_addr[0] = (glob_ptr.former);
         // global_addr[1] = (glob_ptr.latter);
@@ -279,27 +341,31 @@ __device__ void KernelTemplate_B_H_64<D_QK, HAVE_TOPK_LENGTH, IS_TOPK_2048, USE_
         if constexpr (DECODE_C_LOAD) {
             using uint4_t = unsigned int __attribute__((ext_vector_type(4)));
             const uint4_t zero4 = {0u, 0u, 0u, 0u};
-            const bool valid_row = row_offset >= 0 && row_offset < params.s_kv;
-            const uint64_t src_elem = static_cast<uint64_t>(row_offset) * static_cast<uint64_t>(params.stride_kv_s_kv) +
+            const int current_s_kv = is_extra_scope ? params.extra_s_kv : params.s_kv;
+            const int current_stride_kv = is_extra_scope ? params.stride_extra_kv_s_kv : params.stride_kv_s_kv;
+            Element* current_kv = is_extra_scope ? reinterpret_cast<Element*>(params.extra_kv) : reinterpret_cast<Element*>(params.kv);
+            const bool valid_row = row_offset >= 0 && row_offset < current_s_kv;
+            const uint64_t src_elem = static_cast<uint64_t>(row_offset) * static_cast<uint64_t>(current_stride_kv) +
                                       static_cast<uint64_t>(col_offset + n_idx * 128);
             const uint64_t lane_store_elem = static_cast<uint64_t>(lane_idx) * 16 / sizeof(Element);
             const uint64_t dst_elem = (static_cast<uint64_t>(ldsAddrPerWave) -
                                        static_cast<uint64_t>(reinterpret_cast<size_t>(v_lds))) / sizeof(Element) +
                                       lane_store_elem;
             *reinterpret_cast<uint4_t*>(v_lds + dst_elem) =
-                valid_row ? *reinterpret_cast<const uint4_t*>(reinterpret_cast<Element*>(params.kv) + src_elem) : zero4;
+                valid_row ? *reinterpret_cast<const uint4_t*>(current_kv + src_elem) : zero4;
         } else {
+            const uint32x4_t global_addr = is_extra_scope ? global_addr_extra_k : global_addr_k;
             asm volatile(
                 "s_mov_b32 m0, %1 \n\t"
                 "s_nop 0 \n\t"
                 "buffer_load_dwordx4 %0, %2, %3 , idxen offen  offset:0, lds \n" ::"v"(index_offset),
-                "s"(ldsAddrPerWave), "s"(global_addr_k), "s"(offset_s)
+                "s"(ldsAddrPerWave), "s"(global_addr), "s"(offset_s)
             :);
         }
         __builtin_amdgcn_sched_barrier(0);
 
-  
-    };    
+
+    };
 
     const int v_lds_read_ptr = reinterpret_cast<size_t>(v_lds + lane_idx * 8);
 
@@ -369,20 +435,21 @@ __device__ void KernelTemplate_B_H_64<D_QK, HAVE_TOPK_LENGTH, IS_TOPK_2048, USE_
             accs_f32[i].y = 0.0f;
             accs_f32[i].z = 0.0f;
             accs_f32[i].w = 0.0f;
-        } 
-        auto [row_offset, col] = calc_row_and_col_k(block_idx);
+        }
+        auto [row_offset, col, is_extra_scope] = calc_row_and_col_k(block_idx);
         // const int row_in_topk = row_ + warp_idx * 16 + block_idx * kBlockN;
         // if (HAVE_TOPK_LENGTH && row_in_topk >= topk_length) {
         //     row_offset = -1;
         // }
 
-        row_offset = row_offset == -1 ? params.s_kv : row_offset;
+        const int current_s_kv = is_extra_scope ? params.extra_s_kv : params.s_kv;
+        row_offset = row_offset == -1 ? current_s_kv : row_offset;
         #if 1
         #define LOAD_K_AND_QK_GEMM(k)     \
         { \
             constexpr int k_val = (k);  \
             if constexpr (k_val < kQkChunks - 1) { \
-                buffer_load_lds_k(row_offset, col, k_val - 3); \
+                buffer_load_lds_k(row_offset, col, k_val - 3, is_extra_scope); \
                 flash::qk_gemm<Element, k_val>(q_reg[k_val].data_128, k_lds_read_ptr, accs_f32); \
                 __builtin_amdgcn_sched_barrier(0);                          \
                 asm volatile("s_waitcnt vmcnt(2) \n\t s_barrier\n\t");       \
@@ -392,17 +459,17 @@ __device__ void KernelTemplate_B_H_64<D_QK, HAVE_TOPK_LENGTH, IS_TOPK_2048, USE_
 
         {
             constexpr int k_val = kQkChunks - 1;
-            buffer_load_lds_k(row_offset, col, k_val); 
-            buffer_load_lds_k(row_offset, col, k_val - 1); 
-            buffer_load_lds_k(row_offset, col, k_val - 2); 
-            buffer_load_lds_k(row_offset, col, k_val - 3); 
-            __builtin_amdgcn_sched_barrier(0); 
-            asm volatile("s_waitcnt vmcnt(3) \n\t s_barrier\n\t");         
-            __builtin_amdgcn_sched_barrier(0);  
-            flash::qk_gemm<Element, k_val>(q_reg[k_val].data_128, k_lds_read_ptr, accs_f32); 
-            __builtin_amdgcn_sched_barrier(0); 
-            asm volatile("s_waitcnt vmcnt(2) \n\t s_barrier\n\t");         
-            __builtin_amdgcn_sched_barrier(0);  
+            buffer_load_lds_k(row_offset, col, k_val, is_extra_scope);
+            buffer_load_lds_k(row_offset, col, k_val - 1, is_extra_scope);
+            buffer_load_lds_k(row_offset, col, k_val - 2, is_extra_scope);
+            buffer_load_lds_k(row_offset, col, k_val - 3, is_extra_scope);
+            __builtin_amdgcn_sched_barrier(0);
+            asm volatile("s_waitcnt vmcnt(3) \n\t s_barrier\n\t");
+            __builtin_amdgcn_sched_barrier(0);
+            flash::qk_gemm<Element, k_val>(q_reg[k_val].data_128, k_lds_read_ptr, accs_f32);
+            __builtin_amdgcn_sched_barrier(0);
+            asm volatile("s_waitcnt vmcnt(2) \n\t s_barrier\n\t");
+            __builtin_amdgcn_sched_barrier(0);
 
             LOAD_K_AND_QK_GEMM(16);
             LOAD_K_AND_QK_GEMM(15);
@@ -420,19 +487,19 @@ __device__ void KernelTemplate_B_H_64<D_QK, HAVE_TOPK_LENGTH, IS_TOPK_2048, USE_
             LOAD_K_AND_QK_GEMM(3);
 
             flash::qk_gemm<Element, 2>(q_reg[2].data_128, k_lds_read_ptr, accs_f32);
-            __builtin_amdgcn_sched_barrier(0); 
-            asm volatile("s_waitcnt vmcnt(1) \n\t s_barrier\n\t");         
-            __builtin_amdgcn_sched_barrier(0);  
+            __builtin_amdgcn_sched_barrier(0);
+            asm volatile("s_waitcnt vmcnt(1) \n\t s_barrier\n\t");
+            __builtin_amdgcn_sched_barrier(0);
 
             flash::qk_gemm<Element, 1>(q_reg[1].data_128, k_lds_read_ptr, accs_f32);
-            __builtin_amdgcn_sched_barrier(0); 
-            asm volatile("s_waitcnt vmcnt(0) \n\t s_barrier\n\t");         
-            __builtin_amdgcn_sched_barrier(0);  
+            __builtin_amdgcn_sched_barrier(0);
+            asm volatile("s_waitcnt vmcnt(0) \n\t s_barrier\n\t");
+            __builtin_amdgcn_sched_barrier(0);
 
             flash::qk_gemm<Element, 0>(q_reg[0].data_128, k_lds_read_ptr, accs_f32);
-            __builtin_amdgcn_sched_barrier(0); 
-            asm volatile("s_barrier\n\t");         
-            __builtin_amdgcn_sched_barrier(0);  
+            __builtin_amdgcn_sched_barrier(0);
+            asm volatile("s_barrier\n\t");
+            __builtin_amdgcn_sched_barrier(0);
         }
         #undef LOAD_K_AND_QK_GEMM
         #else
@@ -440,15 +507,18 @@ __device__ void KernelTemplate_B_H_64<D_QK, HAVE_TOPK_LENGTH, IS_TOPK_2048, USE_
         auto is_valid_token = [&](const int idx) -> bool {
             const int n_idx = (lane_idx / 16) * 4 + (idx % 4) + (idx / 4) * 16;
             int offs = n_idx + block_idx * kBlockN;
+            const int logical_idx = split_begin + offs;
             int t;
             if constexpr (IS_TOPK_2048 || CACHE_INDICES_IN_LDS) {
                 t = sIndices[offs % 1024];
             } else {
-                t = gIndices[offs];
+                t = load_sparse_index(logical_idx);
             }
-            bool is_cur_token_valid = t >= 0 && t < params.s_kv;
+            const bool token_extra_scope = has_extra && logical_idx >= params.topk;
+            const int token_s_kv = token_extra_scope ? params.extra_s_kv : params.s_kv;
+            bool is_cur_token_valid = t >= 0 && t < token_s_kv;
             if constexpr (HAVE_TOPK_LENGTH) {
-                is_cur_token_valid = is_cur_token_valid && (offs < topk_length);
+                is_cur_token_valid = is_cur_token_valid && logical_index_is_valid(logical_idx);
             }
             return is_cur_token_valid;
         };
@@ -460,9 +530,9 @@ __device__ void KernelTemplate_B_H_64<D_QK, HAVE_TOPK_LENGTH, IS_TOPK_2048, USE_
             if (!is_valid_token(i)) accs_f32[i%4][i/4] = -INFINITY;
             #endif
         }
-        // Tensor acc_s = partition_fragment_C(tiled_mma, Shape<Int<kBlockM>, Int<kBlockN>>{}); 
+        // Tensor acc_s = partition_fragment_C(tiled_mma, Shape<Int<kBlockM>, Int<kBlockN>>{});
         // Tensor scores = make_tensor(acc_s.data(), flash::convert_layout_acc_rowcol(acc_s.layout()));
-        
+
         Tensor scores = make_tensor<float>(Shape<_1, _16>{});
 
         for (int i = 0; i < 16; i++) {
@@ -471,10 +541,10 @@ __device__ void KernelTemplate_B_H_64<D_QK, HAVE_TOPK_LENGTH, IS_TOPK_2048, USE_
             #else
             scores(0, i) = accs_f32[i%4][i/4];
             #endif
-        }   
+        }
 
         softmax.template softmax_rescale_o_prefill_4x1</*Is_first=*/IS_FIRST_BLOCK, /*Check_inf=*//*Is_local=*/true>(scores, acco_f32, params.sm_scale_div_log2);
-        
+
         Bf16_storage_x4 p[4];
         for (int i = 0; i < 4; i++)
         {
@@ -490,57 +560,60 @@ __device__ void KernelTemplate_B_H_64<D_QK, HAVE_TOPK_LENGTH, IS_TOPK_2048, USE_
         }
 
         int row_offset_v[4];
+        bool is_extra_scope_v[4];
         for (int i = 0; i < 4; i++)
         {
-            row_offset_v[i] = calc_row_and_col_v(block_idx, i);
+            auto [row_v, extra_v] = calc_row_and_col_v(block_idx, i);
+            row_offset_v[i] = row_v;
+            is_extra_scope_v[i] = extra_v;
         }
-        __syncthreads();    
+        __syncthreads();
         #if 1
         {
-            constexpr int k_val = (0);   
-            buffer_load_lds_v(row_offset_v[k_val], col_offset_v, k_val, 0); 
-            buffer_load_lds_v(row_offset_v[k_val + 1], col_offset_v, k_val + 1, 0); 
-            buffer_load_lds_v(row_offset_v[k_val + 2], col_offset_v, k_val + 2, 0); 
-            buffer_load_lds_v(row_offset_v[k_val + 3], col_offset_v, k_val + 3, 0);   
-                            __builtin_amdgcn_sched_barrier(0); 
-            asm volatile("s_waitcnt vmcnt(3) \n\t s_barrier\n\t");  
-                __builtin_amdgcn_sched_barrier(0); 
-            flash::pv_gemm<k_val, 0>(p[k_val + 0].data_64, v_lds_read_ptr, acco_f32);  
-            flash::pv_gemm<k_val, 1>(p[k_val + 0].data_64, v_lds_read_ptr, acco_f32);  
-            flash::pv_gemm<k_val, 2>(p[k_val + 0].data_64, v_lds_read_ptr, acco_f32);  
-            flash::pv_gemm<k_val, 3>(p[k_val + 0].data_64, v_lds_read_ptr, acco_f32);  
-                            __builtin_amdgcn_sched_barrier(0); 
-            asm volatile("s_waitcnt vmcnt(2) \n\t s_barrier\n\t");  
-                __builtin_amdgcn_sched_barrier(0); 
-            buffer_load_lds_v(row_offset_v[k_val], col_offset_v, k_val, 1); 
+            constexpr int k_val = (0);
+            buffer_load_lds_v(row_offset_v[k_val], col_offset_v, k_val, 0, is_extra_scope_v[k_val]);
+            buffer_load_lds_v(row_offset_v[k_val + 1], col_offset_v, k_val + 1, 0, is_extra_scope_v[k_val + 1]);
+            buffer_load_lds_v(row_offset_v[k_val + 2], col_offset_v, k_val + 2, 0, is_extra_scope_v[k_val + 2]);
+            buffer_load_lds_v(row_offset_v[k_val + 3], col_offset_v, k_val + 3, 0, is_extra_scope_v[k_val + 3]);
+                            __builtin_amdgcn_sched_barrier(0);
+            asm volatile("s_waitcnt vmcnt(3) \n\t s_barrier\n\t");
+                __builtin_amdgcn_sched_barrier(0);
+            flash::pv_gemm<k_val, 0>(p[k_val + 0].data_64, v_lds_read_ptr, acco_f32);
+            flash::pv_gemm<k_val, 1>(p[k_val + 0].data_64, v_lds_read_ptr, acco_f32);
+            flash::pv_gemm<k_val, 2>(p[k_val + 0].data_64, v_lds_read_ptr, acco_f32);
+            flash::pv_gemm<k_val, 3>(p[k_val + 0].data_64, v_lds_read_ptr, acco_f32);
+                            __builtin_amdgcn_sched_barrier(0);
+            asm volatile("s_waitcnt vmcnt(2) \n\t s_barrier\n\t");
+                __builtin_amdgcn_sched_barrier(0);
+            buffer_load_lds_v(row_offset_v[k_val], col_offset_v, k_val, 1, is_extra_scope_v[k_val]);
 
-            flash::pv_gemm<k_val + 1, 0>(p[k_val + 1].data_64, v_lds_read_ptr, acco_f32);  
-            flash::pv_gemm<k_val + 1, 1>(p[k_val + 1].data_64, v_lds_read_ptr, acco_f32);  
-            flash::pv_gemm<k_val + 1, 2>(p[k_val + 1].data_64, v_lds_read_ptr, acco_f32);  
-            flash::pv_gemm<k_val + 1, 3>(p[k_val + 1].data_64, v_lds_read_ptr, acco_f32);  
-                __builtin_amdgcn_sched_barrier(0); 
-            asm volatile("s_waitcnt vmcnt(2) \n\t s_barrier\n\t");  
-                __builtin_amdgcn_sched_barrier(0); 
-            buffer_load_lds_v(row_offset_v[k_val + 1], col_offset_v, k_val + 1, 1); 
+            flash::pv_gemm<k_val + 1, 0>(p[k_val + 1].data_64, v_lds_read_ptr, acco_f32);
+            flash::pv_gemm<k_val + 1, 1>(p[k_val + 1].data_64, v_lds_read_ptr, acco_f32);
+            flash::pv_gemm<k_val + 1, 2>(p[k_val + 1].data_64, v_lds_read_ptr, acco_f32);
+            flash::pv_gemm<k_val + 1, 3>(p[k_val + 1].data_64, v_lds_read_ptr, acco_f32);
+                __builtin_amdgcn_sched_barrier(0);
+            asm volatile("s_waitcnt vmcnt(2) \n\t s_barrier\n\t");
+                __builtin_amdgcn_sched_barrier(0);
+            buffer_load_lds_v(row_offset_v[k_val + 1], col_offset_v, k_val + 1, 1, is_extra_scope_v[k_val + 1]);
 
-            flash::pv_gemm<k_val + 2, 0>(p[k_val + 2].data_64, v_lds_read_ptr, acco_f32);  
-            flash::pv_gemm<k_val + 2, 1>(p[k_val + 2].data_64, v_lds_read_ptr, acco_f32);  
-            flash::pv_gemm<k_val + 2, 2>(p[k_val + 2].data_64, v_lds_read_ptr, acco_f32);  
-            flash::pv_gemm<k_val + 2, 3>(p[k_val + 2].data_64, v_lds_read_ptr, acco_f32);  
-                __builtin_amdgcn_sched_barrier(0); 
-            asm volatile("s_waitcnt vmcnt(2) \n\t s_barrier\n\t");  
-                __builtin_amdgcn_sched_barrier(0); 
-            buffer_load_lds_v(row_offset_v[k_val + 2], col_offset_v, k_val + 2, 1); 
+            flash::pv_gemm<k_val + 2, 0>(p[k_val + 2].data_64, v_lds_read_ptr, acco_f32);
+            flash::pv_gemm<k_val + 2, 1>(p[k_val + 2].data_64, v_lds_read_ptr, acco_f32);
+            flash::pv_gemm<k_val + 2, 2>(p[k_val + 2].data_64, v_lds_read_ptr, acco_f32);
+            flash::pv_gemm<k_val + 2, 3>(p[k_val + 2].data_64, v_lds_read_ptr, acco_f32);
+                __builtin_amdgcn_sched_barrier(0);
+            asm volatile("s_waitcnt vmcnt(2) \n\t s_barrier\n\t");
+                __builtin_amdgcn_sched_barrier(0);
+            buffer_load_lds_v(row_offset_v[k_val + 2], col_offset_v, k_val + 2, 1, is_extra_scope_v[k_val + 2]);
 
-            flash::pv_gemm<k_val + 3, 0>(p[k_val + 3].data_64, v_lds_read_ptr, acco_f32);  
-            flash::pv_gemm<k_val + 3, 1>(p[k_val + 3].data_64, v_lds_read_ptr, acco_f32);  
-            flash::pv_gemm<k_val + 3, 2>(p[k_val + 3].data_64, v_lds_read_ptr, acco_f32);  
-            flash::pv_gemm<k_val + 3, 3>(p[k_val + 3].data_64, v_lds_read_ptr, acco_f32);  
-                __builtin_amdgcn_sched_barrier(0); 
-            asm volatile("s_waitcnt vmcnt(2) \n\t s_barrier\n\t");  
-                __builtin_amdgcn_sched_barrier(0); 
-            buffer_load_lds_v(row_offset_v[k_val + 3], col_offset_v, k_val + 3, 1); 
-            
+            flash::pv_gemm<k_val + 3, 0>(p[k_val + 3].data_64, v_lds_read_ptr, acco_f32);
+            flash::pv_gemm<k_val + 3, 1>(p[k_val + 3].data_64, v_lds_read_ptr, acco_f32);
+            flash::pv_gemm<k_val + 3, 2>(p[k_val + 3].data_64, v_lds_read_ptr, acco_f32);
+            flash::pv_gemm<k_val + 3, 3>(p[k_val + 3].data_64, v_lds_read_ptr, acco_f32);
+                __builtin_amdgcn_sched_barrier(0);
+            asm volatile("s_waitcnt vmcnt(2) \n\t s_barrier\n\t");
+                __builtin_amdgcn_sched_barrier(0);
+            buffer_load_lds_v(row_offset_v[k_val + 3], col_offset_v, k_val + 3, 1, is_extra_scope_v[k_val + 3]);
+
         }
         #define LOAD_V_AND_PV_GEMM(n) \
         {                                   \
@@ -553,7 +626,7 @@ __device__ void KernelTemplate_B_H_64<D_QK, HAVE_TOPK_LENGTH, IS_TOPK_2048, USE_
                 __builtin_amdgcn_sched_barrier(0); \
             asm volatile("s_waitcnt vmcnt(2) \n\t s_barrier\n\t");  \
                 __builtin_amdgcn_sched_barrier(0); \
-            buffer_load_lds_v(row_offset_v[k_val], col_offset_v, k_val, n_val + 1); \
+            buffer_load_lds_v(row_offset_v[k_val], col_offset_v, k_val, n_val + 1, is_extra_scope_v[k_val]); \
             flash::pv_gemm<k_val + 1, n_val * 4>(p[k_val + 1].data_64, v_lds_read_ptr, acco_f32);  \
             flash::pv_gemm<k_val + 1, n_val * 4 + 1>(p[k_val + 1].data_64, v_lds_read_ptr, acco_f32);  \
             flash::pv_gemm<k_val + 1, n_val * 4 + 2>(p[k_val + 1].data_64, v_lds_read_ptr, acco_f32);  \
@@ -561,7 +634,7 @@ __device__ void KernelTemplate_B_H_64<D_QK, HAVE_TOPK_LENGTH, IS_TOPK_2048, USE_
                 __builtin_amdgcn_sched_barrier(0); \
             asm volatile("s_waitcnt vmcnt(2) \n\t s_barrier\n\t");  \
                 __builtin_amdgcn_sched_barrier(0); \
-                buffer_load_lds_v(row_offset_v[k_val + 1], col_offset_v, k_val + 1, n_val + 1); \
+                buffer_load_lds_v(row_offset_v[k_val + 1], col_offset_v, k_val + 1, n_val + 1, is_extra_scope_v[k_val + 1]); \
             flash::pv_gemm<k_val + 2, n_val * 4>(p[k_val + 2].data_64, v_lds_read_ptr, acco_f32);  \
             flash::pv_gemm<k_val + 2, n_val * 4 + 1>(p[k_val + 2].data_64, v_lds_read_ptr, acco_f32);  \
             flash::pv_gemm<k_val + 2, n_val * 4 + 2>(p[k_val + 2].data_64, v_lds_read_ptr, acco_f32);  \
@@ -569,7 +642,7 @@ __device__ void KernelTemplate_B_H_64<D_QK, HAVE_TOPK_LENGTH, IS_TOPK_2048, USE_
                 __builtin_amdgcn_sched_barrier(0); \
             asm volatile("s_waitcnt vmcnt(2) \n\t s_barrier\n\t");  \
                 __builtin_amdgcn_sched_barrier(0); \
-                            buffer_load_lds_v(row_offset_v[k_val + 2], col_offset_v, k_val + 2, n_val + 1); \
+                            buffer_load_lds_v(row_offset_v[k_val + 2], col_offset_v, k_val + 2, n_val + 1, is_extra_scope_v[k_val + 2]); \
             flash::pv_gemm<k_val + 3, n_val * 4>(p[k_val + 3].data_64, v_lds_read_ptr, acco_f32);  \
             flash::pv_gemm<k_val + 3, n_val * 4 + 1>(p[k_val + 3].data_64, v_lds_read_ptr, acco_f32);  \
             flash::pv_gemm<k_val + 3, n_val * 4 + 2>(p[k_val + 3].data_64, v_lds_read_ptr, acco_f32);  \
@@ -577,54 +650,54 @@ __device__ void KernelTemplate_B_H_64<D_QK, HAVE_TOPK_LENGTH, IS_TOPK_2048, USE_
                 __builtin_amdgcn_sched_barrier(0); \
             asm volatile("s_waitcnt vmcnt(2) \n\t s_barrier\n\t");  \
                 __builtin_amdgcn_sched_barrier(0); \
-            buffer_load_lds_v(row_offset_v[k_val + 3], col_offset_v, k_val + 3, n_val + 1); \
-        }  
+            buffer_load_lds_v(row_offset_v[k_val + 3], col_offset_v, k_val + 3, n_val + 1, is_extra_scope_v[k_val + 3]); \
+        }
         LOAD_V_AND_PV_GEMM(1);
         LOAD_V_AND_PV_GEMM(2);
         {
-            constexpr int n_val = (3);  
-            flash::pv_gemm<0, 12>(p[0].data_64, v_lds_read_ptr, acco_f32);  
-            flash::pv_gemm<0, 13>(p[0].data_64, v_lds_read_ptr, acco_f32);  
-            flash::pv_gemm<0, 14>(p[0].data_64, v_lds_read_ptr, acco_f32);  
-            flash::pv_gemm<0, 15>(p[0].data_64, v_lds_read_ptr, acco_f32);  
-                __builtin_amdgcn_sched_barrier(0); 
-            asm volatile("s_waitcnt vmcnt(2) \n\t s_barrier\n\t");  
-                __builtin_amdgcn_sched_barrier(0); 
-    
-            flash::pv_gemm<1, 12>(p[1].data_64, v_lds_read_ptr, acco_f32);  
-            flash::pv_gemm<1, 13>(p[1].data_64, v_lds_read_ptr, acco_f32);  
-            flash::pv_gemm<1, 14>(p[1].data_64, v_lds_read_ptr, acco_f32);  
-            flash::pv_gemm<1, 15>(p[1].data_64, v_lds_read_ptr, acco_f32);  
-                __builtin_amdgcn_sched_barrier(0); 
-            asm volatile("s_waitcnt vmcnt(1) \n\t s_barrier\n\t");  
-                __builtin_amdgcn_sched_barrier(0); 
+            constexpr int n_val = (3);
+            flash::pv_gemm<0, 12>(p[0].data_64, v_lds_read_ptr, acco_f32);
+            flash::pv_gemm<0, 13>(p[0].data_64, v_lds_read_ptr, acco_f32);
+            flash::pv_gemm<0, 14>(p[0].data_64, v_lds_read_ptr, acco_f32);
+            flash::pv_gemm<0, 15>(p[0].data_64, v_lds_read_ptr, acco_f32);
+                __builtin_amdgcn_sched_barrier(0);
+            asm volatile("s_waitcnt vmcnt(2) \n\t s_barrier\n\t");
+                __builtin_amdgcn_sched_barrier(0);
 
-            flash::pv_gemm<2, 12>(p[2].data_64, v_lds_read_ptr, acco_f32);  
-            flash::pv_gemm<2, 13>(p[2].data_64, v_lds_read_ptr, acco_f32);  
-            flash::pv_gemm<2, 14>(p[2].data_64, v_lds_read_ptr, acco_f32);  
-            flash::pv_gemm<2, 15>(p[2].data_64, v_lds_read_ptr, acco_f32);  
-                __builtin_amdgcn_sched_barrier(0); 
-            asm volatile("s_waitcnt vmcnt(0) \n\t s_barrier\n\t");  
-                __builtin_amdgcn_sched_barrier(0); 
+            flash::pv_gemm<1, 12>(p[1].data_64, v_lds_read_ptr, acco_f32);
+            flash::pv_gemm<1, 13>(p[1].data_64, v_lds_read_ptr, acco_f32);
+            flash::pv_gemm<1, 14>(p[1].data_64, v_lds_read_ptr, acco_f32);
+            flash::pv_gemm<1, 15>(p[1].data_64, v_lds_read_ptr, acco_f32);
+                __builtin_amdgcn_sched_barrier(0);
+            asm volatile("s_waitcnt vmcnt(1) \n\t s_barrier\n\t");
+                __builtin_amdgcn_sched_barrier(0);
 
-            flash::pv_gemm<3, 12>(p[3].data_64, v_lds_read_ptr, acco_f32);  
-            flash::pv_gemm<3, 13>(p[3].data_64, v_lds_read_ptr, acco_f32);  
-            flash::pv_gemm<3, 14>(p[3].data_64, v_lds_read_ptr, acco_f32);  
-            flash::pv_gemm<3, 15>(p[3].data_64, v_lds_read_ptr, acco_f32);   
-                __builtin_amdgcn_sched_barrier(0); 
-            asm volatile("s_barrier\n\t");  
-                __builtin_amdgcn_sched_barrier(0); 
+            flash::pv_gemm<2, 12>(p[2].data_64, v_lds_read_ptr, acco_f32);
+            flash::pv_gemm<2, 13>(p[2].data_64, v_lds_read_ptr, acco_f32);
+            flash::pv_gemm<2, 14>(p[2].data_64, v_lds_read_ptr, acco_f32);
+            flash::pv_gemm<2, 15>(p[2].data_64, v_lds_read_ptr, acco_f32);
+                __builtin_amdgcn_sched_barrier(0);
+            asm volatile("s_waitcnt vmcnt(0) \n\t s_barrier\n\t");
+                __builtin_amdgcn_sched_barrier(0);
+
+            flash::pv_gemm<3, 12>(p[3].data_64, v_lds_read_ptr, acco_f32);
+            flash::pv_gemm<3, 13>(p[3].data_64, v_lds_read_ptr, acco_f32);
+            flash::pv_gemm<3, 14>(p[3].data_64, v_lds_read_ptr, acco_f32);
+            flash::pv_gemm<3, 15>(p[3].data_64, v_lds_read_ptr, acco_f32);
+                __builtin_amdgcn_sched_barrier(0);
+            asm volatile("s_barrier\n\t");
+                __builtin_amdgcn_sched_barrier(0);
         }
-       
+
 
         #else
         #define LOAD_V_AND_PV_GEMM(k) \
         {                                   \
             constexpr int k_val = (k);   \
-            buffer_load_lds_v(row_offset_v[k_val], col_offset_v, k_val, 0); \
-            buffer_load_lds_v(row_offset_v[k_val], col_offset_v, k_val, 1); \
-            buffer_load_lds_v(row_offset_v[k_val], col_offset_v, k_val, 2); \
-            buffer_load_lds_v(row_offset_v[k_val], col_offset_v, k_val, 3); \
+            buffer_load_lds_v(row_offset_v[k_val], col_offset_v, k_val, 0, is_extra_scope_v[k_val]); \
+            buffer_load_lds_v(row_offset_v[k_val], col_offset_v, k_val, 1, is_extra_scope_v[k_val]); \
+            buffer_load_lds_v(row_offset_v[k_val], col_offset_v, k_val, 2, is_extra_scope_v[k_val]); \
+            buffer_load_lds_v(row_offset_v[k_val], col_offset_v, k_val, 3, is_extra_scope_v[k_val]); \
                 __builtin_amdgcn_sched_barrier(0); \
             asm volatile("s_waitcnt vmcnt(3) \n\t s_barrier\n\t");  \
                 __builtin_amdgcn_sched_barrier(0); \
@@ -656,12 +729,12 @@ __device__ void KernelTemplate_B_H_64<D_QK, HAVE_TOPK_LENGTH, IS_TOPK_2048, USE_
                 __builtin_amdgcn_sched_barrier(0); \
             asm volatile("s_barrier \n\t"); \
                 __builtin_amdgcn_sched_barrier(0); \
-        }  
+        }
         LOAD_V_AND_PV_GEMM(0);
         LOAD_V_AND_PV_GEMM(1);
         LOAD_V_AND_PV_GEMM(2);
-        LOAD_V_AND_PV_GEMM(3);  
-        #endif  
+        LOAD_V_AND_PV_GEMM(3);
+        #endif
     };
     if constexpr (IS_TOPK_2048)
     {
@@ -671,9 +744,9 @@ __device__ void KernelTemplate_B_H_64<D_QK, HAVE_TOPK_LENGTH, IS_TOPK_2048, USE_
             process_one_block(block_idx, IsOtherBlock{});
         }
         buffer_load_lds_indices(1, 1024);
-        __builtin_amdgcn_sched_barrier(0); 
-        asm volatile("s_waitcnt vmcnt(0) \n\t s_barrier\n\t");  
-        __builtin_amdgcn_sched_barrier(0); 
+        __builtin_amdgcn_sched_barrier(0);
+        asm volatile("s_waitcnt vmcnt(0) \n\t s_barrier\n\t");
+        __builtin_amdgcn_sched_barrier(0);
         for (int block_idx = 1024/B_TOPK; block_idx < 2048 / B_TOPK; block_idx ++)
         {
             process_one_block(block_idx, IsOtherBlock{});
@@ -695,7 +768,7 @@ __device__ void KernelTemplate_B_H_64<D_QK, HAVE_TOPK_LENGTH, IS_TOPK_2048, USE_
 
     //     if (block0())
     // {
-    //     printf(" threadIdx.x %d %.3f %.3f %.3f %.3f \n", threadIdx.x, 
+    //     printf(" threadIdx.x %d %.3f %.3f %.3f %.3f \n", threadIdx.x,
     //         acco_f32[0].x,
     //         acco_f32[0].y,
     //         acco_f32[0].z,
@@ -735,7 +808,7 @@ __device__ void KernelTemplate_B_H_64<D_QK, HAVE_TOPK_LENGTH, IS_TOPK_2048, USE_
             return value;
         }
     };
-    
+
     {
         // store O and gLSE
         // auto rO = flash::convert_type<Element>(acc_o);
@@ -744,7 +817,7 @@ __device__ void KernelTemplate_B_H_64<D_QK, HAVE_TOPK_LENGTH, IS_TOPK_2048, USE_
         // const int laneId = tidx % 64;
         for (int mi = 0; mi < 1; ++mi) {
             row = mi * kBlockM + lane_idx % 16 + warp_idx * 16;
-            // if (row < params.h_q) 
+            // if (row < params.h_q)
             {
                 for (int ni = 0; ni < 16; ++ni) {
                     if constexpr (SPLIT_KV) {
@@ -766,7 +839,7 @@ __device__ void KernelTemplate_B_H_64<D_QK, HAVE_TOPK_LENGTH, IS_TOPK_2048, USE_
                     res.data_32[2] =  __builtin_hcu_cvt_pk_bf16_f32(0, maybe_apply_attn_sink(acco_f32[ni * 2][2]), 0, maybe_apply_attn_sink(acco_f32[ni * 2 + 1][2]), 0);
 
                     res.data_32[3] =  __builtin_hcu_cvt_pk_bf16_f32(0, maybe_apply_attn_sink(acco_f32[ni * 2][3]), 0, maybe_apply_attn_sink(acco_f32[ni * 2 + 1][3]), 0);
-                    
+
                     *(__fp16x8_t*)(&gO(row, col)) = res.data_128;
 
                     #else
@@ -806,7 +879,7 @@ __device__ void KernelTemplate_B_H_64<D_QK, HAVE_TOPK_LENGTH, IS_TOPK_2048, USE_
                 }
             }
         }
-    }        
+    }
 }
 
 
@@ -829,41 +902,41 @@ __device__ void KernelTemplate<D_QK, HAVE_TOPK_LENGTH>::devfunc(const SparseAttn
                                 Shape<Int<kBlockM>, Int<kHeadDim>>{},
                                 make_stride(params.stride_q_h_q, _1{}));
 
-    const index_t row_offset_k = 0 * params.stride_kv_h_kv; 
+    const index_t row_offset_k = 0 * params.stride_kv_h_kv;
 
     Tensor gK = make_tensor(make_gmem_ptr(reinterpret_cast<Element *>(params.kv) + row_offset_k),
                                 Shape<Int<kBlockN>, Int<kHeadDim>>{},
                                 make_stride(params.stride_kv_s_kv, _1{}));
     const index_t row_offset_topk = s_q_idx * params.stride_indices_s_q;
     int* gIndices = reinterpret_cast<int *>(params.indices) + row_offset_topk;
-    Tensor sQ = make_tensor(make_smem_ptr(plan.smem_q.data()), SmemLayoutQ{});    
+    Tensor sQ = make_tensor(make_smem_ptr(plan.smem_q.data()), SmemLayoutQ{});
     Tensor sV = make_tensor(make_smem_ptr(plan.smem_v.data()), SmemLayoutV{});
-    Tensor sK = make_tensor(make_smem_ptr(plan.smem_v.data()), SmemLayoutK{}); 
-    Tensor sP = make_tensor(make_smem_ptr(plan.smem_p.data()), SmemLayoutP{});    
+    Tensor sK = make_tensor(make_smem_ptr(plan.smem_v.data()), SmemLayoutK{});
+    Tensor sP = make_tensor(make_smem_ptr(plan.smem_p.data()), SmemLayoutP{});
 
     Tensor sVt = make_tensor(sV.data(), SmemLayoutVtransposed{});
     Tensor sVtNoSwizzle = make_tensor(sV.data(), SmemLayoutVtransposedNoSwizzle{});
 
-    Tensor sRow_max_reduce_buffer = make_tensor(make_smem_ptr(plan.smem_row_max.data()), SmemLayoutRow{});  
-    Tensor sRow_sum_reduce_buffer = make_tensor(make_smem_ptr(plan.smem_row_sum.data()), SmemLayoutRow{});    
+    Tensor sRow_max_reduce_buffer = make_tensor(make_smem_ptr(plan.smem_row_max.data()), SmemLayoutRow{});
+    Tensor sRow_sum_reduce_buffer = make_tensor(make_smem_ptr(plan.smem_row_sum.data()), SmemLayoutRow{});
 
-    TiledMMA tiled_mma = TiledMma{}; 
+    TiledMMA tiled_mma = TiledMma{};
     auto thr_mma = tiled_mma.get_thread_slice(tidx);
-    TiledMMA tiled_mma_o = TiledMma_O{}; 
+    TiledMMA tiled_mma_o = TiledMma_O{};
     auto thr_mma_o = tiled_mma_o.get_thread_slice(tidx);
 
-    flash::lds_direct_copy<false, true, true>(gQ, sQ, 0, params.stride_q_h_q, params.h_q - bidh * kBlockM);                                                            
-    flash::lds_direct_copy<false, true, true>(gQ, sQ, 1, params.stride_q_h_q, params.h_q - bidh * kBlockM);                                                            
-    flash::lds_direct_copy<false, true, true>(gQ, sQ, 2, params.stride_q_h_q, params.h_q - bidh * kBlockM);                                                            
-    flash::lds_direct_copy<false, true, true>(gQ, sQ, 3, params.stride_q_h_q, params.h_q - bidh * kBlockM); 
+    flash::lds_direct_copy<false, true, true>(gQ, sQ, 0, params.stride_q_h_q, params.h_q - bidh * kBlockM);
+    flash::lds_direct_copy<false, true, true>(gQ, sQ, 1, params.stride_q_h_q, params.h_q - bidh * kBlockM);
+    flash::lds_direct_copy<false, true, true>(gQ, sQ, 2, params.stride_q_h_q, params.h_q - bidh * kBlockM);
+    flash::lds_direct_copy<false, true, true>(gQ, sQ, 3, params.stride_q_h_q, params.h_q - bidh * kBlockM);
     if constexpr (D_QK == 576)
     {
-        flash::lds_direct_copy<false, false, true>(gQ, sQ, 4, params.stride_q_h_q, params.h_q - bidh * kBlockM);                                                            
-    }                                                           
-    
-    auto smem_tiled_copy_Q = make_tiled_copy_A(Copy_Atom<DefaultCopy, Element>{}, tiled_mma);                                                               
+        flash::lds_direct_copy<false, false, true>(gQ, sQ, 4, params.stride_q_h_q, params.h_q - bidh * kBlockM);
+    }
+
+    auto smem_tiled_copy_Q = make_tiled_copy_A(Copy_Atom<DefaultCopy, Element>{}, tiled_mma);
     auto smem_thr_copy_Q = smem_tiled_copy_Q.get_thread_slice(tidx);
-    Tensor tSsQ = smem_thr_copy_Q.partition_S(sQ);                                                               
+    Tensor tSsQ = smem_thr_copy_Q.partition_S(sQ);
     Tensor tSrQ = thr_mma.partition_fragment_A(sQ);
     Tensor tSrQ_copy_view = smem_thr_copy_Q.retile_D(tSrQ);
 
@@ -883,7 +956,7 @@ __device__ void KernelTemplate<D_QK, HAVE_TOPK_LENGTH>::devfunc(const SparseAttn
         cute::copy(smem_tiled_copy_Q, tSsQ(_, _, 4), tSrQ_copy_view(_, _, 4));
         cute::copy(smem_tiled_copy_Q, tSsQ(_, _, 5), tSrQ_copy_view(_, _, 5));
         cute::copy(smem_tiled_copy_Q, tSsQ(_, _, 6), tSrQ_copy_view(_, _, 6));
-        cute::copy(smem_tiled_copy_Q, tSsQ(_, _, 7), tSrQ_copy_view(_, _, 7));                                                                
+        cute::copy(smem_tiled_copy_Q, tSsQ(_, _, 7), tSrQ_copy_view(_, _, 7));
         __builtin_amdgcn_sched_barrier(0);
         asm volatile("s_waitcnt vmcnt(2) \n\t s_barrier\n\t");
         __builtin_amdgcn_sched_barrier(0);
@@ -897,7 +970,7 @@ __device__ void KernelTemplate<D_QK, HAVE_TOPK_LENGTH>::devfunc(const SparseAttn
         cute::copy(smem_tiled_copy_Q, tSsQ(_, _, 12), tSrQ_copy_view(_, _, 12));
         cute::copy(smem_tiled_copy_Q, tSsQ(_, _, 13), tSrQ_copy_view(_, _, 13));
         cute::copy(smem_tiled_copy_Q, tSsQ(_, _, 14), tSrQ_copy_view(_, _, 14));
-        cute::copy(smem_tiled_copy_Q, tSsQ(_, _, 15), tSrQ_copy_view(_, _, 15));                                                        
+        cute::copy(smem_tiled_copy_Q, tSsQ(_, _, 15), tSrQ_copy_view(_, _, 15));
         __builtin_amdgcn_sched_barrier(0);
         asm volatile("s_waitcnt vmcnt(0) \n\t s_barrier\n\t");
         __builtin_amdgcn_sched_barrier(0);
@@ -919,7 +992,7 @@ __device__ void KernelTemplate<D_QK, HAVE_TOPK_LENGTH>::devfunc(const SparseAttn
         cute::copy(smem_tiled_copy_Q, tSsQ(_, _, 4), tSrQ_copy_view(_, _, 4));
         cute::copy(smem_tiled_copy_Q, tSsQ(_, _, 5), tSrQ_copy_view(_, _, 5));
         cute::copy(smem_tiled_copy_Q, tSsQ(_, _, 6), tSrQ_copy_view(_, _, 6));
-        cute::copy(smem_tiled_copy_Q, tSsQ(_, _, 7), tSrQ_copy_view(_, _, 7));                                                                
+        cute::copy(smem_tiled_copy_Q, tSsQ(_, _, 7), tSrQ_copy_view(_, _, 7));
         __builtin_amdgcn_sched_barrier(0);
         asm volatile("s_waitcnt vmcnt(1) \n\t s_barrier\n\t");
         __builtin_amdgcn_sched_barrier(0);
@@ -933,7 +1006,7 @@ __device__ void KernelTemplate<D_QK, HAVE_TOPK_LENGTH>::devfunc(const SparseAttn
         cute::copy(smem_tiled_copy_Q, tSsQ(_, _, 12), tSrQ_copy_view(_, _, 12));
         cute::copy(smem_tiled_copy_Q, tSsQ(_, _, 13), tSrQ_copy_view(_, _, 13));
         cute::copy(smem_tiled_copy_Q, tSsQ(_, _, 14), tSrQ_copy_view(_, _, 14));
-        cute::copy(smem_tiled_copy_Q, tSsQ(_, _, 15), tSrQ_copy_view(_, _, 15));                                                        
+        cute::copy(smem_tiled_copy_Q, tSsQ(_, _, 15), tSrQ_copy_view(_, _, 15));
     }
 
 
@@ -945,14 +1018,14 @@ __device__ void KernelTemplate<D_QK, HAVE_TOPK_LENGTH>::devfunc(const SparseAttn
     auto smem_tiled_copy_K = make_tiled_copy_B(Copy_Atom<DefaultCopy, Element>{}, tiled_mma);
     auto smem_thr_copy_K = smem_tiled_copy_K.get_thread_slice(tidx);
     Tensor tSsK = smem_thr_copy_K.partition_S(sK);
-    Tensor tSrK  = thr_mma.partition_fragment_B(sK); 
+    Tensor tSrK  = thr_mma.partition_fragment_B(sK);
     Tensor tSrK_copy_view = smem_thr_copy_K.retile_D(tSrK);
-    Tensor tSrK_smem  = thr_mma.partition_fragment_B(gK); 
+    Tensor tSrK_smem  = thr_mma.partition_fragment_B(gK);
 
     auto smem_tiled_copy_V = make_tiled_copy_B(Copy_Atom<GFX928_DS_READ_DS_M32x16_B16, Element>{}, tiled_mma_o);
     auto smem_thr_copy_V = smem_tiled_copy_V.get_thread_slice(tidx);
     Tensor tOsVt = smem_thr_copy_V.partition_S(sVt);
-    Tensor tOrVt  = thr_mma_o.partition_fragment_B(sVtNoSwizzle);  
+    Tensor tOrVt  = thr_mma_o.partition_fragment_B(sVtNoSwizzle);
     Tensor tOrVt_copy_view = smem_thr_copy_V.retile_D(tOrVt);
 
 
@@ -976,7 +1049,7 @@ __device__ void KernelTemplate<D_QK, HAVE_TOPK_LENGTH>::devfunc(const SparseAttn
 
     for (int block_idx = 0; block_idx < num_topk_blocks; block_idx++)
     {
-        Tensor acc_s = partition_fragment_C(tiled_mma, Shape<Int<kBlockM>, Int<kBlockN>>{}); 
+        Tensor acc_s = partition_fragment_C(tiled_mma, Shape<Int<kBlockM>, Int<kBlockN>>{});
         clear(acc_s);
         auto [row_offset, col] = calc_row_and_col(block_idx);
         if constexpr (D_QK == 576)
@@ -987,12 +1060,12 @@ __device__ void KernelTemplate<D_QK, HAVE_TOPK_LENGTH>::devfunc(const SparseAttn
             }
 
             __builtin_amdgcn_sched_barrier(0);
-            asm volatile("s_waitcnt vmcnt(1) \n s_barrier"); 
+            asm volatile("s_waitcnt vmcnt(1) \n s_barrier");
             __builtin_amdgcn_sched_barrier(0);
             cute::copy(smem_tiled_copy_K, tSsK(_, _, 0), tSrK_copy_view(_, _, 0));
             cute::gemm(tiled_mma, tSrQ(_, _, 0 + 16), tSrK(_, _, 0), acc_s);
             __builtin_amdgcn_sched_barrier(0);
-            asm volatile("s_waitcnt vmcnt(0) \n s_barrier"); 
+            asm volatile("s_waitcnt vmcnt(0) \n s_barrier");
             __builtin_amdgcn_sched_barrier(0);
             flash::lds_direct_copy_for_prefill_sparse_mla<true, false, false>(gK, sK, row_offset, col, 0, params.stride_kv_s_kv, params.s_kv);
             cute::copy(smem_tiled_copy_K, tSsK(_, _, 1), tSrK_copy_view(_, _, 1));
@@ -1014,7 +1087,7 @@ __device__ void KernelTemplate<D_QK, HAVE_TOPK_LENGTH>::devfunc(const SparseAttn
         __builtin_amdgcn_sched_barrier(0);
         cute::copy(smem_tiled_copy_K, tSsK(_, _, k_idx % 4), tSrK_copy_view(_, _, k_idx));
         cute::gemm(tiled_mma, tSrQ(_, _, k_idx), tSrK(_, _, k_idx), acc_s);
-        
+
         k_idx++;
         __builtin_amdgcn_sched_barrier(0);
         asm volatile("s_waitcnt vmcnt(2) \n\t s_barrier\n\t");
@@ -1028,7 +1101,7 @@ __device__ void KernelTemplate<D_QK, HAVE_TOPK_LENGTH>::devfunc(const SparseAttn
         __builtin_amdgcn_sched_barrier(0);
         cute::copy(smem_tiled_copy_K, tSsK(_, _, k_idx % 4), tSrK_copy_view(_, _, k_idx));
         cute::gemm(tiled_mma, tSrQ(_, _, k_idx), tSrK(_, _, k_idx), acc_s);
-        
+
         k_idx++;
         __builtin_amdgcn_sched_barrier(0);
         asm volatile("s_waitcnt vmcnt(0) \n\t s_barrier\n\t");
@@ -1054,7 +1127,7 @@ __device__ void KernelTemplate<D_QK, HAVE_TOPK_LENGTH>::devfunc(const SparseAttn
         __builtin_amdgcn_sched_barrier(0);
         cute::copy(smem_tiled_copy_K, tSsK(_, _, k_idx % 4), tSrK_copy_view(_, _, k_idx));
         cute::gemm(tiled_mma, tSrQ(_, _, k_idx), tSrK(_, _, k_idx), acc_s);
-        
+
         k_idx++;
         __builtin_amdgcn_sched_barrier(0);
         asm volatile("s_waitcnt vmcnt(2) \n\t s_barrier\n\t");
@@ -1068,7 +1141,7 @@ __device__ void KernelTemplate<D_QK, HAVE_TOPK_LENGTH>::devfunc(const SparseAttn
         __builtin_amdgcn_sched_barrier(0);
         cute::copy(smem_tiled_copy_K, tSsK(_, _, k_idx % 4), tSrK_copy_view(_, _, k_idx));
         cute::gemm(tiled_mma, tSrQ(_, _, k_idx), tSrK(_, _, k_idx), acc_s);
-        
+
         k_idx++;
         __builtin_amdgcn_sched_barrier(0);
         asm volatile("s_waitcnt vmcnt(0) \n\t s_barrier\n\t");
@@ -1094,7 +1167,7 @@ __device__ void KernelTemplate<D_QK, HAVE_TOPK_LENGTH>::devfunc(const SparseAttn
         __builtin_amdgcn_sched_barrier(0);
         cute::copy(smem_tiled_copy_K, tSsK(_, _, k_idx % 4), tSrK_copy_view(_, _, k_idx));
         cute::gemm(tiled_mma, tSrQ(_, _, k_idx), tSrK(_, _, k_idx), acc_s);
-        
+
         k_idx++;
         __builtin_amdgcn_sched_barrier(0);
         asm volatile("s_waitcnt vmcnt(2) \n\t s_barrier\n\t");
@@ -1108,7 +1181,7 @@ __device__ void KernelTemplate<D_QK, HAVE_TOPK_LENGTH>::devfunc(const SparseAttn
         __builtin_amdgcn_sched_barrier(0);
         cute::copy(smem_tiled_copy_K, tSsK(_, _, k_idx % 4), tSrK_copy_view(_, _, k_idx));
         cute::gemm(tiled_mma, tSrQ(_, _, k_idx), tSrK(_, _, k_idx), acc_s);
-        
+
         k_idx++;
         __builtin_amdgcn_sched_barrier(0);
         asm volatile("s_waitcnt vmcnt(0) \n\t s_barrier\n\t");
@@ -1135,7 +1208,7 @@ __device__ void KernelTemplate<D_QK, HAVE_TOPK_LENGTH>::devfunc(const SparseAttn
 
         cute::copy(smem_tiled_copy_K, tSsK(_, _, k_idx % 4), tSrK_copy_view(_, _, k_idx));
         cute::gemm(tiled_mma, tSrQ(_, _, k_idx), tSrK(_, _, k_idx), acc_s);
-        
+
         k_idx++;
         __builtin_amdgcn_sched_barrier(0);
         asm volatile("s_waitcnt vmcnt(2) \n\t s_barrier\n\t");
@@ -1151,7 +1224,7 @@ __device__ void KernelTemplate<D_QK, HAVE_TOPK_LENGTH>::devfunc(const SparseAttn
 
         cute::copy(smem_tiled_copy_K, tSsK(_, _, k_idx % 4), tSrK_copy_view(_, _, k_idx));
         cute::gemm(tiled_mma, tSrQ(_, _, k_idx), tSrK(_, _, k_idx), acc_s);
-        
+
         k_idx++;
         __builtin_amdgcn_sched_barrier(0);
         asm volatile("s_waitcnt vmcnt(0) \n\t s_barrier\n\t");
@@ -1196,13 +1269,13 @@ __device__ void KernelTemplate<D_QK, HAVE_TOPK_LENGTH>::devfunc(const SparseAttn
 
         Tensor rP = flash::convert_type<Element>(acc_s);
         Tensor tOrP = flash::convert_layout_acc_Aregs(tiled_mma, tiled_mma_o, rP, sP);
-        
+
         {
 
             flash::__ds_read_m32x16_row_col_rrow_alt<0, 0, 3>(tOsVt, tOrVt_copy_view);
-            
-            
-            
+
+
+
             // __ds_read_m32x16_row_col<0, 0>(tOsVt, tOrVt_copy_view);
             // __ds_read_m32x16_row_col<1, 0>(tOsVt, tOrVt_copy_view);
             // __ds_read_m32x16_row_col<2, 0>(tOsVt, tOrVt_copy_view);
@@ -1216,12 +1289,12 @@ __device__ void KernelTemplate<D_QK, HAVE_TOPK_LENGTH>::devfunc(const SparseAttn
             // __ds_read_m32x16_row_col<0, 2>(tOsVt, tOrVt_copy_view);
             // __ds_read_m32x16_row_col<1, 2>(tOsVt, tOrVt_copy_view);
             // __ds_read_m32x16_row_col<2, 2>(tOsVt, tOrVt_copy_view);
-            
-            
+
+
             // __ds_read_m32x16_row_col<0, 3>(tOsVt, tOrVt_copy_view);
             // __ds_read_m32x16_row_col<1, 3>(tOsVt, tOrVt_copy_view);
             // __ds_read_m32x16_row_col<2, 3>(tOsVt, tOrVt_copy_view);
-            
+
             flash::__ds_read_m32x16_row_col_rrow_alt<0, 2, 3>(tOsVt, tOrVt_copy_view);
             cute::gemm(tiled_mma_o, tOrP(_, _, 2), tOrVt(_, _, 2), acc_o);
             flash::__ds_read_m32x16_row_col_rrow_alt<0, 3, 3>(tOsVt, tOrVt_copy_view);
@@ -1234,7 +1307,7 @@ __device__ void KernelTemplate<D_QK, HAVE_TOPK_LENGTH>::devfunc(const SparseAttn
             // cute::copy(smem_tiled_copy_V, tOsVt(_, 0, 0), tOrVt_copy_view(_, 0, 0));
             // for (int i = 0; i < 4; i++) {
             //     cute::copy(smem_tiled_copy_V, tOsVt(_, _, i), tOrVt_copy_view(_, _, i));
-                
+
             //     // if (tOrVt(_, _, i) )
 
             //     cute::gemm(tiled_mma_o, tOrP(_, _, i), tOrVt(_, _, i), acc_o);
@@ -1245,8 +1318,8 @@ __device__ void KernelTemplate<D_QK, HAVE_TOPK_LENGTH>::devfunc(const SparseAttn
 
             // }
 
-            // asm volatile("s_barrier"); 
-            
+            // asm volatile("s_barrier");
+
             // if (thread0()) {
             //     for (int i = 0; i < 64; i++) {
             //         for (int j = 0; j < 512; j++) {
@@ -1258,10 +1331,10 @@ __device__ void KernelTemplate<D_QK, HAVE_TOPK_LENGTH>::devfunc(const SparseAttn
 
             //             if (block0())
             // {
-            //     print("tidx %d acc_s %.2f %.2f %.2f %.2f %.2f %.2f %.2f %.2f %.2f %.2f %.2f %.2f %.2f %.2f %.2f %.2f \n", 
-            //         tidx,  acc_o(0), acc_o(1), acc_o(2), acc_o(3), 
-            //         acc_o(4), acc_o(5), acc_o(6), acc_o(7),     
-            //         acc_o(8), acc_o(9), acc_o(10), acc_o(11), 
+            //     print("tidx %d acc_s %.2f %.2f %.2f %.2f %.2f %.2f %.2f %.2f %.2f %.2f %.2f %.2f %.2f %.2f %.2f %.2f \n",
+            //         tidx,  acc_o(0), acc_o(1), acc_o(2), acc_o(3),
+            //         acc_o(4), acc_o(5), acc_o(6), acc_o(7),
+            //         acc_o(8), acc_o(9), acc_o(10), acc_o(11),
             //         acc_o(12), acc_o(13), acc_o(14), acc_o(15)
             //     );
             // }
@@ -1279,15 +1352,15 @@ __device__ void KernelTemplate<D_QK, HAVE_TOPK_LENGTH>::devfunc(const SparseAttn
     float* gLSE = reinterpret_cast<float *>(params.lse) + row_offset_lse;
     // const index_t row_offset_lse = m_block * params.h_q;
     float* gMax_logits = reinterpret_cast<float *>(params.max_logits) + row_offset_lse;
-    
+
     if (params.attn_sink != nullptr) {
-        float rAttn_sink = __ldg((float*)params.attn_sink + bidh * kBlockM + lane_idx % 16); 
+        float rAttn_sink = __ldg((float*)params.attn_sink + bidh * kBlockM + lane_idx % 16);
         if (flash::is_positive_infinity(rAttn_sink))
         {
             for (int i = 0; i < size(acc_o); i++)
             {
                 acc_o(i) = 0.0f;
-            } 
+            }
         }
         else
         {
@@ -1305,10 +1378,10 @@ __device__ void KernelTemplate<D_QK, HAVE_TOPK_LENGTH>::devfunc(const SparseAttn
     }
             //                 if (block0())
             // {
-            //     print("tidx %d acc_s %.2f %.2f %.2f %.2f %.2f %.2f %.2f %.2f %.2f %.2f %.2f %.2f %.2f %.2f %.2f %.2f \n", 
-            //         tidx,  acc_o(0), acc_o(1), acc_o(2), acc_o(3), 
-            //         acc_o(4), acc_o(5), acc_o(6), acc_o(7),     
-            //         acc_o(8), acc_o(9), acc_o(10), acc_o(11), 
+            //     print("tidx %d acc_s %.2f %.2f %.2f %.2f %.2f %.2f %.2f %.2f %.2f %.2f %.2f %.2f %.2f %.2f %.2f %.2f \n",
+            //         tidx,  acc_o(0), acc_o(1), acc_o(2), acc_o(3),
+            //         acc_o(4), acc_o(5), acc_o(6), acc_o(7),
+            //         acc_o(8), acc_o(9), acc_o(10), acc_o(11),
             //         acc_o(12), acc_o(13), acc_o(14), acc_o(15)
             //     );
             // }
@@ -1336,7 +1409,7 @@ __device__ void KernelTemplate<D_QK, HAVE_TOPK_LENGTH>::devfunc(const SparseAttn
             if (row < params.h_q) {
                 for (int ni = 0; ni < size<2>(acc_o); ++ni) {
                     col = (laneId / 16) * 2 + ni * 128 + warpId * 32 ;
-                    
+
                     using result_type = cutlass::Array<Element, 2>;
                     for (int ei = 0; ei < 4; ei++)
                     {
@@ -1433,9 +1506,9 @@ void KernelTemplate_B_H_64<D_QK, HAVE_TOPK_LENGTH, IS_TOPK_2048, USE_ATTN_SINK, 
 
 template<int D_QK, bool HAVE_TOPK_LENGTH, bool USE_ATTN_SINK>
 static void run_h64_fast_path(const SparseAttnFwdParams& params) {
-    if (params.topk == 2048) {
+    if (params.extra_topk == 0 && params.topk == 2048) {
         KernelTemplate_B_H_64<D_QK, HAVE_TOPK_LENGTH, true, USE_ATTN_SINK, false>::run(params);
-    } else if (params.topk <= 1024) {
+    } else if (params.extra_topk == 0 && params.topk <= 1024) {
         KernelTemplate_B_H_64<D_QK, HAVE_TOPK_LENGTH, false, USE_ATTN_SINK, true>::run(params);
     } else {
         KernelTemplate_B_H_64<D_QK, HAVE_TOPK_LENGTH, false, USE_ATTN_SINK, false>::run(params);
@@ -1444,9 +1517,9 @@ static void run_h64_fast_path(const SparseAttnFwdParams& params) {
 
 template<int D_QK, bool HAVE_TOPK_LENGTH, bool USE_ATTN_SINK>
 static void run_h64_c_load_fast_path(const SparseAttnFwdParams& params) {
-    if (params.topk == 2048) {
+    if (params.extra_topk == 0 && params.topk == 2048) {
         KernelTemplate_B_H_64<D_QK, HAVE_TOPK_LENGTH, true, USE_ATTN_SINK, false, false, true>::run(params);
-    } else if (params.topk <= 1024) {
+    } else if (params.extra_topk == 0 && params.topk <= 1024) {
         KernelTemplate_B_H_64<D_QK, HAVE_TOPK_LENGTH, false, USE_ATTN_SINK, true, false, true>::run(params);
     } else {
         KernelTemplate_B_H_64<D_QK, HAVE_TOPK_LENGTH, false, USE_ATTN_SINK, false, false, true>::run(params);
@@ -1486,7 +1559,7 @@ void run_fwd_phase1_splitkv_kernel(const SparseAttnFwdParams& params) {
     KU_ASSERT(params.split_b > 0);
     KU_ASSERT(params.split_num_splits >= 1);
     KU_ASSERT(params.split_partition_size > 0);
-    if (params.split_partition_size <= 1024) {
+    if (params.extra_topk == 0 && params.split_partition_size <= 1024) {
         if (params.split_decode_c_load) {
             KernelTemplate_B_H_64<D_QK, HAVE_TOPK_LENGTH, false, false, true, true, true>::run(params);
         } else {

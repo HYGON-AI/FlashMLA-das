@@ -172,7 +172,14 @@ static std::vector<at::Tensor> sparse_attn_prefill_interface(
         nullptr,
         0, 0,
         0, 0, 0,
-        false
+        false,
+
+        0, 0,
+        nullptr,
+        nullptr,
+        nullptr,
+        0, 0,
+        0, 0, 0
     };
 
     const bool disable_small_d576_splitkv = std::getenv("FLASH_MLA_DISABLE_PREFILL_SPLITKV_SMALL") != nullptr;
