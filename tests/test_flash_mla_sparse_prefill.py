@@ -74,9 +74,10 @@ def run_test(p: TestParam) -> bool:
         bench_result = kk.bench_kineto(run_prefill, num_tests=p.num_runs)
         kernel_names = bench_result.get_kernel_names()
         prefill_kernel_name_candidates = [
+            "flash_mla_dsa_prefill_h64_topk2048_fast_kernel",
+            "flash_mla_dsa_prefill_h64_kernel",
+            "flash_mla_dsa_prefill_h64_topk1024_kernel",
             "sparse_attn_fwd",
-            "flash_fwd_mla_decode_kernel_gfx938_dsa_prefill_topk2048_fast_nopage_64",
-            "flash_fwd_mla_decode_kernel_gfx938_dsa_prefill_nopage_64",
         ]
         prefill_kernel_name = next(
             (candidate for candidate in prefill_kernel_name_candidates

@@ -188,8 +188,9 @@ def test_flash_mla(p: TestParam) -> Result:
                 combine_kernel_name = "flash_fwd_mla_combine_kernel"
             else:
                 main_kernel_names = [
-                    "flash_fwd_mla_decode_kernel_gfx938_dsa_nopage_64_splitkv",
-                    "flash_fwd_mla_decode_kernel_gfx938_dsa_nopage_64<",
+                    "flash_mla_dsa_decode_h64_splitkv_direct_kernel",
+                    "flash_mla_dsa_decode_h64_splitkv_kernel",
+                    "flash_mla_dsa_decode_h64_kernel",
                 ]
                 combine_kernel_name = "flash_mla_splitkv_reduce_kernel"
         else:

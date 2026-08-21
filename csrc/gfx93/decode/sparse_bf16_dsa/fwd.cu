@@ -662,7 +662,7 @@ run(
     }
 
     hipStream_t stream = reinterpret_cast<hipStream_t>(at::cuda::getCurrentCUDAStream().stream());
-    gfx93::fwd::dsa_mls::run_dsa_prefill_nopage_64_dispatch<BFloat16, 512, 512>(params, stream);
+    gfx93::fwd::dsa_mls::run_dsa_mls_h64_dispatch<BFloat16, 512, 512>(params, stream);
 
     if (params.num_splits > 1) {
         CombineParams combine_params = {

@@ -122,7 +122,7 @@ __forceinline__ __device__ void prefetch_v_to_lds_mls_ds_576_512_buffer_load_nop
 }
 
 template<int kHeadDim, int kBlockM, int kBlockN, int kBlockK, int WARP_M, int WARP_N, typename Element, bool Is_even_MN>
-__forceinline__ __device__ void prefetch_v_to_lds_mls_ds_576_512_buffer_load_nopage_64(
+__forceinline__ __device__ void prefetch_v_to_lds_mla_dsa_h64_legacy_contiguous_d576(
         vec4_uint v_ptr,
         Element* v_lds,
         int warp_id,
