@@ -38,7 +38,7 @@ __forceinline__ __device__ void qk_gemm_prefetch_v_mls_ds_576_512(
     constexpr int K_LDS_LOAD_NUM  = (kHeadDim_OPT * WARP_N) / (32 * 16);
     constexpr int K_LOAD_REQUESTS = K_LDS_LOAD_NUM / WARP_NUM;
     constexpr int ELEMENT_BYTES   = sizeof(Element);
-    constexpr int WARP_NUM_M = 2; 
+    constexpr int WARP_NUM_M = 2;
     constexpr int WARP_NUM_N = 4;
     int warp_id_m = warp_id / WARP_NUM_N;
     int warp_id_n = warp_id % WARP_NUM_N;
@@ -75,8 +75,8 @@ __forceinline__ __device__ void qk_gemm_prefetch_v_mls_ds_576_512(
     } else {
         k_srsrc[2] = seqlen_v_stride;
     }
-    
-    q_srsrc[3] = 0; 
+
+    q_srsrc[3] = 0;
     k_srsrc[3] = 0;
 
     int q_stage_id = 0;
@@ -87,11 +87,11 @@ __forceinline__ __device__ void qk_gemm_prefetch_v_mls_ds_576_512(
         k_stage_id ^= 1;
     }
 
-    {   
+    {
         for(int k_loop = 1; k_loop < (kHeadDim / kBlockK); ++k_loop) {
             // k预取的标志位
             int k_even = ((k_loop & 1) == 0x0) ? 1 : 0;
-            
+
             {
                 uint64_t q_base_addr;
                 int seqlen_q_stride;
@@ -114,14 +114,14 @@ __forceinline__ __device__ void qk_gemm_prefetch_v_mls_ds_576_512(
                 int lds_offset = (q_stage_id * kBlockM * kBlockK + warp_id * 16 * 32) * ELEMENT_BYTES;
                 flash::wait_all_warp_arrived();
                 inline_matrix_load_32x16_b16_lds_trans<0, 1>(q_lds, q_srsrc, lds_offset, 0);
-                
+
                 if (k_even) {
                     k_stage_id ^= 1;
                     int index_topk = index_ptr[n_loop * 64 + warp_id_n * 16 + (tid / 4)];
                     int lds_offset = __builtin_amdgcn_readfirstlane((k_stage_id * WARP_N * kHeadDim_OPT + warp_id * 32 * 16) * ELEMENT_BYTES / 4);
                     int g_offset_v = ((k_loop) / 2) * kHeadDim_OPT * ELEMENT_BYTES / 4 + warp_id_m * 16 + ((4 - (tid / 8) % 4) * 4 + tid % 4 * 4) % 16 + block_table[index_topk/128] * batch_stride_k * ELEMENT_BYTES / 4 + (index_topk % 128) * seqlen_k_stride * ELEMENT_BYTES / 4;
                     flash::wait_all_warp_arrived();
-                    inline_buffer_load_dwordx4_lds(k_lds, k_ptr, lds_offset, 0, g_offset_v); 
+                    inline_buffer_load_dwordx4_lds(k_lds, k_ptr, lds_offset, 0, g_offset_v);
 
                     // k_stage_id ^= 1;
                     // int nm_filter =  inline_min_max<0,16>(16 * warp_id_n + 16 - max_seq_k_offset);
@@ -143,19 +143,19 @@ __forceinline__ __device__ void qk_gemm_prefetch_v_mls_ds_576_512(
             } else {
                 flash::wait_buffer_data_arrived<true>(Q_LOAD_REQUESTS);
             }
-            
+
             q_stage_id ^= 1;
 
             // Q DS
             {
                 int q_lds_load_offset = q_lds_base + (q_stage_id * kBlockM * kBlockK + warp_id * 16 * 32) * ELEMENT_BYTES;
-                DS_READ_MATRIX_32X16_B16(q_lds_load_offset, q_reg[0].f16, true);  
+                DS_READ_MATRIX_32X16_B16(q_lds_load_offset, q_reg[0].f16, true);
             }
 
             k_stage_id ^= 1;
             int stage_id = 0;
 
-            // K DS  
+            // K DS
             {
                 int k_lds_load_offset = k_lds_base + (k_stage_id * WARP_N * kHeadDim_OPT + k_even * 32 * 64 + 0 * 32 * 32) * ELEMENT_BYTES;
                 DS_READ_MATRIX_32X32_B16(k_lds_load_offset, k_reg[stage_id * 2].f16, k_reg[stage_id * 2 + 1].f16, true);
@@ -172,9 +172,9 @@ __forceinline__ __device__ void qk_gemm_prefetch_v_mls_ds_576_512(
             flash::wait_lds_data_arrived<false>(2);
             flash::raise_priority();
 
-            // MMAC 
+            // MMAC
             stage_id ^= 1;
-            { 
+            {
                 int min_tile_n = 0;
                 #pragma unroll
                 for(int min_tile_k = 0; min_tile_k < 2; ++min_tile_k) {
@@ -186,7 +186,7 @@ __forceinline__ __device__ void qk_gemm_prefetch_v_mls_ds_576_512(
                 }
             }
 
-            { 
+            {
                 int min_tile_n = 1;
                 #pragma unroll
                 for(int min_tile_k = 0; min_tile_k < 2; ++min_tile_k) {
@@ -202,7 +202,7 @@ __forceinline__ __device__ void qk_gemm_prefetch_v_mls_ds_576_512(
             flash::wait_lds_data_arrived<false>(0);
             flash::raise_priority();
             stage_id ^= 1;
-            { 
+            {
                 int min_tile_n = 0;
                 #pragma unroll
                 for(int min_tile_k = 0; min_tile_k < 2; ++min_tile_k) {
@@ -214,7 +214,7 @@ __forceinline__ __device__ void qk_gemm_prefetch_v_mls_ds_576_512(
                 }
             }
 
-            { 
+            {
                 int min_tile_n = 1;
                 #pragma unroll
                 for(int min_tile_k = 0; min_tile_k < 2; ++min_tile_k) {
@@ -227,11 +227,11 @@ __forceinline__ __device__ void qk_gemm_prefetch_v_mls_ds_576_512(
             }
 
             flash::lower_priority();
-            
+
         }
-        
-        constexpr int k_loop = kHeadDim / kBlockK; 
-        constexpr int k_even = ((k_loop & 1) == 0x0) ? 1 : 0; 
+
+        constexpr int k_loop = kHeadDim / kBlockK;
+        constexpr int k_even = ((k_loop & 1) == 0x0) ? 1 : 0;
 
         if constexpr (k_even) {
             k_stage_id ^= 1;
@@ -244,13 +244,13 @@ __forceinline__ __device__ void qk_gemm_prefetch_v_mls_ds_576_512(
         q_stage_id ^= 1;
         {
             int q_lds_load_offset = q_lds_base + (q_stage_id * kBlockM * kBlockK + warp_id * 16 * 32) * ELEMENT_BYTES;
-            DS_READ_MATRIX_32X16_B16(q_lds_load_offset, q_reg[0].f16, true);  
+            DS_READ_MATRIX_32X16_B16(q_lds_load_offset, q_reg[0].f16, true);
         }
 
-        // K DS  
+        // K DS
         k_stage_id ^= 1;
         int stage_id = 0;
-        {   
+        {
             int k_lds_load_offset = k_lds_base + (k_stage_id * WARP_N * kHeadDim_OPT + k_even * 32 * 64 + 0 * 32 * 32) * ELEMENT_BYTES;
             DS_READ_MATRIX_32X32_B16(k_lds_load_offset, k_reg[stage_id * 2].f16, k_reg[stage_id * 2 + 1].f16, true);
         }
@@ -266,9 +266,9 @@ __forceinline__ __device__ void qk_gemm_prefetch_v_mls_ds_576_512(
         flash::wait_lds_data_arrived<false>(2);
         flash::raise_priority();
 
-        // MMAC 
+        // MMAC
         stage_id ^= 1;
-        { 
+        {
             int min_tile_n = 0;
             #pragma unroll
             for(int min_tile_k = 0; min_tile_k < 2; ++min_tile_k) {
@@ -280,7 +280,7 @@ __forceinline__ __device__ void qk_gemm_prefetch_v_mls_ds_576_512(
             }
         }
 
-        { 
+        {
             int min_tile_n = 1;
             #pragma unroll
             for(int min_tile_k = 0; min_tile_k < 2; ++min_tile_k) {
@@ -296,7 +296,7 @@ __forceinline__ __device__ void qk_gemm_prefetch_v_mls_ds_576_512(
         flash::wait_lds_data_arrived<false>(0);
         flash::raise_priority();
         stage_id ^= 1;
-        { 
+        {
             int min_tile_n = 0;
             #pragma unroll
             for(int min_tile_k = 0; min_tile_k < 2; ++min_tile_k) {
@@ -308,7 +308,7 @@ __forceinline__ __device__ void qk_gemm_prefetch_v_mls_ds_576_512(
             }
         }
 
-        { 
+        {
             int min_tile_n = 1;
             #pragma unroll
             for(int min_tile_k = 0; min_tile_k < 2; ++min_tile_k) {
@@ -368,7 +368,7 @@ __forceinline__ __device__ void qk_gemm_prefetch_v_mls_ds_576_512_nopage(
     constexpr int K_LDS_LOAD_NUM  = (kHeadDim_OPT * WARP_N) / (32 * 16);
     constexpr int K_LOAD_REQUESTS = K_LDS_LOAD_NUM / WARP_NUM;
     constexpr int ELEMENT_BYTES   = sizeof(Element);
-    constexpr int WARP_NUM_M = 2; 
+    constexpr int WARP_NUM_M = 2;
     constexpr int WARP_NUM_N = 4;
     int warp_id_m = warp_id / WARP_NUM_N;
     int warp_id_n = warp_id % WARP_NUM_N;
@@ -405,8 +405,8 @@ __forceinline__ __device__ void qk_gemm_prefetch_v_mls_ds_576_512_nopage(
     } else {
         k_srsrc[2] = seqlen_v_stride;
     }
-    
-    q_srsrc[3] = 0; 
+
+    q_srsrc[3] = 0;
     k_srsrc[3] = 0;
 
     int q_stage_id = 0;
@@ -417,11 +417,11 @@ __forceinline__ __device__ void qk_gemm_prefetch_v_mls_ds_576_512_nopage(
         k_stage_id ^= 1;
     }
 
-    {   
+    {
         for(int k_loop = 1; k_loop < (kHeadDim / kBlockK); ++k_loop) {
             // k预取的标志位
             int k_even = ((k_loop & 1) == 0x0) ? 1 : 0;
-            
+
             {
                 uint64_t q_base_addr;
                 int seqlen_q_stride;
@@ -444,14 +444,14 @@ __forceinline__ __device__ void qk_gemm_prefetch_v_mls_ds_576_512_nopage(
                 int lds_offset = (q_stage_id * kBlockM * kBlockK + warp_id * 16 * 32) * ELEMENT_BYTES;
                 flash::wait_all_warp_arrived();
                 inline_matrix_load_32x16_b16_lds_trans<0, 1>(q_lds, q_srsrc, lds_offset, 0);
-                
+
                 if (k_even) {
                     k_stage_id ^= 1;
                     int index_topk = index_ptr[n_loop * 64 + warp_id_n * 16 + (tid / 4)];
                     int lds_offset = __builtin_amdgcn_readfirstlane((k_stage_id * WARP_N * kHeadDim_OPT + warp_id * 32 * 16) * ELEMENT_BYTES / 4);
                     int g_offset_v = ((k_loop) / 2) * kHeadDim_OPT * ELEMENT_BYTES / 4 + warp_id_m * 16 + ((4 - (tid / 8) % 4) * 4 + tid % 4 * 4) % 16 + index_topk * seqlen_k_stride * ELEMENT_BYTES / 4;
                     flash::wait_all_warp_arrived();
-                    inline_buffer_load_dwordx4_lds(k_lds, k_ptr, lds_offset, 0, g_offset_v); 
+                    inline_buffer_load_dwordx4_lds(k_lds, k_ptr, lds_offset, 0, g_offset_v);
 
                     // k_stage_id ^= 1;
                     // int nm_filter =  inline_min_max<0,16>(16 * warp_id_n + 16 - max_seq_k_offset);
@@ -473,19 +473,19 @@ __forceinline__ __device__ void qk_gemm_prefetch_v_mls_ds_576_512_nopage(
             } else {
                 flash::wait_buffer_data_arrived<true>(Q_LOAD_REQUESTS);
             }
-            
+
             q_stage_id ^= 1;
 
             // Q DS
             {
                 int q_lds_load_offset = q_lds_base + (q_stage_id * kBlockM * kBlockK + warp_id * 16 * 32) * ELEMENT_BYTES;
-                DS_READ_MATRIX_32X16_B16(q_lds_load_offset, q_reg[0].f16, true);  
+                DS_READ_MATRIX_32X16_B16(q_lds_load_offset, q_reg[0].f16, true);
             }
 
             k_stage_id ^= 1;
             int stage_id = 0;
 
-            // K DS  
+            // K DS
             {
                 int k_lds_load_offset = k_lds_base + (k_stage_id * WARP_N * kHeadDim_OPT + k_even * 32 * 64 + 0 * 32 * 32) * ELEMENT_BYTES;
                 DS_READ_MATRIX_32X32_B16(k_lds_load_offset, k_reg[stage_id * 2].f16, k_reg[stage_id * 2 + 1].f16, true);
@@ -502,9 +502,9 @@ __forceinline__ __device__ void qk_gemm_prefetch_v_mls_ds_576_512_nopage(
             flash::wait_lds_data_arrived<false>(2);
             flash::raise_priority();
 
-            // MMAC 
+            // MMAC
             stage_id ^= 1;
-            { 
+            {
                 int min_tile_n = 0;
                 #pragma unroll
                 for(int min_tile_k = 0; min_tile_k < 2; ++min_tile_k) {
@@ -516,7 +516,7 @@ __forceinline__ __device__ void qk_gemm_prefetch_v_mls_ds_576_512_nopage(
                 }
             }
 
-            { 
+            {
                 int min_tile_n = 1;
                 #pragma unroll
                 for(int min_tile_k = 0; min_tile_k < 2; ++min_tile_k) {
@@ -532,7 +532,7 @@ __forceinline__ __device__ void qk_gemm_prefetch_v_mls_ds_576_512_nopage(
             flash::wait_lds_data_arrived<false>(0);
             flash::raise_priority();
             stage_id ^= 1;
-            { 
+            {
                 int min_tile_n = 0;
                 #pragma unroll
                 for(int min_tile_k = 0; min_tile_k < 2; ++min_tile_k) {
@@ -544,7 +544,7 @@ __forceinline__ __device__ void qk_gemm_prefetch_v_mls_ds_576_512_nopage(
                 }
             }
 
-            { 
+            {
                 int min_tile_n = 1;
                 #pragma unroll
                 for(int min_tile_k = 0; min_tile_k < 2; ++min_tile_k) {
@@ -557,11 +557,11 @@ __forceinline__ __device__ void qk_gemm_prefetch_v_mls_ds_576_512_nopage(
             }
 
             flash::lower_priority();
-            
+
         }
-        
-        constexpr int k_loop = kHeadDim / kBlockK; 
-        constexpr int k_even = ((k_loop & 1) == 0x0) ? 1 : 0; 
+
+        constexpr int k_loop = kHeadDim / kBlockK;
+        constexpr int k_even = ((k_loop & 1) == 0x0) ? 1 : 0;
 
         if constexpr (k_even) {
             k_stage_id ^= 1;
@@ -574,13 +574,13 @@ __forceinline__ __device__ void qk_gemm_prefetch_v_mls_ds_576_512_nopage(
         q_stage_id ^= 1;
         {
             int q_lds_load_offset = q_lds_base + (q_stage_id * kBlockM * kBlockK + warp_id * 16 * 32) * ELEMENT_BYTES;
-            DS_READ_MATRIX_32X16_B16(q_lds_load_offset, q_reg[0].f16, true);  
+            DS_READ_MATRIX_32X16_B16(q_lds_load_offset, q_reg[0].f16, true);
         }
 
-        // K DS  
+        // K DS
         k_stage_id ^= 1;
         int stage_id = 0;
-        {   
+        {
             int k_lds_load_offset = k_lds_base + (k_stage_id * WARP_N * kHeadDim_OPT + k_even * 32 * 64 + 0 * 32 * 32) * ELEMENT_BYTES;
             DS_READ_MATRIX_32X32_B16(k_lds_load_offset, k_reg[stage_id * 2].f16, k_reg[stage_id * 2 + 1].f16, true);
         }
@@ -596,9 +596,9 @@ __forceinline__ __device__ void qk_gemm_prefetch_v_mls_ds_576_512_nopage(
         flash::wait_lds_data_arrived<false>(2);
         flash::raise_priority();
 
-        // MMAC 
+        // MMAC
         stage_id ^= 1;
-        { 
+        {
             int min_tile_n = 0;
             #pragma unroll
             for(int min_tile_k = 0; min_tile_k < 2; ++min_tile_k) {
@@ -610,7 +610,7 @@ __forceinline__ __device__ void qk_gemm_prefetch_v_mls_ds_576_512_nopage(
             }
         }
 
-        { 
+        {
             int min_tile_n = 1;
             #pragma unroll
             for(int min_tile_k = 0; min_tile_k < 2; ++min_tile_k) {
@@ -626,7 +626,7 @@ __forceinline__ __device__ void qk_gemm_prefetch_v_mls_ds_576_512_nopage(
         flash::wait_lds_data_arrived<false>(0);
         flash::raise_priority();
         stage_id ^= 1;
-        { 
+        {
             int min_tile_n = 0;
             #pragma unroll
             for(int min_tile_k = 0; min_tile_k < 2; ++min_tile_k) {
@@ -638,7 +638,7 @@ __forceinline__ __device__ void qk_gemm_prefetch_v_mls_ds_576_512_nopage(
             }
         }
 
-        { 
+        {
             int min_tile_n = 1;
             #pragma unroll
             for(int min_tile_k = 0; min_tile_k < 2; ++min_tile_k) {
@@ -665,7 +665,7 @@ __forceinline__ __device__ void qk_gemm_prefetch_v_mls_ds_576_512_nopage(
 } // qk_gemm
 
 template<int kHeadDim, int kHeadDimV, int kBlockM, int kBlockN, int kBlockK, int WARP_M, int WARP_N, int STAGES, typename Element, typename ElementAccum, bool Is_even_MN, bool Is_FlashMLA>
-__forceinline__ __device__ void qk_gemm_prefetch_v_mls_ds_576_512_nopage_64(
+__forceinline__ __device__ void qk_mla_dsa_h64_legacy_contiguous_d576(
         vec4_uint qv_ptr,
         vec4_uint q_ptr,
         vec4_uint k_ptr,
@@ -698,7 +698,7 @@ __forceinline__ __device__ void qk_gemm_prefetch_v_mls_ds_576_512_nopage_64(
     constexpr int K_LDS_LOAD_NUM  = (kHeadDim_OPT * WARP_N) / (32 * 16);
     constexpr int K_LOAD_REQUESTS = K_LDS_LOAD_NUM / WARP_NUM;
     constexpr int ELEMENT_BYTES   = sizeof(Element);
-    constexpr int WARP_NUM_M = 1; 
+    constexpr int WARP_NUM_M = 1;
     constexpr int WARP_NUM_N = 4;
     int warp_id_m = warp_id / WARP_NUM_N;
     int warp_id_n = warp_id % WARP_NUM_N;
@@ -735,8 +735,8 @@ __forceinline__ __device__ void qk_gemm_prefetch_v_mls_ds_576_512_nopage_64(
     } else {
         k_srsrc[2] = seqlen_v_stride;
     }
-    
-    q_srsrc[3] = 0; 
+
+    q_srsrc[3] = 0;
     k_srsrc[3] = 0;
 
     int q_stage_id = 0;
@@ -747,9 +747,9 @@ __forceinline__ __device__ void qk_gemm_prefetch_v_mls_ds_576_512_nopage_64(
         k_stage_id ^= 1;
     }
 
-    {   
+    {
         for(int k_loop = 1; k_loop < (kHeadDim / kBlockK); ++k_loop) {
-            
+
             {
                 uint64_t q_base_addr;
                 int seqlen_q_stride;
@@ -772,12 +772,12 @@ __forceinline__ __device__ void qk_gemm_prefetch_v_mls_ds_576_512_nopage_64(
                 int lds_offset = (q_stage_id * kBlockM * kBlockK + warp_id * 16 * 32) * ELEMENT_BYTES;
                 flash::wait_all_warp_arrived();
                 inline_matrix_load_32x16_b16_lds_trans<0, 1>(q_lds, q_srsrc, lds_offset, 0);
-                
+
                 int index_topk = index_ptr[n_loop * 64 + warp_id_n * 16 + (tid / 4)];
                 lds_offset = __builtin_amdgcn_readfirstlane((k_stage_id * WARP_N * kHeadDim_OPT + warp_id * 32 * 16) * ELEMENT_BYTES / 4);
                 int g_offset_v = k_loop * kHeadDim_OPT * ELEMENT_BYTES / 4 + warp_id_m * 16 + ((4 - (tid / 8) % 4) * 4 + tid % 4 * 4) % 16 + index_topk * seqlen_k_stride * ELEMENT_BYTES / 4;
                 flash::wait_all_warp_arrived();
-                inline_buffer_load_dwordx4_lds(k_lds, k_ptr, lds_offset, 0, g_offset_v); 
+                inline_buffer_load_dwordx4_lds(k_lds, k_ptr, lds_offset, 0, g_offset_v);
 
                     // k_stage_id ^= 1;
                     // int nm_filter =  inline_min_max<0,16>(16 * warp_id_n + 16 - max_seq_k_offset);
@@ -795,19 +795,19 @@ __forceinline__ __device__ void qk_gemm_prefetch_v_mls_ds_576_512_nopage_64(
             // 不对称MLS指令
             flash::wait_buffer_data_arrived<true>(Q_LOAD_REQUESTS + K_LOAD_REQUESTS);
 
-            
+
             q_stage_id ^= 1;
 
             // Q DS
             {
                 int q_lds_load_offset = q_lds_base + (q_stage_id * kBlockM * kBlockK + warp_id * 16 * 32) * ELEMENT_BYTES;
-                DS_READ_MATRIX_32X16_B16(q_lds_load_offset, q_reg[0].f16, true);  
+                DS_READ_MATRIX_32X16_B16(q_lds_load_offset, q_reg[0].f16, true);
             }
 
             k_stage_id ^= 1;
             int stage_id = 0;
 
-            // K DS  
+            // K DS
             {
                 int k_lds_load_offset = k_lds_base + (k_stage_id * WARP_N * kHeadDim_OPT + 0 * 32 * 32) * ELEMENT_BYTES;
                 DS_READ_MATRIX_32X32_B16(k_lds_load_offset, k_reg[stage_id * 2].f16, k_reg[stage_id * 2 + 1].f16, true);
@@ -824,9 +824,9 @@ __forceinline__ __device__ void qk_gemm_prefetch_v_mls_ds_576_512_nopage_64(
             flash::wait_lds_data_arrived<false>(2);
             flash::raise_priority();
 
-            // MMAC 
+            // MMAC
             stage_id ^= 1;
-            { 
+            {
                 int min_tile_n = 0;
                 #pragma unroll
                 for(int min_tile_k = 0; min_tile_k < 2; ++min_tile_k) {
@@ -838,7 +838,7 @@ __forceinline__ __device__ void qk_gemm_prefetch_v_mls_ds_576_512_nopage_64(
                 }
             }
 
-            { 
+            {
                 int min_tile_n = 1;
                 #pragma unroll
                 for(int min_tile_k = 0; min_tile_k < 2; ++min_tile_k) {
@@ -854,7 +854,7 @@ __forceinline__ __device__ void qk_gemm_prefetch_v_mls_ds_576_512_nopage_64(
             flash::wait_lds_data_arrived<false>(0);
             flash::raise_priority();
             stage_id ^= 1;
-            { 
+            {
                 int min_tile_n = 0;
                 #pragma unroll
                 for(int min_tile_k = 0; min_tile_k < 2; ++min_tile_k) {
@@ -866,7 +866,7 @@ __forceinline__ __device__ void qk_gemm_prefetch_v_mls_ds_576_512_nopage_64(
                 }
             }
 
-            { 
+            {
                 int min_tile_n = 1;
                 #pragma unroll
                 for(int min_tile_k = 0; min_tile_k < 2; ++min_tile_k) {
@@ -879,7 +879,7 @@ __forceinline__ __device__ void qk_gemm_prefetch_v_mls_ds_576_512_nopage_64(
             }
 
             flash::lower_priority();
-            
+
         }
 
         // 等回最后的q_panel
@@ -889,13 +889,13 @@ __forceinline__ __device__ void qk_gemm_prefetch_v_mls_ds_576_512_nopage_64(
         q_stage_id ^= 1;
         {
             int q_lds_load_offset = q_lds_base + (q_stage_id * kBlockM * kBlockK + warp_id * 16 * 32) * ELEMENT_BYTES;
-            DS_READ_MATRIX_32X16_B16(q_lds_load_offset, q_reg[0].f16, true);  
+            DS_READ_MATRIX_32X16_B16(q_lds_load_offset, q_reg[0].f16, true);
         }
 
-        // K DS  
+        // K DS
         k_stage_id ^= 1;
         int stage_id = 0;
-        {   
+        {
             int k_lds_load_offset = k_lds_base + (k_stage_id * WARP_N * kHeadDim_OPT + 0 * 32 * 32) * ELEMENT_BYTES;
             DS_READ_MATRIX_32X32_B16(k_lds_load_offset, k_reg[stage_id * 2].f16, k_reg[stage_id * 2 + 1].f16, true);
         }
@@ -911,9 +911,9 @@ __forceinline__ __device__ void qk_gemm_prefetch_v_mls_ds_576_512_nopage_64(
         flash::wait_lds_data_arrived<false>(2);
         flash::raise_priority();
 
-        // MMAC 
+        // MMAC
         stage_id ^= 1;
-        { 
+        {
             int min_tile_n = 0;
             #pragma unroll
             for(int min_tile_k = 0; min_tile_k < 2; ++min_tile_k) {
@@ -925,7 +925,7 @@ __forceinline__ __device__ void qk_gemm_prefetch_v_mls_ds_576_512_nopage_64(
             }
         }
 
-        { 
+        {
             int min_tile_n = 1;
             #pragma unroll
             for(int min_tile_k = 0; min_tile_k < 2; ++min_tile_k) {
@@ -941,7 +941,7 @@ __forceinline__ __device__ void qk_gemm_prefetch_v_mls_ds_576_512_nopage_64(
         flash::wait_lds_data_arrived<false>(0);
         flash::raise_priority();
         stage_id ^= 1;
-        { 
+        {
             int min_tile_n = 0;
             #pragma unroll
             for(int min_tile_k = 0; min_tile_k < 2; ++min_tile_k) {
@@ -953,7 +953,7 @@ __forceinline__ __device__ void qk_gemm_prefetch_v_mls_ds_576_512_nopage_64(
             }
         }
 
-        { 
+        {
             int min_tile_n = 1;
             #pragma unroll
             for(int min_tile_k = 0; min_tile_k < 2; ++min_tile_k) {
@@ -971,7 +971,7 @@ __forceinline__ __device__ void qk_gemm_prefetch_v_mls_ds_576_512_nopage_64(
 
     if constexpr (STAGES == 2) {
     #if defined(__gfx938__) || defined(__gfx946__) || (defined(__gfx92a__) && defined(YY_USE_MPERMUTE))
-        prefetch_v_to_lds_mls_ds_576_512_buffer_load_nopage_64<kHeadDimV, kBlockM, kBlockK, kBlockN, WARP_M, kBlockK, Element, Is_even_MN>(v_ptr, v_lds, warp_id, seqlen_v_stride, index_ptr, batch_stride_v, n_loop, max_seq_k_offset);
+        prefetch_v_to_lds_mla_dsa_h64_legacy_contiguous_d576<kHeadDimV, kBlockM, kBlockK, kBlockN, WARP_M, kBlockK, Element, Is_even_MN>(v_ptr, v_lds, warp_id, seqlen_v_stride, index_ptr, batch_stride_v, n_loop, max_seq_k_offset);
     #else
 
     #endif
@@ -979,11 +979,11 @@ __forceinline__ __device__ void qk_gemm_prefetch_v_mls_ds_576_512_nopage_64(
 }
 
 template<int kHeadDim, int kHeadDimV, int kBlockM, int kBlockN, int kBlockK, int WARP_M, int WARP_N, int STAGES, typename Element, typename ElementAccum, bool Is_even_MN, bool Is_FlashMLA>
-__forceinline__ __device__ void qk_gemm_prefetch_v_mls_ds_576_512_nopage_64_new(
+__forceinline__ __device__ void qk_mla_dsa_h64_archived_indexed_d576(
         vec4_uint qv_ptr,
         vec4_uint q_ptr,
         vec4_uint k_ptr,
-        Element* v_faker,
+        Element* v_base_ptr,
         Element* q_lds,
         Element* k_lds,
         Element* v_lds,
@@ -1013,7 +1013,7 @@ __forceinline__ __device__ void qk_gemm_prefetch_v_mls_ds_576_512_nopage_64_new(
     constexpr int K_LDS_LOAD_NUM  = (kHeadDim_OPT * WARP_N) / (32 * 16);
     constexpr int K_LOAD_REQUESTS = K_LDS_LOAD_NUM / WARP_NUM;
     constexpr int ELEMENT_BYTES   = sizeof(Element);
-    constexpr int WARP_NUM_M = 1; 
+    constexpr int WARP_NUM_M = 1;
     constexpr int WARP_NUM_N = 4;
     int warp_id_m = warp_id / WARP_NUM_N;
     int warp_id_n = warp_id % WARP_NUM_N;
@@ -1046,7 +1046,7 @@ __forceinline__ __device__ void qk_gemm_prefetch_v_mls_ds_576_512_nopage_64_new(
     } else {
         k_srsrc[2] = seqlen_v_stride;
     }
-    
+
     k_srsrc[3] = 0;
 
     int k_stage_id = 0;
@@ -1056,22 +1056,22 @@ __forceinline__ __device__ void qk_gemm_prefetch_v_mls_ds_576_512_nopage_64_new(
     int g_offset_v = ((4 - (tid / 8) % 4) * 4 + tid % 4 * 4) % 16 + index_topk * seqlen_k_stride * ELEMENT_BYTES / 4;
     int g_offset_s = ((kHeadDim / kBlockK) - 1) * kHeadDim_OPT * ELEMENT_BYTES / 4 + warp_id_m * 16;
     flash::wait_all_warp_arrived();
-    inline_buffer_load_dwordx4_lds(k_lds, k_ptr, lds_offset, g_offset_s, g_offset_v); 
+    inline_buffer_load_dwordx4_lds(k_lds, k_ptr, lds_offset, g_offset_s, g_offset_v);
 
     if constexpr (STAGES == 2) {
         k_stage_id ^= 1;
     }
 
-    {   
+    {
         // int index_topk = index_ptr[(n_loop * 64) + warp_id_n * 16 + (tid / 4)];
         g_offset_v = ((4 - (tid / 8) % 4) * 4 + tid % 4 * 4) % 16 + index_topk * seqlen_k_stride * ELEMENT_BYTES / 4;
         for(int k_loop = (kHeadDim / kBlockK) - 2; k_loop >= 0; --k_loop) {
-            
+
             {
                 lds_offset = __builtin_amdgcn_readfirstlane((k_stage_id * WARP_N * kHeadDim_OPT + warp_id * 32 * 16) * ELEMENT_BYTES / 4);
                 g_offset_s = k_loop * kHeadDim_OPT * ELEMENT_BYTES / 4 + warp_id_m * 16;
                 flash::wait_all_warp_arrived();
-                inline_buffer_load_dwordx4_lds(k_lds, k_ptr, lds_offset, g_offset_s, g_offset_v); 
+                inline_buffer_load_dwordx4_lds(k_lds, k_ptr, lds_offset, g_offset_s, g_offset_v);
 
                     // k_stage_id ^= 1;
                     // int nm_filter =  inline_min_max<0,16>(16 * warp_id_n + 16 - max_seq_k_offset);
@@ -1092,7 +1092,7 @@ __forceinline__ __device__ void qk_gemm_prefetch_v_mls_ds_576_512_nopage_64_new(
             k_stage_id ^= 1;
             int stage_id = 0;
 
-            // K DS  
+            // K DS
             {
                 int k_lds_load_offset = k_lds_base + (k_stage_id * WARP_N * kHeadDim_OPT + 0 * 32 * 32) * ELEMENT_BYTES;
                 DS_READ_MATRIX_32X32_B16(k_lds_load_offset, k_reg[stage_id * 2].f16, k_reg[stage_id * 2 + 1].f16, true);
@@ -1109,9 +1109,9 @@ __forceinline__ __device__ void qk_gemm_prefetch_v_mls_ds_576_512_nopage_64_new(
             flash::wait_lds_data_arrived<false>(2);
             flash::raise_priority();
 
-            // MMAC 
+            // MMAC
             stage_id ^= 1;
-            { 
+            {
                 int min_tile_n = 0;
                 #pragma unroll
                 for(int min_tile_k = 0; min_tile_k < 2; ++min_tile_k) {
@@ -1123,7 +1123,7 @@ __forceinline__ __device__ void qk_gemm_prefetch_v_mls_ds_576_512_nopage_64_new(
                 }
             }
 
-            { 
+            {
                 int min_tile_n = 1;
                 #pragma unroll
                 for(int min_tile_k = 0; min_tile_k < 2; ++min_tile_k) {
@@ -1139,7 +1139,7 @@ __forceinline__ __device__ void qk_gemm_prefetch_v_mls_ds_576_512_nopage_64_new(
             flash::wait_lds_data_arrived<false>(0);
             flash::raise_priority();
             stage_id ^= 1;
-            { 
+            {
                 int min_tile_n = 0;
                 #pragma unroll
                 for(int min_tile_k = 0; min_tile_k < 2; ++min_tile_k) {
@@ -1151,7 +1151,7 @@ __forceinline__ __device__ void qk_gemm_prefetch_v_mls_ds_576_512_nopage_64_new(
                 }
             }
 
-            { 
+            {
                 int min_tile_n = 1;
                 #pragma unroll
                 for(int min_tile_k = 0; min_tile_k < 2; ++min_tile_k) {
@@ -1164,16 +1164,16 @@ __forceinline__ __device__ void qk_gemm_prefetch_v_mls_ds_576_512_nopage_64_new(
             }
 
             flash::lower_priority();
-            
+
         }
 
         // 等回最后的q_panel
         flash::wait_buffer_data_arrived<true>(0);
 
-        // K DS  
+        // K DS
         k_stage_id ^= 1;
         int stage_id = 0;
-        {   
+        {
             int k_lds_load_offset = k_lds_base + (k_stage_id * WARP_N * kHeadDim_OPT + 0 * 32 * 32) * ELEMENT_BYTES;
             DS_READ_MATRIX_32X32_B16(k_lds_load_offset, k_reg[stage_id * 2].f16, k_reg[stage_id * 2 + 1].f16, true);
         }
@@ -1189,9 +1189,9 @@ __forceinline__ __device__ void qk_gemm_prefetch_v_mls_ds_576_512_nopage_64_new(
         flash::wait_lds_data_arrived<false>(2);
         flash::raise_priority();
 
-        // MMAC 
+        // MMAC
         stage_id ^= 1;
-        { 
+        {
             int min_tile_n = 0;
             #pragma unroll
             for(int min_tile_k = 0; min_tile_k < 2; ++min_tile_k) {
@@ -1203,7 +1203,7 @@ __forceinline__ __device__ void qk_gemm_prefetch_v_mls_ds_576_512_nopage_64_new(
             }
         }
 
-        { 
+        {
             int min_tile_n = 1;
             #pragma unroll
             for(int min_tile_k = 0; min_tile_k < 2; ++min_tile_k) {
@@ -1218,15 +1218,9 @@ __forceinline__ __device__ void qk_gemm_prefetch_v_mls_ds_576_512_nopage_64_new(
         flash::lower_priority();
         flash::wait_lds_data_arrived<false>(0);
 
-        // int abc[1];
-        // int index_topk = index_ptr[(((n_loop+1) % 16) * 64) + warp_id * 16];
-        // int offset_m = index_topk * seqlen_v_stride;
-        // auto g_abc = (reinterpret_cast<uint64_t>(v_faker + offset_m)); 
-        // inline_s_load_dword(abc[0], g_abc, 0); 
-
         flash::raise_priority();
         stage_id ^= 1;
-        { 
+        {
             int min_tile_n = 0;
             #pragma unroll
             for(int min_tile_k = 0; min_tile_k < 2; ++min_tile_k) {
@@ -1238,7 +1232,7 @@ __forceinline__ __device__ void qk_gemm_prefetch_v_mls_ds_576_512_nopage_64_new(
             }
         }
 
-        { 
+        {
             int min_tile_n = 1;
             #pragma unroll
             for(int min_tile_k = 0; min_tile_k < 2; ++min_tile_k) {
@@ -1256,7 +1250,7 @@ __forceinline__ __device__ void qk_gemm_prefetch_v_mls_ds_576_512_nopage_64_new(
 
     if constexpr (STAGES == 2) {
     #if defined(__gfx938__) || defined(__gfx946__) || (defined(__gfx92a__) && defined(YY_USE_MPERMUTE))
-        // prefetch_v_to_lds_mls_ds_576_512_buffer_load_nopage_64<kHeadDimV, kBlockM, kBlockK, kBlockN, WARP_M, kBlockK, Element, Is_even_MN>(v_ptr, v_lds, warp_id, seqlen_v_stride, index_ptr, batch_stride_v, n_loop, max_seq_k_offset);
+        // prefetch_v_to_lds_mla_dsa_h64_legacy_contiguous_d576<kHeadDimV, kBlockM, kBlockK, kBlockN, WARP_M, kBlockK, Element, Is_even_MN>(v_ptr, v_lds, warp_id, seqlen_v_stride, index_ptr, batch_stride_v, n_loop, max_seq_k_offset);
     #else
 
     #endif
@@ -1265,11 +1259,11 @@ __forceinline__ __device__ void qk_gemm_prefetch_v_mls_ds_576_512_nopage_64_new(
 
 
 template<int kHeadDim, int kHeadDimV, int kBlockM, int kBlockN, int kBlockK, int WARP_M, int WARP_N, int STAGES, typename Element, typename ElementAccum, bool Is_even_MN, bool Is_FlashMLA>
-__forceinline__ __device__ void qk_gemm_prefetch_v_mls_ds_576_512_nopage_64_new_666(
+__forceinline__ __device__ void qk_mla_dsa_h64_archived_k64_d576(
         vec4_uint qv_ptr,
         vec4_uint q_ptr,
         vec4_uint k_ptr,
-        Element* v_faker,
+        Element* v_base_ptr,
         Element* q_lds,
         Element* k_lds,
         Element* v_lds,
@@ -1299,7 +1293,7 @@ __forceinline__ __device__ void qk_gemm_prefetch_v_mls_ds_576_512_nopage_64_new_
     constexpr int K_LDS_LOAD_NUM  = (kHeadDim_OPT * WARP_N) / (32 * 16);
     constexpr int K_LOAD_REQUESTS = K_LDS_LOAD_NUM / WARP_NUM;
     constexpr int ELEMENT_BYTES   = sizeof(Element);
-    constexpr int WARP_NUM_M = 1; 
+    constexpr int WARP_NUM_M = 1;
     constexpr int WARP_NUM_N = 4;
     int warp_id_m = warp_id / WARP_NUM_N;
     int warp_id_n = warp_id % WARP_NUM_N;
@@ -1332,7 +1326,7 @@ __forceinline__ __device__ void qk_gemm_prefetch_v_mls_ds_576_512_nopage_64_new_
     } else {
         k_srsrc[2] = seqlen_v_stride;
     }
-    
+
     k_srsrc[3] = 0;
 
     int k_stage_id = 0;
@@ -1344,26 +1338,26 @@ __forceinline__ __device__ void qk_gemm_prefetch_v_mls_ds_576_512_nopage_64_new_
     int g_offset_s = ((kHeadDim / kBlockK) - 1) * kHeadDim_OPT * ELEMENT_BYTES / 4 + warp_id_m * 16;
     int g_offset_s_2 = ((kHeadDim / kBlockK) - 1) * kHeadDim_OPT * ELEMENT_BYTES / 4 + warp_id_m * 16 + 16;
     flash::wait_all_warp_arrived();
-    inline_buffer_load_dwordx4_lds(k_lds, k_ptr, lds_offset, g_offset_s, g_offset_v); 
-    inline_buffer_load_dwordx4_lds(k_lds, k_ptr, lds_offset_2, g_offset_s_2, g_offset_v); 
+    inline_buffer_load_dwordx4_lds(k_lds, k_ptr, lds_offset, g_offset_s, g_offset_v);
+    inline_buffer_load_dwordx4_lds(k_lds, k_ptr, lds_offset_2, g_offset_s_2, g_offset_v);
 
     if constexpr (STAGES == 2) {
         k_stage_id ^= 1;
     }
 
-    {   
+    {
         // int index_topk = index_ptr[(n_loop * 64) + warp_id_n * 16 + (tid / 4)];
         // g_offset_v = ((4 - (tid / 8) % 4) * 4 + tid % 4 * 4) % 16 + index_topk * seqlen_k_stride * ELEMENT_BYTES / 4;
         for(int k_loop = (kHeadDim / kBlockK) - 2; k_loop >= 0; --k_loop) {
-            
+
             {
                 lds_offset = __builtin_amdgcn_readfirstlane((k_stage_id * WARP_N * kHeadDim_OPT + warp_id * 32 * 16) * ELEMENT_BYTES / 4);
                 lds_offset_2 = __builtin_amdgcn_readfirstlane((k_stage_id * WARP_N * kHeadDim_OPT + warp_id * 32 * 16 + 32 * 64) * ELEMENT_BYTES / 4);
                 g_offset_s = k_loop * kHeadDim_OPT * ELEMENT_BYTES / 4 + warp_id_m * 16;
                 g_offset_s_2 = k_loop * kHeadDim_OPT * ELEMENT_BYTES / 4 + warp_id_m * 16 + 16;
                 flash::wait_all_warp_arrived();
-                inline_buffer_load_dwordx4_lds(k_lds, k_ptr, lds_offset, g_offset_s, g_offset_v); 
-                inline_buffer_load_dwordx4_lds(k_lds, k_ptr, lds_offset_2, g_offset_s_2, g_offset_v); 
+                inline_buffer_load_dwordx4_lds(k_lds, k_ptr, lds_offset, g_offset_s, g_offset_v);
+                inline_buffer_load_dwordx4_lds(k_lds, k_ptr, lds_offset_2, g_offset_s_2, g_offset_v);
                     // k_stage_id ^= 1;
                     // int nm_filter =  inline_min_max<0,16>(16 * warp_id_n + 16 - max_seq_k_offset);
                     // if constexpr (Is_FlashMLA) {
@@ -1383,7 +1377,7 @@ __forceinline__ __device__ void qk_gemm_prefetch_v_mls_ds_576_512_nopage_64_new_
             k_stage_id ^= 1;
             int stage_id = 0;
 
-            // K DS  
+            // K DS
             {
                 int k_lds_load_offset = k_lds_base + (k_stage_id * WARP_N * kHeadDim_OPT + 0 * 32 * 32) * ELEMENT_BYTES;
                 int k_lds_load_offset_2 = k_lds_base + (k_stage_id * WARP_N * kHeadDim_OPT + 0 * 32 * 32 + 32 * 64) * ELEMENT_BYTES;
@@ -1404,9 +1398,9 @@ __forceinline__ __device__ void qk_gemm_prefetch_v_mls_ds_576_512_nopage_64_new_
             flash::wait_lds_data_arrived<false>(6);
             // flash::raise_priority();
 
-            // MMAC 
+            // MMAC
             stage_id ^= 1;
-            { 
+            {
                 int min_tile_n = 0;
                 #pragma unroll
                 for(int min_tile_k = 0; min_tile_k < 2; ++min_tile_k) {
@@ -1418,7 +1412,7 @@ __forceinline__ __device__ void qk_gemm_prefetch_v_mls_ds_576_512_nopage_64_new_
                 }
             }
 
-            { 
+            {
                 int min_tile_n = 1;
                 #pragma unroll
                 for(int min_tile_k = 0; min_tile_k < 2; ++min_tile_k) {
@@ -1446,7 +1440,7 @@ __forceinline__ __device__ void qk_gemm_prefetch_v_mls_ds_576_512_nopage_64_new_
                 }
             }
 
-            { 
+            {
                 int min_tile_n = 1;
                 #pragma unroll
                 for(int min_tile_k = 0; min_tile_k < 2; ++min_tile_k) {
@@ -1463,7 +1457,7 @@ __forceinline__ __device__ void qk_gemm_prefetch_v_mls_ds_576_512_nopage_64_new_
             // flash::raise_priority();
 
             stage_id ^= 1;
-            { 
+            {
                 int min_tile_n = 0;
                 #pragma unroll
                 for(int min_tile_k = 0; min_tile_k < 2; ++min_tile_k) {
@@ -1475,7 +1469,7 @@ __forceinline__ __device__ void qk_gemm_prefetch_v_mls_ds_576_512_nopage_64_new_
                 }
             }
 
-            { 
+            {
                 int min_tile_n = 1;
                 #pragma unroll
                 for(int min_tile_k = 0; min_tile_k < 2; ++min_tile_k) {
@@ -1491,7 +1485,7 @@ __forceinline__ __device__ void qk_gemm_prefetch_v_mls_ds_576_512_nopage_64_new_
             flash::wait_lds_data_arrived<false>(0);
             // flash::raise_priority();
 
-            { 
+            {
                 int min_tile_n = 0;
                 #pragma unroll
                 for(int min_tile_k = 0; min_tile_k < 2; ++min_tile_k) {
@@ -1503,7 +1497,7 @@ __forceinline__ __device__ void qk_gemm_prefetch_v_mls_ds_576_512_nopage_64_new_
                 }
             }
 
-            { 
+            {
                 int min_tile_n = 1;
                 #pragma unroll
                 for(int min_tile_k = 0; min_tile_k < 2; ++min_tile_k) {
@@ -1515,16 +1509,16 @@ __forceinline__ __device__ void qk_gemm_prefetch_v_mls_ds_576_512_nopage_64_new_
                 }
             }
             // flash::lower_priority();
-            
+
         }
 
         // 等回最后的q_panel
         flash::wait_buffer_data_arrived<true>(0);
 
-        // K DS  
+        // K DS
         k_stage_id ^= 1;
         int stage_id = 0;
-        {   
+        {
             int k_lds_load_offset = k_lds_base + (k_stage_id * WARP_N * kHeadDim_OPT + 0 * 32 * 32) * ELEMENT_BYTES;
             int k_lds_load_offset_2 = k_lds_base + (k_stage_id * WARP_N * kHeadDim_OPT + 0 * 32 * 32 + 32 * 64) * ELEMENT_BYTES;
             DS_READ_MATRIX_32X32_B16(k_lds_load_offset, k_reg[stage_id * 2].f16, k_reg[stage_id * 2 + 1].f16, true);
@@ -1545,9 +1539,9 @@ __forceinline__ __device__ void qk_gemm_prefetch_v_mls_ds_576_512_nopage_64_new_
         flash::wait_lds_data_arrived<false>(6);
         // flash::raise_priority();
 
-        // MMAC 
+        // MMAC
         stage_id ^= 1;
-        { 
+        {
             int min_tile_n = 0;
             #pragma unroll
             for(int min_tile_k = 0; min_tile_k < 2; ++min_tile_k) {
@@ -1559,7 +1553,7 @@ __forceinline__ __device__ void qk_gemm_prefetch_v_mls_ds_576_512_nopage_64_new_
             }
         }
 
-        { 
+        {
             int min_tile_n = 1;
             #pragma unroll
             for(int min_tile_k = 0; min_tile_k < 2; ++min_tile_k) {
@@ -1587,7 +1581,7 @@ __forceinline__ __device__ void qk_gemm_prefetch_v_mls_ds_576_512_nopage_64_new_
             }
         }
 
-        { 
+        {
             int min_tile_n = 1;
             #pragma unroll
             for(int min_tile_k = 0; min_tile_k < 2; ++min_tile_k) {
@@ -1604,7 +1598,7 @@ __forceinline__ __device__ void qk_gemm_prefetch_v_mls_ds_576_512_nopage_64_new_
         // flash::raise_priority();
 
         stage_id ^= 1;
-        { 
+        {
             int min_tile_n = 0;
             #pragma unroll
             for(int min_tile_k = 0; min_tile_k < 2; ++min_tile_k) {
@@ -1616,7 +1610,7 @@ __forceinline__ __device__ void qk_gemm_prefetch_v_mls_ds_576_512_nopage_64_new_
             }
         }
 
-        { 
+        {
             int min_tile_n = 1;
             #pragma unroll
             for(int min_tile_k = 0; min_tile_k < 2; ++min_tile_k) {
@@ -1631,19 +1625,9 @@ __forceinline__ __device__ void qk_gemm_prefetch_v_mls_ds_576_512_nopage_64_new_
         // flash::lower_priority();
         flash::wait_lds_data_arrived<false>(0);
 
-        // int abc[2];
-        // int index_topk = index_ptr[(n_loop * 64)];
-        // int index_topk2 = index_ptr[(n_loop * 64) + 8];
-        // int offset_m = index_topk * seqlen_k_stride;
-        // int offset_m2 = index_topk2 * seqlen_k_stride;
-        // auto g_abc = (reinterpret_cast<uint64_t>(v_faker + offset_m)); 
-        // auto g_abc2 = (reinterpret_cast<uint64_t>(v_faker + offset_m2)); 
-        // inline_s_load_dword(abc[0], g_abc, 0); 
-        // inline_s_load_dword(abc[1], g_abc2, 0); 
-
         // flash::raise_priority();
 
-        { 
+        {
             int min_tile_n = 0;
             #pragma unroll
             for(int min_tile_k = 0; min_tile_k < 2; ++min_tile_k) {
@@ -1655,7 +1639,7 @@ __forceinline__ __device__ void qk_gemm_prefetch_v_mls_ds_576_512_nopage_64_new_
             }
         }
 
-        { 
+        {
             int min_tile_n = 1;
             #pragma unroll
             for(int min_tile_k = 0; min_tile_k < 2; ++min_tile_k) {
@@ -1672,11 +1656,11 @@ __forceinline__ __device__ void qk_gemm_prefetch_v_mls_ds_576_512_nopage_64_new_
 }
 
 template<int kHeadDim, int kHeadDimV, int kBlockM, int kBlockN, int kBlockK, int WARP_M, int WARP_N, int STAGES, typename Element, typename ElementAccum, bool Is_even_MN, bool Is_FlashMLA>
-__forceinline__ __device__ void qk_gemm_prefetch_v_mls_ds_576_512_nopage_64_new_777(
+__forceinline__ __device__ void qk_mla_dsa_h64_prefill_indexed_d576(
         vec4_uint qv_ptr,
         vec4_uint q_ptr,
         vec4_uint k_ptr,
-        Element* v_faker,
+        Element* v_base_ptr,
         Element* q_lds,
         Element* k_lds,
         Element* v_lds,
@@ -1761,7 +1745,7 @@ __forceinline__ __device__ void qk_gemm_prefetch_v_mls_ds_576_512_nopage_64_new_
     flash::wait_all_warp_arrived();
 
     if(warp_id < 2){
-        inline_buffer_load_dwordx4_lds(k_lds, k_ptr, lds_offset, g_offset_s, g_offset_v); 
+        inline_buffer_load_dwordx4_lds(k_lds, k_ptr, lds_offset, g_offset_s, g_offset_v);
     }
 
     if constexpr (STAGES == 2) {
@@ -1773,15 +1757,15 @@ __forceinline__ __device__ void qk_gemm_prefetch_v_mls_ds_576_512_nopage_64_new_
     g_offset_s = 256 * ELEMENT_BYTES / 4 + warp_id * 16;
     g_offset_s_2 = 256 * ELEMENT_BYTES / 4 + warp_id * 16 + 64;
     flash::wait_all_warp_arrived();
-    inline_buffer_load_dwordx4_lds(k_lds, k_ptr, lds_offset, g_offset_s, g_offset_v); 
-    inline_buffer_load_dwordx4_lds(k_lds, k_ptr, lds_offset_2, g_offset_s_2, g_offset_v); 
+    inline_buffer_load_dwordx4_lds(k_lds, k_ptr, lds_offset, g_offset_s, g_offset_v);
+    inline_buffer_load_dwordx4_lds(k_lds, k_ptr, lds_offset_2, g_offset_s_2, g_offset_v);
 
     flash::wait_buffer_data_arrived<true>(K_LOAD_REQUESTS);
 
     k_stage_id ^= 1;
     int stage_id = 0;
 
-    // K DS  
+    // K DS
     {
         int k_lds_load_offset = k_lds_base + (k_stage_id * 16 * 256) * ELEMENT_BYTES;
         DS_READ_MATRIX_32X32_B16(k_lds_load_offset, k_reg[stage_id * 2].f16, k_reg[stage_id * 2 + 1].f16, true);
@@ -1791,7 +1775,7 @@ __forceinline__ __device__ void qk_gemm_prefetch_v_mls_ds_576_512_nopage_64_new_
     flash::wait_lds_data_arrived<false>(0);
     // flash::raise_priority();
 
-    { 
+    {
         int min_tile_n = 0;
         #pragma unroll
         for(int min_tile_k = 0; min_tile_k < 2; ++min_tile_k) {
@@ -1803,7 +1787,7 @@ __forceinline__ __device__ void qk_gemm_prefetch_v_mls_ds_576_512_nopage_64_new_
         }
     }
 
-    { 
+    {
         int min_tile_n = 1;
         #pragma unroll
         for(int min_tile_k = 0; min_tile_k < 2; ++min_tile_k) {
@@ -1822,15 +1806,15 @@ __forceinline__ __device__ void qk_gemm_prefetch_v_mls_ds_576_512_nopage_64_new_
     g_offset_s = 0 * ELEMENT_BYTES / 4 + warp_id * 16;
     g_offset_s_2 = 0 * ELEMENT_BYTES / 4 + warp_id * 16 + 64;
     flash::wait_all_warp_arrived();
-    inline_buffer_load_dwordx4_lds(k_lds, k_ptr, lds_offset, g_offset_s, g_offset_v); 
-    inline_buffer_load_dwordx4_lds(k_lds, k_ptr, lds_offset_2, g_offset_s_2, g_offset_v); 
+    inline_buffer_load_dwordx4_lds(k_lds, k_ptr, lds_offset, g_offset_s, g_offset_v);
+    inline_buffer_load_dwordx4_lds(k_lds, k_ptr, lds_offset_2, g_offset_s_2, g_offset_v);
 
     flash::wait_buffer_data_arrived<true>(K_LOAD_REQUESTS);
 
     k_stage_id ^= 1;
     stage_id = 0;
 
-    // K DS  
+    // K DS
     {
         int k_lds_load_offset = k_lds_base + (k_stage_id * 16 * 256) * ELEMENT_BYTES;
         int k_lds_load_offset_2 = k_lds_base + (k_stage_id * 16 * 256 + 16 * 64) * ELEMENT_BYTES;
@@ -1846,14 +1830,14 @@ __forceinline__ __device__ void qk_gemm_prefetch_v_mls_ds_576_512_nopage_64_new_
         DS_READ_MATRIX_32X32_B16(k_lds_load_offset, k_reg[stage_id * 2].f16, k_reg[stage_id * 2 + 1].f16, true);
         DS_READ_MATRIX_32X32_B16(k_lds_load_offset_2, k_reg[4 + stage_id * 2].f16, k_reg[4 + stage_id * 2 + 1].f16, true);
     }
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       
+
     // Wait DS
     flash::wait_lds_data_arrived<false>(6);
     // flash::raise_priority();
 
-    // MMAC 
+    // MMAC
     stage_id ^= 1;
-    { 
+    {
         int min_tile_n = 0;
         #pragma unroll
         for(int min_tile_k = 0; min_tile_k < 2; ++min_tile_k) {
@@ -1865,7 +1849,7 @@ __forceinline__ __device__ void qk_gemm_prefetch_v_mls_ds_576_512_nopage_64_new_
         }
     }
 
-    { 
+    {
         int min_tile_n = 1;
         #pragma unroll
         for(int min_tile_k = 0; min_tile_k < 2; ++min_tile_k) {
@@ -1893,7 +1877,7 @@ __forceinline__ __device__ void qk_gemm_prefetch_v_mls_ds_576_512_nopage_64_new_
         }
     }
 
-    { 
+    {
         int min_tile_n = 1;
         #pragma unroll
         for(int min_tile_k = 0; min_tile_k < 2; ++min_tile_k) {
@@ -1910,7 +1894,7 @@ __forceinline__ __device__ void qk_gemm_prefetch_v_mls_ds_576_512_nopage_64_new_
     // flash::raise_priority();
 
     stage_id ^= 1;
-    { 
+    {
         int min_tile_n = 0;
         #pragma unroll
         for(int min_tile_k = 0; min_tile_k < 2; ++min_tile_k) {
@@ -1922,7 +1906,7 @@ __forceinline__ __device__ void qk_gemm_prefetch_v_mls_ds_576_512_nopage_64_new_
         }
     }
 
-    { 
+    {
         int min_tile_n = 1;
         #pragma unroll
         for(int min_tile_k = 0; min_tile_k < 2; ++min_tile_k) {
@@ -1938,7 +1922,7 @@ __forceinline__ __device__ void qk_gemm_prefetch_v_mls_ds_576_512_nopage_64_new_
     flash::wait_lds_data_arrived<false>(0);
     // flash::raise_priority();
 
-    { 
+    {
         int min_tile_n = 0;
         #pragma unroll
         for(int min_tile_k = 0; min_tile_k < 2; ++min_tile_k) {
@@ -1950,7 +1934,7 @@ __forceinline__ __device__ void qk_gemm_prefetch_v_mls_ds_576_512_nopage_64_new_
         }
     }
 
-    { 
+    {
         int min_tile_n = 1;
         #pragma unroll
         for(int min_tile_k = 0; min_tile_k < 2; ++min_tile_k) {
@@ -1968,7 +1952,7 @@ __forceinline__ __device__ void qk_gemm_prefetch_v_mls_ds_576_512_nopage_64_new_
     k_stage_id ^= 1;
     stage_id = 0;
 
-    // K DS  
+    // K DS
     {
         int k_lds_load_offset = k_lds_base + (k_stage_id * 16 * 256) * ELEMENT_BYTES;
         int k_lds_load_offset_2 = k_lds_base + (k_stage_id * 16 * 256 + 16 * 64) * ELEMENT_BYTES;
@@ -1984,14 +1968,14 @@ __forceinline__ __device__ void qk_gemm_prefetch_v_mls_ds_576_512_nopage_64_new_
         DS_READ_MATRIX_32X32_B16(k_lds_load_offset, k_reg[stage_id * 2].f16, k_reg[stage_id * 2 + 1].f16, true);
         DS_READ_MATRIX_32X32_B16(k_lds_load_offset_2, k_reg[4 + stage_id * 2].f16, k_reg[4 + stage_id * 2 + 1].f16, true);
     }
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       
+
     // Wait DS
     flash::wait_lds_data_arrived<false>(6);
     // flash::raise_priority();
 
-    // MMAC 
+    // MMAC
     stage_id ^= 1;
-    { 
+    {
         int min_tile_n = 0;
         #pragma unroll
         for(int min_tile_k = 0; min_tile_k < 2; ++min_tile_k) {
@@ -2003,7 +1987,7 @@ __forceinline__ __device__ void qk_gemm_prefetch_v_mls_ds_576_512_nopage_64_new_
         }
     }
 
-    { 
+    {
         int min_tile_n = 1;
         #pragma unroll
         for(int min_tile_k = 0; min_tile_k < 2; ++min_tile_k) {
@@ -2031,7 +2015,7 @@ __forceinline__ __device__ void qk_gemm_prefetch_v_mls_ds_576_512_nopage_64_new_
         }
     }
 
-    { 
+    {
         int min_tile_n = 1;
         #pragma unroll
         for(int min_tile_k = 0; min_tile_k < 2; ++min_tile_k) {
@@ -2048,7 +2032,7 @@ __forceinline__ __device__ void qk_gemm_prefetch_v_mls_ds_576_512_nopage_64_new_
     // flash::raise_priority();
 
     stage_id ^= 1;
-    { 
+    {
         int min_tile_n = 0;
         #pragma unroll
         for(int min_tile_k = 0; min_tile_k < 2; ++min_tile_k) {
@@ -2060,7 +2044,7 @@ __forceinline__ __device__ void qk_gemm_prefetch_v_mls_ds_576_512_nopage_64_new_
         }
     }
 
-    { 
+    {
         int min_tile_n = 1;
         #pragma unroll
         for(int min_tile_k = 0; min_tile_k < 2; ++min_tile_k) {
@@ -2076,7 +2060,7 @@ __forceinline__ __device__ void qk_gemm_prefetch_v_mls_ds_576_512_nopage_64_new_
     flash::wait_lds_data_arrived<false>(0);
     // flash::raise_priority();
 
-    { 
+    {
         int min_tile_n = 0;
         #pragma unroll
         for(int min_tile_k = 0; min_tile_k < 2; ++min_tile_k) {
@@ -2088,7 +2072,7 @@ __forceinline__ __device__ void qk_gemm_prefetch_v_mls_ds_576_512_nopage_64_new_
         }
     }
 
-    { 
+    {
         int min_tile_n = 1;
         #pragma unroll
         for(int min_tile_k = 0; min_tile_k < 2; ++min_tile_k) {
@@ -2103,13 +2087,13 @@ __forceinline__ __device__ void qk_gemm_prefetch_v_mls_ds_576_512_nopage_64_new_
     }
 }
 
-// Old topk=2048 prefill fast path. Keep separate from the generic paged/fallback variant.
+// Dedicated topk=2048 prefill fast path. Keep separate from the generic paged/fallback path.
 template<bool NeedIndexGuard, int kHeadDim, int kHeadDimV, int kBlockM, int kBlockN, int kBlockK, int WARP_M, int WARP_N, int STAGES, typename Element, typename ElementAccum, bool Is_even_MN, bool Is_FlashMLA>
-__forceinline__ __device__ void qk_gemm_prefetch_v_mls_ds_576_512_nopage_64_new_777_topk2048_fast(
+__forceinline__ __device__ void qk_mla_dsa_h64_topk2048_fast_d576(
         vec4_uint qv_ptr,
         vec4_uint q_ptr,
         vec4_uint k_ptr,
-        Element* v_faker,
+        Element* v_base_ptr,
         Element* q_lds,
         Element* k_lds,
         Element* v_lds,
@@ -2185,7 +2169,7 @@ __forceinline__ __device__ void qk_gemm_prefetch_v_mls_ds_576_512_nopage_64_new_
     flash::wait_all_warp_arrived();
 
     if(warp_id < 2){
-        inline_buffer_load_dwordx4_lds(k_lds, k_ptr, lds_offset, g_offset_s, g_offset_v); 
+        inline_buffer_load_dwordx4_lds(k_lds, k_ptr, lds_offset, g_offset_s, g_offset_v);
     }
 
     if constexpr (STAGES == 2) {
@@ -2197,15 +2181,15 @@ __forceinline__ __device__ void qk_gemm_prefetch_v_mls_ds_576_512_nopage_64_new_
     g_offset_s = 256 * ELEMENT_BYTES / 4 + warp_id * 16;
     g_offset_s_2 = 256 * ELEMENT_BYTES / 4 + warp_id * 16 + 64;
     flash::wait_all_warp_arrived();
-    inline_buffer_load_dwordx4_lds(k_lds, k_ptr, lds_offset, g_offset_s, g_offset_v); 
-    inline_buffer_load_dwordx4_lds(k_lds, k_ptr, lds_offset_2, g_offset_s_2, g_offset_v); 
+    inline_buffer_load_dwordx4_lds(k_lds, k_ptr, lds_offset, g_offset_s, g_offset_v);
+    inline_buffer_load_dwordx4_lds(k_lds, k_ptr, lds_offset_2, g_offset_s_2, g_offset_v);
 
     flash::wait_buffer_data_arrived<true>(K_LOAD_REQUESTS);
 
     k_stage_id ^= 1;
     int stage_id = 0;
 
-    // K DS  
+    // K DS
     {
         int k_lds_load_offset = k_lds_base + (k_stage_id * 16 * 256) * ELEMENT_BYTES;
         DS_READ_MATRIX_32X32_B16(k_lds_load_offset, k_reg[stage_id * 2].f16, k_reg[stage_id * 2 + 1].f16, true);
@@ -2215,7 +2199,7 @@ __forceinline__ __device__ void qk_gemm_prefetch_v_mls_ds_576_512_nopage_64_new_
     flash::wait_lds_data_arrived<false>(0);
     // flash::raise_priority();
 
-    { 
+    {
         int min_tile_n = 0;
         #pragma unroll
         for(int min_tile_k = 0; min_tile_k < 2; ++min_tile_k) {
@@ -2227,7 +2211,7 @@ __forceinline__ __device__ void qk_gemm_prefetch_v_mls_ds_576_512_nopage_64_new_
         }
     }
 
-    { 
+    {
         int min_tile_n = 1;
         #pragma unroll
         for(int min_tile_k = 0; min_tile_k < 2; ++min_tile_k) {
@@ -2246,15 +2230,15 @@ __forceinline__ __device__ void qk_gemm_prefetch_v_mls_ds_576_512_nopage_64_new_
     g_offset_s = 0 * ELEMENT_BYTES / 4 + warp_id * 16;
     g_offset_s_2 = 0 * ELEMENT_BYTES / 4 + warp_id * 16 + 64;
     flash::wait_all_warp_arrived();
-    inline_buffer_load_dwordx4_lds(k_lds, k_ptr, lds_offset, g_offset_s, g_offset_v); 
-    inline_buffer_load_dwordx4_lds(k_lds, k_ptr, lds_offset_2, g_offset_s_2, g_offset_v); 
+    inline_buffer_load_dwordx4_lds(k_lds, k_ptr, lds_offset, g_offset_s, g_offset_v);
+    inline_buffer_load_dwordx4_lds(k_lds, k_ptr, lds_offset_2, g_offset_s_2, g_offset_v);
 
     flash::wait_buffer_data_arrived<true>(K_LOAD_REQUESTS);
 
     k_stage_id ^= 1;
     stage_id = 0;
 
-    // K DS  
+    // K DS
     {
         int k_lds_load_offset = k_lds_base + (k_stage_id * 16 * 256) * ELEMENT_BYTES;
         int k_lds_load_offset_2 = k_lds_base + (k_stage_id * 16 * 256 + 16 * 64) * ELEMENT_BYTES;
@@ -2270,14 +2254,14 @@ __forceinline__ __device__ void qk_gemm_prefetch_v_mls_ds_576_512_nopage_64_new_
         DS_READ_MATRIX_32X32_B16(k_lds_load_offset, k_reg[stage_id * 2].f16, k_reg[stage_id * 2 + 1].f16, true);
         DS_READ_MATRIX_32X32_B16(k_lds_load_offset_2, k_reg[4 + stage_id * 2].f16, k_reg[4 + stage_id * 2 + 1].f16, true);
     }
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       
+
     // Wait DS
     flash::wait_lds_data_arrived<false>(6);
     // flash::raise_priority();
 
-    // MMAC 
+    // MMAC
     stage_id ^= 1;
-    { 
+    {
         int min_tile_n = 0;
         #pragma unroll
         for(int min_tile_k = 0; min_tile_k < 2; ++min_tile_k) {
@@ -2289,7 +2273,7 @@ __forceinline__ __device__ void qk_gemm_prefetch_v_mls_ds_576_512_nopage_64_new_
         }
     }
 
-    { 
+    {
         int min_tile_n = 1;
         #pragma unroll
         for(int min_tile_k = 0; min_tile_k < 2; ++min_tile_k) {
@@ -2317,7 +2301,7 @@ __forceinline__ __device__ void qk_gemm_prefetch_v_mls_ds_576_512_nopage_64_new_
         }
     }
 
-    { 
+    {
         int min_tile_n = 1;
         #pragma unroll
         for(int min_tile_k = 0; min_tile_k < 2; ++min_tile_k) {
@@ -2334,7 +2318,7 @@ __forceinline__ __device__ void qk_gemm_prefetch_v_mls_ds_576_512_nopage_64_new_
     // flash::raise_priority();
 
     stage_id ^= 1;
-    { 
+    {
         int min_tile_n = 0;
         #pragma unroll
         for(int min_tile_k = 0; min_tile_k < 2; ++min_tile_k) {
@@ -2346,7 +2330,7 @@ __forceinline__ __device__ void qk_gemm_prefetch_v_mls_ds_576_512_nopage_64_new_
         }
     }
 
-    { 
+    {
         int min_tile_n = 1;
         #pragma unroll
         for(int min_tile_k = 0; min_tile_k < 2; ++min_tile_k) {
@@ -2362,7 +2346,7 @@ __forceinline__ __device__ void qk_gemm_prefetch_v_mls_ds_576_512_nopage_64_new_
     flash::wait_lds_data_arrived<false>(0);
     // flash::raise_priority();
 
-    { 
+    {
         int min_tile_n = 0;
         #pragma unroll
         for(int min_tile_k = 0; min_tile_k < 2; ++min_tile_k) {
@@ -2374,7 +2358,7 @@ __forceinline__ __device__ void qk_gemm_prefetch_v_mls_ds_576_512_nopage_64_new_
         }
     }
 
-    { 
+    {
         int min_tile_n = 1;
         #pragma unroll
         for(int min_tile_k = 0; min_tile_k < 2; ++min_tile_k) {
@@ -2392,7 +2376,7 @@ __forceinline__ __device__ void qk_gemm_prefetch_v_mls_ds_576_512_nopage_64_new_
     k_stage_id ^= 1;
     stage_id = 0;
 
-    // K DS  
+    // K DS
     {
         int k_lds_load_offset = k_lds_base + (k_stage_id * 16 * 256) * ELEMENT_BYTES;
         int k_lds_load_offset_2 = k_lds_base + (k_stage_id * 16 * 256 + 16 * 64) * ELEMENT_BYTES;
@@ -2408,14 +2392,14 @@ __forceinline__ __device__ void qk_gemm_prefetch_v_mls_ds_576_512_nopage_64_new_
         DS_READ_MATRIX_32X32_B16(k_lds_load_offset, k_reg[stage_id * 2].f16, k_reg[stage_id * 2 + 1].f16, true);
         DS_READ_MATRIX_32X32_B16(k_lds_load_offset_2, k_reg[4 + stage_id * 2].f16, k_reg[4 + stage_id * 2 + 1].f16, true);
     }
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       
+
     // Wait DS
     flash::wait_lds_data_arrived<false>(6);
     // flash::raise_priority();
 
-    // MMAC 
+    // MMAC
     stage_id ^= 1;
-    { 
+    {
         int min_tile_n = 0;
         #pragma unroll
         for(int min_tile_k = 0; min_tile_k < 2; ++min_tile_k) {
@@ -2427,7 +2411,7 @@ __forceinline__ __device__ void qk_gemm_prefetch_v_mls_ds_576_512_nopage_64_new_
         }
     }
 
-    { 
+    {
         int min_tile_n = 1;
         #pragma unroll
         for(int min_tile_k = 0; min_tile_k < 2; ++min_tile_k) {
@@ -2455,7 +2439,7 @@ __forceinline__ __device__ void qk_gemm_prefetch_v_mls_ds_576_512_nopage_64_new_
         }
     }
 
-    { 
+    {
         int min_tile_n = 1;
         #pragma unroll
         for(int min_tile_k = 0; min_tile_k < 2; ++min_tile_k) {
@@ -2472,7 +2456,7 @@ __forceinline__ __device__ void qk_gemm_prefetch_v_mls_ds_576_512_nopage_64_new_
     // flash::raise_priority();
 
     stage_id ^= 1;
-    { 
+    {
         int min_tile_n = 0;
         #pragma unroll
         for(int min_tile_k = 0; min_tile_k < 2; ++min_tile_k) {
@@ -2484,7 +2468,7 @@ __forceinline__ __device__ void qk_gemm_prefetch_v_mls_ds_576_512_nopage_64_new_
         }
     }
 
-    { 
+    {
         int min_tile_n = 1;
         #pragma unroll
         for(int min_tile_k = 0; min_tile_k < 2; ++min_tile_k) {
@@ -2500,7 +2484,7 @@ __forceinline__ __device__ void qk_gemm_prefetch_v_mls_ds_576_512_nopage_64_new_
     flash::wait_lds_data_arrived<false>(0);
     // flash::raise_priority();
 
-    { 
+    {
         int min_tile_n = 0;
         #pragma unroll
         for(int min_tile_k = 0; min_tile_k < 2; ++min_tile_k) {
@@ -2512,7 +2496,7 @@ __forceinline__ __device__ void qk_gemm_prefetch_v_mls_ds_576_512_nopage_64_new_
         }
     }
 
-    { 
+    {
         int min_tile_n = 1;
         #pragma unroll
         for(int min_tile_k = 0; min_tile_k < 2; ++min_tile_k) {
@@ -2528,7 +2512,7 @@ __forceinline__ __device__ void qk_gemm_prefetch_v_mls_ds_576_512_nopage_64_new_
 }
 
 template<int kHeadDim, int kHeadDimV, int kBlockM, int kBlockN, int kBlockK, int WARP_M, int WARP_N, int STAGES, typename Element, typename ElementAccum, bool Is_even_MN, bool Is_FlashMLA, bool DecodeCLoad = false>
-__forceinline__ __device__ void qk_gemm_prefetch_v_mls_ds_576_512_nopage_64_new_888(
+__forceinline__ __device__ void qk_mla_dsa_h64_decode_indexed_d576(
         vec4_uint qv_ptr,
         vec4_uint q_ptr,
         vec4_uint k_ptr,
@@ -2673,7 +2657,7 @@ __forceinline__ __device__ void qk_gemm_prefetch_v_mls_ds_576_512_nopage_64_new_
     k_stage_id ^= 1;
     stage_id = 0;
 
-    // K DS  
+    // K DS
     {
         int k_lds_load_offset = k_lds_base + (k_stage_id * 16 * 256) * ELEMENT_BYTES;
         int k_lds_load_offset_2 = k_lds_base + (k_stage_id * 16 * 256 + 16 * 64) * ELEMENT_BYTES;
@@ -2689,14 +2673,14 @@ __forceinline__ __device__ void qk_gemm_prefetch_v_mls_ds_576_512_nopage_64_new_
         DS_READ_MATRIX_32X32_B16(k_lds_load_offset, k_reg[stage_id * 2].f16, k_reg[stage_id * 2 + 1].f16, true);
         DS_READ_MATRIX_32X32_B16(k_lds_load_offset_2, k_reg[4 + stage_id * 2].f16, k_reg[4 + stage_id * 2 + 1].f16, true);
     }
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       
+
     // Wait DS
     flash::wait_lds_data_arrived<false>(6);
     flash::raise_priority();
 
-    // MMAC 
+    // MMAC
     stage_id ^= 1;
-    { 
+    {
         int min_tile_n = 0;
         #pragma unroll
         for(int min_tile_k = 0; min_tile_k < 2; ++min_tile_k) {
@@ -2708,7 +2692,7 @@ __forceinline__ __device__ void qk_gemm_prefetch_v_mls_ds_576_512_nopage_64_new_
         }
     }
 
-    { 
+    {
         int min_tile_n = 1;
         #pragma unroll
         for(int min_tile_k = 0; min_tile_k < 2; ++min_tile_k) {
@@ -2736,7 +2720,7 @@ __forceinline__ __device__ void qk_gemm_prefetch_v_mls_ds_576_512_nopage_64_new_
         }
     }
 
-    { 
+    {
         int min_tile_n = 1;
         #pragma unroll
         for(int min_tile_k = 0; min_tile_k < 2; ++min_tile_k) {
@@ -2753,7 +2737,7 @@ __forceinline__ __device__ void qk_gemm_prefetch_v_mls_ds_576_512_nopage_64_new_
     flash::raise_priority();
 
     stage_id ^= 1;
-    { 
+    {
         int min_tile_n = 0;
         #pragma unroll
         for(int min_tile_k = 0; min_tile_k < 2; ++min_tile_k) {
@@ -2765,7 +2749,7 @@ __forceinline__ __device__ void qk_gemm_prefetch_v_mls_ds_576_512_nopage_64_new_
         }
     }
 
-    { 
+    {
         int min_tile_n = 1;
         #pragma unroll
         for(int min_tile_k = 0; min_tile_k < 2; ++min_tile_k) {
@@ -2781,7 +2765,7 @@ __forceinline__ __device__ void qk_gemm_prefetch_v_mls_ds_576_512_nopage_64_new_
     flash::wait_lds_data_arrived<false>(0);
     flash::raise_priority();
 
-    { 
+    {
         int min_tile_n = 0;
         #pragma unroll
         for(int min_tile_k = 0; min_tile_k < 2; ++min_tile_k) {
@@ -2793,7 +2777,7 @@ __forceinline__ __device__ void qk_gemm_prefetch_v_mls_ds_576_512_nopage_64_new_
         }
     }
 
-    { 
+    {
         int min_tile_n = 1;
         #pragma unroll
         for(int min_tile_k = 0; min_tile_k < 2; ++min_tile_k) {
@@ -2812,7 +2796,7 @@ __forceinline__ __device__ void qk_gemm_prefetch_v_mls_ds_576_512_nopage_64_new_
     k_stage_id ^= 1;
     stage_id = 0;
 
-    // K DS  
+    // K DS
     {
         int k_lds_load_offset = k_lds_base + (k_stage_id * 16 * 256) * ELEMENT_BYTES;
         int k_lds_load_offset_2 = k_lds_base + (k_stage_id * 16 * 256 + 16 * 64) * ELEMENT_BYTES;
@@ -2828,14 +2812,14 @@ __forceinline__ __device__ void qk_gemm_prefetch_v_mls_ds_576_512_nopage_64_new_
         DS_READ_MATRIX_32X32_B16(k_lds_load_offset, k_reg[stage_id * 2].f16, k_reg[stage_id * 2 + 1].f16, true);
         DS_READ_MATRIX_32X32_B16(k_lds_load_offset_2, k_reg[4 + stage_id * 2].f16, k_reg[4 + stage_id * 2 + 1].f16, true);
     }
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       
+
     // Wait DS
     flash::wait_lds_data_arrived<false>(6);
     flash::raise_priority();
 
-    // MMAC 
+    // MMAC
     stage_id ^= 1;
-    { 
+    {
         int min_tile_n = 0;
         #pragma unroll
         for(int min_tile_k = 0; min_tile_k < 2; ++min_tile_k) {
@@ -2847,7 +2831,7 @@ __forceinline__ __device__ void qk_gemm_prefetch_v_mls_ds_576_512_nopage_64_new_
         }
     }
 
-    { 
+    {
         int min_tile_n = 1;
         #pragma unroll
         for(int min_tile_k = 0; min_tile_k < 2; ++min_tile_k) {
@@ -2875,7 +2859,7 @@ __forceinline__ __device__ void qk_gemm_prefetch_v_mls_ds_576_512_nopage_64_new_
         }
     }
 
-    { 
+    {
         int min_tile_n = 1;
         #pragma unroll
         for(int min_tile_k = 0; min_tile_k < 2; ++min_tile_k) {
@@ -2892,7 +2876,7 @@ __forceinline__ __device__ void qk_gemm_prefetch_v_mls_ds_576_512_nopage_64_new_
     flash::raise_priority();
 
     stage_id ^= 1;
-    { 
+    {
         int min_tile_n = 0;
         #pragma unroll
         for(int min_tile_k = 0; min_tile_k < 2; ++min_tile_k) {
@@ -2904,7 +2888,7 @@ __forceinline__ __device__ void qk_gemm_prefetch_v_mls_ds_576_512_nopage_64_new_
         }
     }
 
-    { 
+    {
         int min_tile_n = 1;
         #pragma unroll
         for(int min_tile_k = 0; min_tile_k < 2; ++min_tile_k) {
@@ -2920,7 +2904,7 @@ __forceinline__ __device__ void qk_gemm_prefetch_v_mls_ds_576_512_nopage_64_new_
     flash::wait_lds_data_arrived<false>(0);
     flash::raise_priority();
 
-    { 
+    {
         int min_tile_n = 0;
         #pragma unroll
         for(int min_tile_k = 0; min_tile_k < 2; ++min_tile_k) {
@@ -2932,7 +2916,7 @@ __forceinline__ __device__ void qk_gemm_prefetch_v_mls_ds_576_512_nopage_64_new_
         }
     }
 
-    { 
+    {
         int min_tile_n = 1;
         #pragma unroll
         for(int min_tile_k = 0; min_tile_k < 2; ++min_tile_k) {
@@ -2948,11 +2932,11 @@ __forceinline__ __device__ void qk_gemm_prefetch_v_mls_ds_576_512_nopage_64_new_
 
 
 template<int kHeadDim, int kHeadDimV, int kBlockM, int kBlockN, int kBlockK, int WARP_M, int WARP_N, int STAGES, typename Element, typename ElementAccum, bool Is_even_MN, bool Is_FlashMLA>
-__forceinline__ __device__ void qk_gemm_prefetch_v_mls_ds_576_512_nopage_64_new_999(
+__forceinline__ __device__ void qk_mla_dsa_h64_splitkv_indexed_d576(
         vec4_uint qv_ptr,
         vec4_uint q_ptr,
         vec4_uint k_ptr,
-        Element* v_faker,
+        Element* v_base_ptr,
         Element* q_lds,
         Element* k_lds,
         Element* v_lds,
@@ -3028,7 +3012,7 @@ __forceinline__ __device__ void qk_gemm_prefetch_v_mls_ds_576_512_nopage_64_new_
     flash::wait_all_warp_arrived();
     if(warp_id<2)
     {
-        inline_buffer_load_dwordx4_lds(k_lds, k_ptr, lds_offset, g_offset_s, g_offset_v); 
+        inline_buffer_load_dwordx4_lds(k_lds, k_ptr, lds_offset, g_offset_s, g_offset_v);
     }
 
     if constexpr (STAGES == 2) {
@@ -3043,15 +3027,15 @@ __forceinline__ __device__ void qk_gemm_prefetch_v_mls_ds_576_512_nopage_64_new_
     g_offset_s = 256 * ELEMENT_BYTES / 4 + warp_id * 16;
     g_offset_s_2 = 256 * ELEMENT_BYTES / 4 + warp_id * 16 + 64;
     flash::wait_all_warp_arrived();
-    inline_buffer_load_dwordx4_lds(k_lds, k_ptr, lds_offset, g_offset_s, g_offset_v); 
-    inline_buffer_load_dwordx4_lds(k_lds, k_ptr, lds_offset_2, g_offset_s_2, g_offset_v); 
+    inline_buffer_load_dwordx4_lds(k_lds, k_ptr, lds_offset, g_offset_s, g_offset_v);
+    inline_buffer_load_dwordx4_lds(k_lds, k_ptr, lds_offset_2, g_offset_s_2, g_offset_v);
 
     flash::wait_buffer_data_arrived<true>(K_LOAD_REQUESTS);
 
     k_stage_id ^= 1;
     int stage_id = 0;
 
-    // K DS  
+    // K DS
     {
         int k_lds_load_offset = k_lds_base + (k_stage_id * 16 * 256) * ELEMENT_BYTES;
         DS_READ_MATRIX_32X32_B16(k_lds_load_offset, k_reg[stage_id * 2].f16, k_reg[stage_id * 2 + 1].f16, true);
@@ -3061,7 +3045,7 @@ __forceinline__ __device__ void qk_gemm_prefetch_v_mls_ds_576_512_nopage_64_new_
     flash::wait_lds_data_arrived<false>(0);
     flash::raise_priority();
 
-    { 
+    {
         int min_tile_n = 0;
         #pragma unroll
         for(int min_tile_k = 0; min_tile_k < 2; ++min_tile_k) {
@@ -3073,7 +3057,7 @@ __forceinline__ __device__ void qk_gemm_prefetch_v_mls_ds_576_512_nopage_64_new_
         }
     }
 
-    { 
+    {
         int min_tile_n = 1;
         #pragma unroll
         for(int min_tile_k = 0; min_tile_k < 2; ++min_tile_k) {
@@ -3092,15 +3076,15 @@ __forceinline__ __device__ void qk_gemm_prefetch_v_mls_ds_576_512_nopage_64_new_
     g_offset_s = 0 * ELEMENT_BYTES / 4 + warp_id * 16;
     g_offset_s_2 = 0 * ELEMENT_BYTES / 4 + warp_id * 16 + 64;
     flash::wait_all_warp_arrived();
-    inline_buffer_load_dwordx4_lds(k_lds, k_ptr, lds_offset, g_offset_s, g_offset_v); 
-    inline_buffer_load_dwordx4_lds(k_lds, k_ptr, lds_offset_2, g_offset_s_2, g_offset_v); 
+    inline_buffer_load_dwordx4_lds(k_lds, k_ptr, lds_offset, g_offset_s, g_offset_v);
+    inline_buffer_load_dwordx4_lds(k_lds, k_ptr, lds_offset_2, g_offset_s_2, g_offset_v);
 
     flash::wait_buffer_data_arrived<true>(K_LOAD_REQUESTS);
 
     k_stage_id ^= 1;
     stage_id = 0;
 
-    // K DS  
+    // K DS
     {
         int k_lds_load_offset = k_lds_base + (k_stage_id * 16 * 256) * ELEMENT_BYTES;
         int k_lds_load_offset_2 = k_lds_base + (k_stage_id * 16 * 256 + 16 * 64) * ELEMENT_BYTES;
@@ -3116,14 +3100,14 @@ __forceinline__ __device__ void qk_gemm_prefetch_v_mls_ds_576_512_nopage_64_new_
         DS_READ_MATRIX_32X32_B16(k_lds_load_offset, k_reg[stage_id * 2].f16, k_reg[stage_id * 2 + 1].f16, true);
         DS_READ_MATRIX_32X32_B16(k_lds_load_offset_2, k_reg[4 + stage_id * 2].f16, k_reg[4 + stage_id * 2 + 1].f16, true);
     }
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       
+
     // Wait DS
     flash::wait_lds_data_arrived<false>(6);
     flash::raise_priority();
 
-    // MMAC 
+    // MMAC
     stage_id ^= 1;
-    { 
+    {
         int min_tile_n = 0;
         #pragma unroll
         for(int min_tile_k = 0; min_tile_k < 2; ++min_tile_k) {
@@ -3135,7 +3119,7 @@ __forceinline__ __device__ void qk_gemm_prefetch_v_mls_ds_576_512_nopage_64_new_
         }
     }
 
-    { 
+    {
         int min_tile_n = 1;
         #pragma unroll
         for(int min_tile_k = 0; min_tile_k < 2; ++min_tile_k) {
@@ -3163,7 +3147,7 @@ __forceinline__ __device__ void qk_gemm_prefetch_v_mls_ds_576_512_nopage_64_new_
         }
     }
 
-    { 
+    {
         int min_tile_n = 1;
         #pragma unroll
         for(int min_tile_k = 0; min_tile_k < 2; ++min_tile_k) {
@@ -3180,7 +3164,7 @@ __forceinline__ __device__ void qk_gemm_prefetch_v_mls_ds_576_512_nopage_64_new_
     flash::raise_priority();
 
     stage_id ^= 1;
-    { 
+    {
         int min_tile_n = 0;
         #pragma unroll
         for(int min_tile_k = 0; min_tile_k < 2; ++min_tile_k) {
@@ -3192,7 +3176,7 @@ __forceinline__ __device__ void qk_gemm_prefetch_v_mls_ds_576_512_nopage_64_new_
         }
     }
 
-    { 
+    {
         int min_tile_n = 1;
         #pragma unroll
         for(int min_tile_k = 0; min_tile_k < 2; ++min_tile_k) {
@@ -3208,7 +3192,7 @@ __forceinline__ __device__ void qk_gemm_prefetch_v_mls_ds_576_512_nopage_64_new_
     flash::wait_lds_data_arrived<false>(0);
     flash::raise_priority();
 
-    { 
+    {
         int min_tile_n = 0;
         #pragma unroll
         for(int min_tile_k = 0; min_tile_k < 2; ++min_tile_k) {
@@ -3220,7 +3204,7 @@ __forceinline__ __device__ void qk_gemm_prefetch_v_mls_ds_576_512_nopage_64_new_
         }
     }
 
-    { 
+    {
         int min_tile_n = 1;
         #pragma unroll
         for(int min_tile_k = 0; min_tile_k < 2; ++min_tile_k) {
@@ -3243,7 +3227,7 @@ __forceinline__ __device__ void qk_gemm_prefetch_v_mls_ds_576_512_nopage_64_new_
         flash::wait_all_warp_arrived();
 
         if(warp_id<2){
-            inline_buffer_load_dwordx4_lds(k_lds, k_ptr, lds_offset, g_offset_s, g_offset_v); 
+            inline_buffer_load_dwordx4_lds(k_lds, k_ptr, lds_offset, g_offset_s, g_offset_v);
             flash::wait_buffer_data_arrived<true>(1);
         }
         else{
@@ -3257,7 +3241,7 @@ __forceinline__ __device__ void qk_gemm_prefetch_v_mls_ds_576_512_nopage_64_new_
     k_stage_id ^= 1;
     stage_id = 0;
 
-    // K DS  
+    // K DS
     {
         int k_lds_load_offset = k_lds_base + (k_stage_id * 16 * 256) * ELEMENT_BYTES;
         int k_lds_load_offset_2 = k_lds_base + (k_stage_id * 16 * 256 + 16 * 64) * ELEMENT_BYTES;
@@ -3273,14 +3257,14 @@ __forceinline__ __device__ void qk_gemm_prefetch_v_mls_ds_576_512_nopage_64_new_
         DS_READ_MATRIX_32X32_B16(k_lds_load_offset, k_reg[stage_id * 2].f16, k_reg[stage_id * 2 + 1].f16, true);
         DS_READ_MATRIX_32X32_B16(k_lds_load_offset_2, k_reg[4 + stage_id * 2].f16, k_reg[4 + stage_id * 2 + 1].f16, true);
     }
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       
+
     // Wait DS
     flash::wait_lds_data_arrived<false>(6);
     flash::raise_priority();
 
-    // MMAC 
+    // MMAC
     stage_id ^= 1;
-    { 
+    {
         int min_tile_n = 0;
         #pragma unroll
         for(int min_tile_k = 0; min_tile_k < 2; ++min_tile_k) {
@@ -3292,7 +3276,7 @@ __forceinline__ __device__ void qk_gemm_prefetch_v_mls_ds_576_512_nopage_64_new_
         }
     }
 
-    { 
+    {
         int min_tile_n = 1;
         #pragma unroll
         for(int min_tile_k = 0; min_tile_k < 2; ++min_tile_k) {
@@ -3320,7 +3304,7 @@ __forceinline__ __device__ void qk_gemm_prefetch_v_mls_ds_576_512_nopage_64_new_
         }
     }
 
-    { 
+    {
         int min_tile_n = 1;
         #pragma unroll
         for(int min_tile_k = 0; min_tile_k < 2; ++min_tile_k) {
@@ -3337,7 +3321,7 @@ __forceinline__ __device__ void qk_gemm_prefetch_v_mls_ds_576_512_nopage_64_new_
     flash::raise_priority();
 
     stage_id ^= 1;
-    { 
+    {
         int min_tile_n = 0;
         #pragma unroll
         for(int min_tile_k = 0; min_tile_k < 2; ++min_tile_k) {
@@ -3349,7 +3333,7 @@ __forceinline__ __device__ void qk_gemm_prefetch_v_mls_ds_576_512_nopage_64_new_
         }
     }
 
-    { 
+    {
         int min_tile_n = 1;
         #pragma unroll
         for(int min_tile_k = 0; min_tile_k < 2; ++min_tile_k) {
@@ -3365,7 +3349,7 @@ __forceinline__ __device__ void qk_gemm_prefetch_v_mls_ds_576_512_nopage_64_new_
     flash::wait_lds_data_arrived<false>(0);
     flash::raise_priority();
 
-    { 
+    {
         int min_tile_n = 0;
         #pragma unroll
         for(int min_tile_k = 0; min_tile_k < 2; ++min_tile_k) {
@@ -3377,7 +3361,7 @@ __forceinline__ __device__ void qk_gemm_prefetch_v_mls_ds_576_512_nopage_64_new_
         }
     }
 
-    { 
+    {
         int min_tile_n = 1;
         #pragma unroll
         for(int min_tile_k = 0; min_tile_k < 2; ++min_tile_k) {
@@ -3395,7 +3379,7 @@ __forceinline__ __device__ void qk_gemm_prefetch_v_mls_ds_576_512_nopage_64_new_
 }
 
 template<int kHeadDim, int kHeadDimV, int kBlockM, int kBlockN, int kBlockK, int WARP_M, int WARP_N, int STAGES, typename Element, typename ElementAccum, bool Is_even_MN, bool Is_FlashMLA>
-__forceinline__ __device__ void qk_gemm_prefetch_v_mls_ds_576_512_nopage_64_new_q(
+__forceinline__ __device__ void qk_mla_dsa_h64_load_q_d576(
         vec4_uint qv_ptr,
         vec4_uint q_ptr,
         vec4_uint k_ptr,
@@ -3425,7 +3409,7 @@ __forceinline__ __device__ void qk_gemm_prefetch_v_mls_ds_576_512_nopage_64_new_
     constexpr int K_LDS_LOAD_NUM  = (kHeadDim_OPT * WARP_N) / (32 * 16);
     constexpr int K_LOAD_REQUESTS = K_LDS_LOAD_NUM / WARP_NUM;
     constexpr int ELEMENT_BYTES   = sizeof(Element);
-    constexpr int WARP_NUM_M = 1; 
+    constexpr int WARP_NUM_M = 1;
     constexpr int WARP_NUM_N = 4;
     int warp_id_m = warp_id / WARP_NUM_N;
     int warp_id_n = warp_id % WARP_NUM_N;
@@ -3441,7 +3425,7 @@ __forceinline__ __device__ void qk_gemm_prefetch_v_mls_ds_576_512_nopage_64_new_
     q_srsrc[2] = __seqlen_q_stride;
     q_srsrc2[2] = __seqlen_q_stride;
 
-    q_srsrc[3] = 0; 
+    q_srsrc[3] = 0;
     q_srsrc2[3] = 0;
 
     int q_stage_id = 0;
@@ -3450,9 +3434,9 @@ __forceinline__ __device__ void qk_gemm_prefetch_v_mls_ds_576_512_nopage_64_new_
         q_stage_id ^= 1;
     }
 
-    {   
+    {
         for(int k_loop = 1; k_loop < (kHeadDim / kBlockK); ++k_loop) {
-            
+
             {
                 uint64_t q_base_addr;
                 int seqlen_q_stride;
@@ -3482,15 +3466,15 @@ __forceinline__ __device__ void qk_gemm_prefetch_v_mls_ds_576_512_nopage_64_new_
 
             // 不对称MLS指令
             flash::wait_buffer_data_arrived<true>(Q_LOAD_REQUESTS);
-            
+
             q_stage_id ^= 1;
 
             // Q DS
             {
                 int q_lds_load_offset = q_lds_base + (q_stage_id * kBlockM * kBlockK + warp_id * 16 * 64) * ELEMENT_BYTES;
                 int q_lds_load_offset2 = q_lds_base + (q_stage_id * kBlockM * kBlockK + warp_id * 16 * 64 + 16 * 32) * ELEMENT_BYTES;
-                DS_READ_MATRIX_32X16_B16(q_lds_load_offset, q_reg[(k_loop-1) * 2 + 0].f16, true);  
-                DS_READ_MATRIX_32X16_B16(q_lds_load_offset2, q_reg[(k_loop-1) * 2 + 1].f16, true);  
+                DS_READ_MATRIX_32X16_B16(q_lds_load_offset, q_reg[(k_loop-1) * 2 + 0].f16, true);
+                DS_READ_MATRIX_32X16_B16(q_lds_load_offset2, q_reg[(k_loop-1) * 2 + 1].f16, true);
             }
 
             // Wait DS
@@ -3505,8 +3489,8 @@ __forceinline__ __device__ void qk_gemm_prefetch_v_mls_ds_576_512_nopage_64_new_
         {
             int q_lds_load_offset = q_lds_base + (q_stage_id * kBlockM * kBlockK + warp_id * 16 * 64) * ELEMENT_BYTES;
             int q_lds_load_offset2 = q_lds_base + (q_stage_id * kBlockM * kBlockK + warp_id * 16 * 64 + 16 * 32) * ELEMENT_BYTES;
-            DS_READ_MATRIX_32X16_B16(q_lds_load_offset, q_reg[(kHeadDim / kBlockK - 1) * 2 + 0].f16, true);  
-            DS_READ_MATRIX_32X16_B16(q_lds_load_offset2, q_reg[(kHeadDim / kBlockK - 1) * 2 + 1].f16, true);  
+            DS_READ_MATRIX_32X16_B16(q_lds_load_offset, q_reg[(kHeadDim / kBlockK - 1) * 2 + 0].f16, true);
+            DS_READ_MATRIX_32X16_B16(q_lds_load_offset2, q_reg[(kHeadDim / kBlockK - 1) * 2 + 1].f16, true);
         }
 
         // Wait DS
