@@ -199,6 +199,64 @@ __device__ void KernelTemplate_B_H_64<D_QK, HAVE_TOPK_LENGTH, IS_TOPK_2048, USE_
 
     auto buffer_load_lds_indices = [&] (int n, int num_indices) {
         if constexpr (IS_TOPK_2048 || CACHE_INDICES_IN_LDS) {
+            if (has_extra) {
+                auto load_index_segment_to_lds = [&](int* src, int src_start, int dst_start, int count) {
+                    if (count <= 0) {
+                        return;
+                    }
+                    PtrWrapper glob_ptr_indices;
+                    *(uint64_t*)&glob_ptr_indices = reinterpret_cast<uint64_t>(src);
+                    glob_ptr_indices.latter |= 0x40000000;
+                    uint32x4_t global_addr_indices = {0};
+                    global_addr_indices[0] = (glob_ptr_indices.former);
+                    global_addr_indices[1] = (glob_ptr_indices.latter);
+                    global_addr_indices[2] = 0x80000000;
+                    global_addr_indices[3] = 0x00020000;
+
+                    int ldsAddrPerWave = reinterpret_cast<size_t>(sIndices + dst_start) + warp_idx * 64 * 4 * 4;
+                    ldsAddrPerWave = __builtin_amdgcn_readfirstlane(ldsAddrPerWave);
+                    const int offset_v = lane_idx * 4 * 4 + warp_idx * 64 * 4 * 4;
+                    const int offset_s = src_start * 4;
+                    const int first_index = warp_idx * 256 + lane_idx * 4;
+                    if (first_index + 3 < count) {
+                        __builtin_amdgcn_sched_barrier(0);
+                        asm volatile(
+                            "s_mov_b32 m0, %1 \n\t"
+                            "s_nop 0 \n\t"
+                            "buffer_load_dwordx4 %0, %2, %3  offen  offset:0, lds \n" ::"v"(offset_v),
+                            "s"(ldsAddrPerWave), "s"(global_addr_indices), "s"(offset_s)
+                        :);
+                        __builtin_amdgcn_sched_barrier(0);
+                    } else if (first_index < count) {
+                        #pragma unroll
+                        for (int i = 0; i < 4; ++i) {
+                            const int local_index = first_index + i;
+                            if (local_index < count) {
+                                sIndices[dst_start + local_index] = src[src_start + local_index];
+                            }
+                        }
+                    }
+                };
+
+                const int logical_start = split_begin + n * 1024;
+                const int logical_end = min(logical_start + num_indices, total_topk);
+                const int main_begin = min(max(logical_start, 0), params.topk);
+                const int main_end = min(max(logical_end, 0), params.topk);
+                load_index_segment_to_lds(
+                    gIndices,
+                    main_begin,
+                    main_begin - logical_start,
+                    main_end - main_begin);
+
+                const int extra_begin = min(max(logical_start, params.topk), total_topk);
+                const int extra_end = min(max(logical_end, params.topk), total_topk);
+                load_index_segment_to_lds(
+                    gExtraIndices,
+                    extra_begin - params.topk,
+                    extra_begin - logical_start,
+                    extra_end - extra_begin);
+                return;
+            }
             PtrWrapper glob_ptr_indices;
             *(uint64_t*)&glob_ptr_indices = reinterpret_cast<uint64_t>(gIndices);
             glob_ptr_indices.latter |= 0x40000000;
@@ -1508,7 +1566,7 @@ template<int D_QK, bool HAVE_TOPK_LENGTH, bool USE_ATTN_SINK>
 static void run_h64_fast_path(const SparseAttnFwdParams& params) {
     if (params.extra_topk == 0 && params.topk == 2048) {
         KernelTemplate_B_H_64<D_QK, HAVE_TOPK_LENGTH, true, USE_ATTN_SINK, false>::run(params);
-    } else if (params.extra_topk == 0 && params.topk <= 1024) {
+    } else if (params.topk + params.extra_topk <= 1024) {
         KernelTemplate_B_H_64<D_QK, HAVE_TOPK_LENGTH, false, USE_ATTN_SINK, true>::run(params);
     } else {
         KernelTemplate_B_H_64<D_QK, HAVE_TOPK_LENGTH, false, USE_ATTN_SINK, false>::run(params);
@@ -1519,7 +1577,7 @@ template<int D_QK, bool HAVE_TOPK_LENGTH, bool USE_ATTN_SINK>
 static void run_h64_c_load_fast_path(const SparseAttnFwdParams& params) {
     if (params.extra_topk == 0 && params.topk == 2048) {
         KernelTemplate_B_H_64<D_QK, HAVE_TOPK_LENGTH, true, USE_ATTN_SINK, false, false, true>::run(params);
-    } else if (params.extra_topk == 0 && params.topk <= 1024) {
+    } else if (params.topk + params.extra_topk <= 1024) {
         KernelTemplate_B_H_64<D_QK, HAVE_TOPK_LENGTH, false, USE_ATTN_SINK, true, false, true>::run(params);
     } else {
         KernelTemplate_B_H_64<D_QK, HAVE_TOPK_LENGTH, false, USE_ATTN_SINK, false, false, true>::run(params);
