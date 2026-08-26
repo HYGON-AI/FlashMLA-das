@@ -236,23 +236,15 @@ run_gfx936_prefill_kernel_decode(
     const int page_block_size = kv.size(1);
     const int h_kv = kv.size(2);
     const int topk = indices.size(2);
-    const bool has_extra = extra_kv.has_value() && extra_indices.has_value() &&
-                           extra_kv->numel() > 0 && extra_indices->numel() > 0 &&
-                           extra_indices->size(2) > 0;
-    const int extra_topk = has_extra ? extra_indices->size(2) : 0;
 
+    TORCH_CHECK(!extra_kv.has_value() && !extra_indices.has_value() && !extra_topk_length.has_value(),
+                "gfx936 BF16 DSA decode via prefill kernel does not support extra_kv yet");
     TORCH_CHECK(b > 0 && s_q > 0 && h_q > 0, "Invalid q shape for gfx936 BF16 DSA decode");
     TORCH_CHECK(h_kv == 1, "gfx936 BF16 DSA decode only supports h_kv == 1");
     TORCH_CHECK(h_q == 64 || h_q == 128, "gfx936 BF16 DSA decode only supports h_q == 64 or 128");
     TORCH_CHECK(d_qk == 512, "gfx936 BF16 DSA decode only supports d_qk == 512");
     TORCH_CHECK(d_v == 512, "gfx936 BF16 DSA decode only supports d_v == 512");
     TORCH_CHECK(topk > 0, "topk must be positive");
-    if (has_extra) {
-        TORCH_CHECK(extra_kv->size(1) > 0, "extra page_block_size must be positive");
-        TORCH_CHECK(extra_kv->size(2) == h_kv, "extra_kv h_kv must match kv h_kv");
-        TORCH_CHECK(extra_kv->size(3) == d_qk, "extra_kv d_qk must match q d_qk");
-    }
-    check_optional_extra(extra_kv, extra_indices, extra_topk_length);
 
     KU_CHECK_DEVICE(q);
     KU_CHECK_DEVICE(kv);
@@ -261,9 +253,6 @@ run_gfx936_prefill_kernel_decode(
     KU_CHECK_DEVICE(attn_sink);
     KU_CHECK_DEVICE(tile_scheduler_metadata);
     KU_CHECK_DEVICE(num_splits);
-    KU_CHECK_DEVICE(extra_kv);
-    KU_CHECK_DEVICE(extra_indices);
-    KU_CHECK_DEVICE(extra_topk_length);
 
     KU_CHECK_DTYPE(q, torch::kBFloat16);
     KU_CHECK_DTYPE(kv, torch::kBFloat16);
@@ -272,28 +261,18 @@ run_gfx936_prefill_kernel_decode(
     KU_CHECK_DTYPE(attn_sink, torch::kFloat32);
     KU_CHECK_DTYPE(tile_scheduler_metadata, torch::kInt32);
     KU_CHECK_DTYPE(num_splits, torch::kInt32);
-    KU_CHECK_DTYPE(extra_kv, torch::kBFloat16);
-    KU_CHECK_DTYPE(extra_indices, torch::kInt32);
-    KU_CHECK_DTYPE(extra_topk_length, torch::kInt32);
 
     KU_CHECK_LAST_DIM_CONTIGUOUS(q);
     KU_CHECK_LAST_DIM_CONTIGUOUS(kv);
     KU_CHECK_LAST_DIM_CONTIGUOUS(indices);
     KU_CHECK_CONTIGUOUS(topk_length);
     KU_CHECK_CONTIGUOUS(attn_sink);
-    KU_CHECK_LAST_DIM_CONTIGUOUS(extra_kv);
-    KU_CHECK_LAST_DIM_CONTIGUOUS(extra_indices);
-    KU_CHECK_CONTIGUOUS(extra_topk_length);
 
     KU_CHECK_SHAPE(q, b, s_q, h_q, d_qk);
     KU_CHECK_SHAPE(kv, kv.size(0), page_block_size, h_kv, d_qk);
     KU_CHECK_SHAPE(indices, b, s_q, topk);
     KU_CHECK_SHAPE(topk_length, b);
     KU_CHECK_SHAPE(attn_sink, h_q);
-    if (has_extra) {
-        KU_CHECK_SHAPE(extra_indices, b, s_q, extra_topk);
-        KU_CHECK_SHAPE(extra_topk_length, b);
-    }
 
     c10::cuda::CUDAGuard device_guard{q.device()};
     auto opts = q.options();
@@ -302,7 +281,7 @@ run_gfx936_prefill_kernel_decode(
     at::Tensor max_logits = torch::empty({b, s_q, h_q}, opts.dtype(at::kFloat));
     at::Tensor lse;
 
-    int requested_num_splits = default_num_splits_gfx936_decode(b, s_q, h_q, topk, extra_topk);
+    int requested_num_splits = default_num_splits_gfx936_decode(b, s_q, h_q, topk, 0);
     if (auto forced_num_splits = force_num_splits_for_tuning(); forced_num_splits.has_value()) {
         requested_num_splits = forced_num_splits.value();
     }
@@ -310,30 +289,17 @@ run_gfx936_prefill_kernel_decode(
                 "gfx936 BF16 DSA decode requires 1 <= num_splits <= num_sms");
     constexpr int64_t kGfx936BufferLoadAddressBytes = 1LL << 32;
     const int64_t padded_k_tokens = static_cast<int64_t>(kv.size(0)) * page_block_size;
-    const int64_t padded_extra_k_tokens = has_extra ? static_cast<int64_t>(extra_kv->size(0)) * extra_kv->size(1) : 0;
     const int64_t padded_k_bytes = padded_k_tokens * d_qk * static_cast<int64_t>(sizeof(cutlass::bfloat16_t));
-    const int64_t padded_extra_k_bytes = padded_extra_k_tokens * d_qk * static_cast<int64_t>(sizeof(cutlass::bfloat16_t));
-    const bool decode_use_c_load = padded_k_bytes > kGfx936BufferLoadAddressBytes ||
-                                   padded_extra_k_bytes > kGfx936BufferLoadAddressBytes;
+    const bool decode_use_c_load = padded_k_bytes > kGfx936BufferLoadAddressBytes;
 
     at::Tensor topk_length_flat;
-    at::Tensor extra_topk_length_flat;
     int* topk_length_ptr = nullptr;
-    int* extra_topk_length_ptr = nullptr;
     if (topk_length.has_value()) {
         if (s_q == 1) {
             topk_length_ptr = topk_length->data_ptr<int>();
         } else {
             topk_length_flat = topk_length->view({b, 1}).expand({b, s_q}).reshape({b * s_q}).contiguous();
             topk_length_ptr = topk_length_flat.data_ptr<int>();
-        }
-    }
-    if (has_extra && extra_topk_length.has_value()) {
-        if (s_q == 1) {
-            extra_topk_length_ptr = extra_topk_length->data_ptr<int>();
-        } else {
-            extra_topk_length_flat = extra_topk_length->view({b, 1}).expand({b, s_q}).reshape({b * s_q}).contiguous();
-            extra_topk_length_ptr = extra_topk_length_flat.data_ptr<int>();
         }
     }
 
@@ -367,23 +333,11 @@ run_gfx936_prefill_kernel_decode(
         nullptr,
         0, 0,
         0, 0, 0,
-        decode_use_c_load,
-
-        has_extra ? static_cast<int>(extra_kv->size(0) * extra_kv->size(1)) : 0,
-        extra_topk,
-        has_extra ? reinterpret_cast<cutlass::bfloat16_t*>(extra_kv->data_ptr()) : nullptr,
-        has_extra ? reinterpret_cast<int*>(extra_indices->data_ptr()) : nullptr,
-        extra_topk_length_ptr,
-        has_extra ? int64_stride_to_int(extra_kv->stride(1)) : 0,
-        has_extra ? int64_stride_to_int(extra_kv->stride(2)) : 0,
-        has_extra ? int64_stride_to_int(extra_indices->stride(0)) : 0,
-        has_extra ? int64_stride_to_int(extra_indices->stride(1)) : 0,
-        extra_topk
+        decode_use_c_load
     };
 
-    const bool have_any_topk_length = topk_length.has_value() || (has_extra && extra_topk_length.has_value());
     if (requested_num_splits == 1) {
-        if (have_any_topk_length) {
+        if (topk_length.has_value()) {
             if (decode_use_c_load) {
                 gfx93::fwd::run_fwd_phase1_c_load_kernel<512, true>(fwd_params);
             } else {
@@ -398,8 +352,7 @@ run_gfx936_prefill_kernel_decode(
         }
         lse = lse_tmp.permute({0, 2, 1}).contiguous();
     } else {
-        const int total_topk = topk + extra_topk;
-        fwd_params.split_partition_size = std::max(64, (total_topk + requested_num_splits - 1) / requested_num_splits);
+        fwd_params.split_partition_size = std::max(64, (topk + requested_num_splits - 1) / requested_num_splits);
         fwd_params.split_partition_size = ((fwd_params.split_partition_size + 63) / 64) * 64;
         at::Tensor lse_accum = torch::empty({b * requested_num_splits, s_q, h_q}, opts.dtype(at::kFloat));
         at::Tensor out_accum = torch::empty({b * requested_num_splits, s_q, h_q, d_v}, opts.dtype(at::kFloat));
@@ -411,7 +364,7 @@ run_gfx936_prefill_kernel_decode(
         fwd_params.split_stride_o_accum_s_q = int64_stride_to_int(out_accum.stride(1));
         fwd_params.split_stride_o_accum_h_q = int64_stride_to_int(out_accum.stride(2));
 
-        if (have_any_topk_length) {
+        if (topk_length.has_value()) {
             gfx93::fwd::run_fwd_phase1_splitkv_kernel<512, true>(fwd_params);
         } else {
             gfx93::fwd::run_fwd_phase1_splitkv_kernel<512, false>(fwd_params);
