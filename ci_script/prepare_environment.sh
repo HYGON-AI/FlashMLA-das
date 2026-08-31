@@ -12,22 +12,57 @@ source /opt/dtk/env.sh
 
 cd "${CI_PROJECT_DIR:?CI_PROJECT_DIR must be set by GitLab}"
 
+
 # Install the newest AICC package available on the Runner's shared storage.
 # Its absence is non-fatal because some Runners include AICC already.
-latest_aicc_run="$(ls /ArchivedFile/ai_cc/nightly/dtk_llvm_*.run 2>/dev/null | sort -t '_' -k4 -nr | head -n1)"
+#
+# AICC filename format:
+#   dtk_llvm_<commit>_<YYYYMMDD[HHMM]>.run
+#
+# Compare the timestamp extracted from the filename instead of sorting the full
+# path, because the parent directory "/ArchivedFile/ai_cc" contains an
+# underscore that would shift the sort field.
+aicc_dir="/ArchivedFile/ai_cc/nightly"
+latest_aicc_run=""
+latest_aicc_timestamp=""
+
+shopt -s nullglob
+for aicc_candidate in "${aicc_dir}"/dtk_llvm_*.run; do
+  aicc_candidate_name="${aicc_candidate##*/}"
+  aicc_timestamp="${aicc_candidate_name%.run}"
+  aicc_timestamp="${aicc_timestamp##*_}"
+
+  if [[ ! "${aicc_timestamp}" =~ ^[0-9]{8}([0-9]{4})?$ ]]; then
+    echo "Warning: skipping AICC installer with an invalid timestamp: ${aicc_candidate_name}" >&2
+    continue
+  fi
+
+  if [[ -z "${latest_aicc_timestamp}" ]] ||
+     (( 10#${aicc_timestamp} > 10#${latest_aicc_timestamp} )); then
+    latest_aicc_timestamp="${aicc_timestamp}"
+    latest_aicc_run="${aicc_candidate}"
+  fi
+done
+shopt -u nullglob
+
 if [[ -n "${latest_aicc_run}" ]]; then
-  aicc_installer="$(basename "${latest_aicc_run}")"
+  aicc_installer="${latest_aicc_run##*/}"
+
+  echo "Selected AICC installer: ${latest_aicc_run}"
+  echo "Selected AICC timestamp: ${latest_aicc_timestamp}"
+
   cp "${latest_aicc_run}" "/opt/${aicc_installer}"
   cd /opt
   chmod +x "${aicc_installer}"
 
-  # GitLab Runner enables pipefail.  When the installer exits, `yes` may get
+  # GitLab Runner enables pipefail. When the installer exits, `yes` may get
   # SIGPIPE and make the whole pipeline look failed even though installation
-  # succeeded.  Temporarily disable pipefail and keep the installer's status.
+  # succeeded. Temporarily disable pipefail and keep the installer's status.
   set +o pipefail
   yes | bash "${aicc_installer}"
   aicc_status="${PIPESTATUS[1]}"
   set -o pipefail
+
   if [[ "${aicc_status}" -ne 0 ]]; then
     echo "AICC installation failed: ${aicc_installer}" >&2
     exit "${aicc_status}"
