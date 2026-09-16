@@ -60,6 +60,7 @@ build:flashmla-wheel:
 
 publish:
   stage: publish
+  image: "${BUILD_IMAGE}"
   timeout: 3h
   tags:
     - nmz
