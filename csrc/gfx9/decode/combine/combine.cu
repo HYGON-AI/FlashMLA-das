@@ -40,8 +40,12 @@ flash_fwd_mla_combine_kernel(const CombineParams params) {
     {
         start_split_idx = batch_idx * params.num_splits; 
         end_split_idx = (batch_idx + 1) * params.num_splits;
-        int seqlen_k = __ldg(params.seqlens_k_ptr + batch_idx);
-        end_split_idx = std::min(cute::ceil_div(cute::ceil_div(seqlen_k, 64), params.partition_block_nums), params.num_splits) + start_split_idx;
+        if (params.seqlens_k_ptr != nullptr && params.partition_block_nums > 0) {
+            int seqlen_k = __ldg(params.seqlens_k_ptr + batch_idx);
+            end_split_idx = std::min(
+                cute::ceil_div(cute::ceil_div(seqlen_k, 64), params.partition_block_nums),
+                params.num_splits) + start_split_idx;
+        }
         // if (lane_idx == 0 && batch_idx == 61)
         // {
         //     printf(" batch_idx = %d start_split_idx = %d end_split_idx = %d seqlen_k = %d \n",batch_idx, start_split_idx, end_split_idx, seqlen_k);
