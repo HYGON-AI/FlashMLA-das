@@ -110,7 +110,12 @@ compute_attn_1rowblock_splitkv_sparse_mla_fp8(const SparseAttnDecodeParams &para
 static __device__ __forceinline__ void
 devfunc(const SparseAttnDecodeParams &params);
 
+static __device__ __forceinline__ void
+devfunc_fixed_split(const SparseAttnDecodeParams &params);
+
 static void run(const SparseAttnDecodeParams &params);
+
+static void run_fixed_split(const SparseAttnDecodeParams &params);
 
 };
 

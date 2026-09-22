@@ -109,6 +109,12 @@ struct SparseAttnDecodeParams {
     DecodingSchedMeta* __restrict__ tile_scheduler_metadata_ptr; // [num_sm_parts, ], contiguous
     int* __restrict__ num_splits_ptr; // [batch_size+1, ], contiguous
     int num_sm_parts;
+
+    // Fixed split-KV path. When enabled, blockIdx.z is
+    // batch_idx * fixed_num_splits + split_idx and no scheduler metadata is used.
+    int use_fixed_split;
+    int fixed_num_splits;
+    int fixed_partition_size;
 };
 
 struct CombineParams {
