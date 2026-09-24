@@ -174,11 +174,11 @@ struct Softmax {
             flash::template reduce_max</*zero_init=*/true>(scores, row_max);
             if constexpr (is_tp1)
             {
-                flash::template warp_allreduce_tp1(row_max, sRow_max_reduce_buffer, max_op);
+                flash::warp_allreduce_tp1(row_max, sRow_max_reduce_buffer, max_op);
             }
             else 
             {
-                flash::template warp_allreduce_(row_max, sRow_max_reduce_buffer, max_op);
+                flash::warp_allreduce_(row_max, sRow_max_reduce_buffer, max_op);
             }
             flash::scale_apply_exp2(scores, row_max, softmax_scale_log2);
             flash::reduce_sum</*zero_init=*/true>(scores, row_sum);
@@ -188,11 +188,11 @@ struct Softmax {
             flash::template reduce_max</*zero_init=*/false>(scores, row_max);
             if constexpr (is_tp1)
             {
-                flash::template warp_allreduce_tp1(row_max, sRow_max_reduce_buffer, max_op);
+                flash::warp_allreduce_tp1(row_max, sRow_max_reduce_buffer, max_op);
             }
             else 
             {
-                flash::template warp_allreduce_(row_max, sRow_max_reduce_buffer, max_op);
+                flash::warp_allreduce_(row_max, sRow_max_reduce_buffer, max_op);
             }            // Reshape acc_o from (MMA=4, MMA_M, MMA_K) to (nrow=(2, MMA_M), ncol=(2, MMA_K))
             Tensor acc_o_rowcol = make_tensor(acc_o.data(), flash::convert_layout_acc_rowcol(acc_o.layout()));
             static_assert(decltype(size<0>(acc_o_rowcol))::value == kNRows);
@@ -237,14 +237,14 @@ struct Softmax {
         static_assert(decltype(size<0>(scores))::value == kNRows);
         if (Is_first) {
             flash::template reduce_max</*zero_init=*/true>(scores, row_max);
-            flash::template warp_allreduce_(row_max, sRow_max_reduce_buffer, max_op);
+            flash::warp_allreduce_(row_max, sRow_max_reduce_buffer, max_op);
             flash::scale_apply_exp2(scores, row_max, softmax_scale_log2);
             flash::reduce_sum</*zero_init=*/true>(scores, row_sum);
         } else {
             Tensor scores_max_prev = make_fragment_like(row_max);
             cute::copy(row_max, scores_max_prev);
             flash::template reduce_max</*zero_init=*/false>(scores, row_max);
-            flash::template warp_allreduce_(row_max, sRow_max_reduce_buffer, max_op);
+            flash::warp_allreduce_(row_max, sRow_max_reduce_buffer, max_op);
             // Reshape acc_o from (MMA=4, MMA_M, MMA_K) to (nrow=(2, MMA_M), ncol=(2, MMA_K))
             // Tensor acc_o_rowcol = make_tensor(acc_o.data(), flash::convert_layout_acc_rowcol(acc_o.layout()));
             static_assert(1 == kNRows);
@@ -288,11 +288,11 @@ struct Softmax {
         quad_allreduce_(row_sum, row_sum, sum_op);
         if constexpr (is_tp1)
         {
-            flash::template warp_allreduce_tp1(row_sum, sRow_sum_reduce_buffer, sum_op);
+            flash::warp_allreduce_tp1(row_sum, sRow_sum_reduce_buffer, sum_op);
         }
         else 
         {
-            flash::template warp_allreduce_(row_sum, sRow_sum_reduce_buffer, sum_op);
+            flash::warp_allreduce_(row_sum, sRow_sum_reduce_buffer, sum_op);
         }        
         // if (block0())
         // {
@@ -321,14 +321,14 @@ struct Softmax {
         static_assert(decltype(size<0>(scores))::value == kNRows);
         if (Is_first) {
             flash::template reduce_max</*zero_init=*/true>(scores, row_max);
-            flash::template warp_allreduce_(row_max, sRow_max_reduce_buffer, max_op);
+            flash::warp_allreduce_(row_max, sRow_max_reduce_buffer, max_op);
             flash::scale_apply_exp2(scores, row_max, softmax_scale_log2);
             flash::reduce_sum</*zero_init=*/true>(scores, row_sum);
         } else {
             Tensor scores_max_prev = make_fragment_like(row_max);
             cute::copy(row_max, scores_max_prev);
             flash::template reduce_max</*zero_init=*/false>(scores, row_max);
-            flash::template warp_allreduce_(row_max, sRow_max_reduce_buffer, max_op);
+            flash::warp_allreduce_(row_max, sRow_max_reduce_buffer, max_op);
             // Reshape acc_o from (MMA=4, MMA_M, MMA_K) to (nrow=(2, MMA_M), ncol=(2, MMA_K))
             Tensor acc_o_rowcol = make_tensor(acc_o.data(), flash::convert_layout_acc_rowcol(acc_o.layout()));
             static_assert(decltype(size<0>(acc_o_rowcol))::value == kNRows);
@@ -370,7 +370,7 @@ struct Softmax {
     __forceinline__ __device__ TensorT normalize_softmax_lse_prefill(Tensor0 &acc_o, Tensor1& sRow_sum_reduce_buffer, float softmax_scale, float rp_dropout=1.0) {
         SumOp<float> sum_op;
         quad_allreduce_(row_sum, row_sum, sum_op);
-        flash::template warp_allreduce_(row_sum, sRow_sum_reduce_buffer, sum_op);
+        flash::warp_allreduce_(row_sum, sRow_sum_reduce_buffer, sum_op);
         TensorT lse = make_fragment_like(row_sum);
         Tensor acc_o_rowcol = make_tensor(acc_o.data(), flash::convert_layout_acc_rowcol(acc_o.layout()));
         static_assert(decltype(size<0>(acc_o_rowcol))::value == kNRows);
@@ -390,7 +390,7 @@ struct Softmax {
     __forceinline__ __device__ TensorT normalize_softmax_lse_fp8(Tensor0 &acc_o, Tensor1& sRow_sum_reduce_buffer, float softmax_scale,float descale_v, float rp_dropout=1.0) {
         SumOp<float> sum_op;
         quad_allreduce_(row_sum, row_sum, sum_op);
-        flash::template warp_allreduce_(row_sum, sRow_sum_reduce_buffer, sum_op);
+        flash::warp_allreduce_(row_sum, sRow_sum_reduce_buffer, sum_op);
       
         TensorT lse = make_fragment_like(row_sum);
         Tensor acc_o_rowcol = make_tensor(acc_o.data(), flash::convert_layout_acc_rowcol(acc_o.layout()));
@@ -419,11 +419,11 @@ struct Softmax {
             flash::template reduce_max</*zero_init=*/true>(scores, row_max);
             if constexpr (is_tp1)
             {
-                flash::template warp_allreduce_tp1(row_max, sRow_max_reduce_buffer, max_op);
+                flash::warp_allreduce_tp1(row_max, sRow_max_reduce_buffer, max_op);
             }
             else 
             {
-                flash::template warp_allreduce_(row_max, sRow_max_reduce_buffer, max_op);
+                flash::warp_allreduce_(row_max, sRow_max_reduce_buffer, max_op);
             }
             flash::scale_apply_exp2(scores, row_max, softmax_scale_log2);
             flash::reduce_sum</*zero_init=*/true>(scores, row_sum);
@@ -433,11 +433,11 @@ struct Softmax {
             flash::template reduce_max</*zero_init=*/false>(scores, row_max);
             if constexpr (is_tp1)
             {
-                flash::template warp_allreduce_tp1(row_max, sRow_max_reduce_buffer, max_op);
+                flash::warp_allreduce_tp1(row_max, sRow_max_reduce_buffer, max_op);
             }
             else 
             {
-                flash::template warp_allreduce_(row_max, sRow_max_reduce_buffer, max_op);
+                flash::warp_allreduce_(row_max, sRow_max_reduce_buffer, max_op);
             }            // Reshape acc_o from (MMA=4, MMA_M, MMA_K) to (nrow=(2, MMA_M), ncol=(2, MMA_K))
             // Tensor acc_o_rowcol = make_tensor(acc_o.data(), flash::convert_layout_acc_rowcol(acc_o.layout()));
             static_assert(1 == kNRows);
@@ -491,14 +491,14 @@ struct Softmax {
         static_assert(decltype(size<0>(scores))::value == kNRows);
         if constexpr (Is_first) {
             flash::template reduce_max</*zero_init=*/true>(scores, row_max);
-            flash::template warp_allreduce_tp4(row_max, sRow_max_reduce_buffer, max_op);
+            flash::warp_allreduce_tp4(row_max, sRow_max_reduce_buffer, max_op);
             flash::scale_apply_exp2(scores, row_max, softmax_scale_log2);
             flash::reduce_sum</*zero_init=*/true>(scores, row_sum);
         } else {
             Tensor scores_max_prev = make_fragment_like(row_max);
             cute::copy(row_max, scores_max_prev);
             flash::template reduce_max</*zero_init=*/false>(scores, row_max);
-            flash::template warp_allreduce_tp4(row_max, sRow_max_reduce_buffer, max_op);
+            flash::warp_allreduce_tp4(row_max, sRow_max_reduce_buffer, max_op);
             // Tensor acc_o_rowcol = make_tensor(acc_o.data(), flash::convert_layout_acc_rowcol(acc_o.layout()));
             static_assert(1 == kNRows);
             // #pragma unroll
@@ -548,11 +548,11 @@ struct Softmax {
         quad_allreduce_(row_sum, row_sum, sum_op);
         if constexpr (is_tp1)
         {
-            flash::template warp_allreduce_tp1(row_sum, sRow_sum_reduce_buffer, sum_op);
+            flash::warp_allreduce_tp1(row_sum, sRow_sum_reduce_buffer, sum_op);
         }
         else 
         {
-            flash::template warp_allreduce_(row_sum, sRow_sum_reduce_buffer, sum_op);
+            flash::warp_allreduce_(row_sum, sRow_sum_reduce_buffer, sum_op);
         }
         TensorT lse = make_fragment_like(row_sum);
         // Tensor acc_o_rowcol = make_tensor(acc_o.data(), flash::convert_layout_acc_rowcol(acc_o.layout()));
@@ -579,7 +579,7 @@ struct Softmax {
     __forceinline__ __device__ TensorT normalize_softmax_lse_fp8_tp4(v4f *acco_f, Tensor1& sRow_sum_reduce_buffer, float softmax_scale,float descale_v, float rp_dropout=1.0) {
         SumOp<float> sum_op;
         quad_allreduce_(row_sum, row_sum, sum_op);
-        flash::template warp_allreduce_tp4(row_sum, sRow_sum_reduce_buffer, sum_op);
+        flash::warp_allreduce_tp4(row_sum, sRow_sum_reduce_buffer, sum_op);
 
         TensorT lse = make_fragment_like(row_sum);
         // Tensor acc_o_rowcol = make_tensor(acc_o.data(), flash::convert_layout_acc_rowcol(acc_o.layout()));
@@ -666,7 +666,7 @@ struct Softmax {
     __forceinline__ __device__ TensorT normalize_softmax_lse_prefill_4x1(v4f *acc_o, float softmax_scale, float rp_dropout=1.0) {
         SumOp<float> sum_op;
         quad_allreduce_(row_sum, row_sum, sum_op);
-        // flash::template warp_allreduce_(row_sum, sRow_sum_reduce_buffer, sum_op);
+        // flash::warp_allreduce_(row_sum, sRow_sum_reduce_buffer, sum_op);
         TensorT lse = make_fragment_like(row_sum);
         // Tensor acc_o_rowcol = make_tensor(acc_o.data(), flash::convert_layout_acc_rowcol(acc_o.layout()));
         // static_assert(decltype(size<0>(acc_o_rowcol))::value == kNRows);
