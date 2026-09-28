@@ -72,7 +72,8 @@ __device__ void KernelTemplate_B_H_64<D_QK, HAVE_TOPK_LENGTH, IS_TOPK_2048, USE_
     const int global_topk_length = HAVE_TOPK_LENGTH ? __ldg(params.topk_length + topk_length_idx) : params.topk;
     const int topk_length = SPLIT_KV ? max(0, min(global_topk_length, split_begin + params.split_partition_size) - split_begin) : global_topk_length;
     const int static_topk = SPLIT_KV ? max(0, min(params.topk, split_begin + params.split_partition_size) - split_begin) : params.topk;
-    const int num_topk_blocks = IS_TOPK_2048? 2048 / B_TOPK : HAVE_TOPK_LENGTH ? ku::ceil_div(topk_length, (int)B_TOPK) : ku::ceil_div(static_topk, (int)B_TOPK);
+    const int num_topk_blocks = HAVE_TOPK_LENGTH ? ku::ceil_div(topk_length, (int)B_TOPK) :
+                                (IS_TOPK_2048 ? 2048 / B_TOPK : ku::ceil_div(static_topk, (int)B_TOPK));
     // TiledMMA tiled_mma = TiledMma{}; 
     // auto thr_mma = tiled_mma.get_thread_slice(tidx);
     flash::Softmax<1> softmax;
@@ -665,18 +666,24 @@ __device__ void KernelTemplate_B_H_64<D_QK, HAVE_TOPK_LENGTH, IS_TOPK_2048, USE_
     };
     if constexpr (IS_TOPK_2048)
     {
-        process_one_block(0, IsFirstBlock{});
-        for (int block_idx = 1; block_idx < 1024 / B_TOPK; block_idx ++)
+        if (num_topk_blocks > 0)
+            process_one_block(0, IsFirstBlock{});
+        const int first_index_window_blocks = 1024 / B_TOPK;
+        const int first_window_end = min(num_topk_blocks, first_index_window_blocks);
+        for (int block_idx = 1; block_idx < first_window_end; block_idx ++)
         {
             process_one_block(block_idx, IsOtherBlock{});
         }
-        buffer_load_lds_indices(1, 1024);
-        __builtin_amdgcn_sched_barrier(0); 
-        asm volatile("s_waitcnt vmcnt(0) \n\t s_barrier\n\t");  
-        __builtin_amdgcn_sched_barrier(0); 
-        for (int block_idx = 1024/B_TOPK; block_idx < 2048 / B_TOPK; block_idx ++)
+        if (num_topk_blocks > first_index_window_blocks)
         {
-            process_one_block(block_idx, IsOtherBlock{});
+            buffer_load_lds_indices(1, 1024);
+            __builtin_amdgcn_sched_barrier(0);
+            asm volatile("s_waitcnt vmcnt(0) \n\t s_barrier\n\t");
+            __builtin_amdgcn_sched_barrier(0);
+            for (int block_idx = first_index_window_blocks; block_idx < num_topk_blocks; block_idx ++)
+            {
+                process_one_block(block_idx, IsOtherBlock{});
+            }
         }
     }
     else
