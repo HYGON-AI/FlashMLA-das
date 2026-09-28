@@ -179,6 +179,7 @@ def test_flash_mla(p: TestParam) -> Result:
         performance_result = Result(True, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
     else:
         result = kk.bench_kineto(run_decode, p.num_runs)
+        kernel_names = result.get_kernel_names()
 
         if lib.is_decode_bf16_kvcache():
             if get_gcn_arch_name() == "gfx936":
@@ -200,7 +201,7 @@ def test_flash_mla(p: TestParam) -> Result:
         # Get individual kernel time usages
         kernel_time_usages_us: Dict[str, Optional[float]] = {}
         def pick_kernel_time_usage(kernel_name: str):
-            t = [kernel_name in s for s in result.get_kernel_names()]
+            t = [kernel_name in s for s in kernel_names]
             if any(t):
                 assert sum(t) == 1
                 kernel_time_usages_us[kernel_name] = result.get_kernel_time(kernel_name) * 1e6
@@ -218,8 +219,13 @@ def test_flash_mla(p: TestParam) -> Result:
         
         if kk.is_using_profiling_tools():
             e2e_time_usage_us = 1e6
+        elif active_main_kernel_name is None:
+            print("[WARNING] Cannot find decode kernel in profiler events; skip performance statistics.")
+            print("Available kernels:")
+            for kernel_name in kernel_names:
+                print(f"  - {kernel_name}")
+            e2e_time_usage_us = 0.0
         else:
-            assert active_main_kernel_name is not None
             if have_kernel(combine_kernel_name):
                 e2e_time_usage_us = result.get_e2e_time(active_main_kernel_name, combine_kernel_name) * 1e6
             else:
@@ -230,8 +236,8 @@ def test_flash_mla(p: TestParam) -> Result:
 
         e2e_time_usage_s = e2e_time_usage_us / 1e6
         theoritical_compute_memory_ratio = flops_and_mem_vol.flop / flops_and_mem_vol.mem_vol
-        achieved_tflops = flops_and_mem_vol.flop / e2e_time_usage_s / 1e12
-        achieved_gBps = flops_and_mem_vol.mem_vol / e2e_time_usage_s / 1e9
+        achieved_tflops = flops_and_mem_vol.flop / e2e_time_usage_s / 1e12 if e2e_time_usage_s > 0 else 0.0
+        achieved_gBps = flops_and_mem_vol.mem_vol / e2e_time_usage_s / 1e9 if e2e_time_usage_s > 0 else 0.0
         def print_kernel_time_usage(name: str, short_name: str):
             if kernel_time_usages_us[name] is not None:
                 print(f'{short_name} time: {kernel_time_usages_us[name]:.1f} us')

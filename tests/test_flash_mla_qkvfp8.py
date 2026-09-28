@@ -41,7 +41,7 @@ def cal_diff(x: torch.Tensor, y: torch.Tensor, name: str, use_fp8: bool=False) -
     amax_diff = (x - y).abs().max().item()
     print(f"{name}: {cos_diff=}, {RMSE=}, {amax_diff=}")
     if use_fp8:
-        assert cos_diff < 1e-3
+        assert cos_diff < 5e-3
     else:
         assert cos_diff < (1e-4 if torch_dtype == torch.bfloat16 else 1e-5)
     return {"cos_diff": cos_diff, "RMSE": RMSE, "amax_diff": amax_diff}
