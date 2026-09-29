@@ -241,7 +241,8 @@ run_gfx936_prefill_kernel_decode(
                 "gfx936 BF16 DSA decode via prefill kernel does not support extra_kv yet");
     TORCH_CHECK(b > 0 && s_q > 0 && h_q > 0, "Invalid q shape for gfx936 BF16 DSA decode");
     TORCH_CHECK(h_kv == 1, "gfx936 BF16 DSA decode only supports h_kv == 1");
-    TORCH_CHECK(h_q == 64 || h_q == 128, "gfx936 BF16 DSA decode only supports h_q == 64 or 128");
+    TORCH_CHECK(h_q == 32 || h_q == 64 || h_q == 128,
+                "gfx936 BF16 DSA decode only supports h_q == 32, 64 or 128");
     TORCH_CHECK(d_qk == 512, "gfx936 BF16 DSA decode only supports d_qk == 512");
     TORCH_CHECK(d_v == 512, "gfx936 BF16 DSA decode only supports d_v == 512");
     TORCH_CHECK(topk > 0, "topk must be positive");
@@ -274,7 +275,23 @@ run_gfx936_prefill_kernel_decode(
     KU_CHECK_SHAPE(topk_length, b);
     KU_CHECK_SHAPE(attn_sink, h_q);
 
+    const bool flatten_h32_decode = h_q == 32;
+    if (flatten_h32_decode) {
+        TORCH_CHECK(!extra_kv.has_value() && !extra_indices.has_value() && !extra_topk_length.has_value(),
+                    "gfx936 BF16 DSA decode h_q == 32 does not support extra_kv yet");
+    }
+
     c10::cuda::CUDAGuard device_guard{q.device()};
+    at::Tensor q_kernel = q;
+    at::Tensor indices_kernel = indices;
+    if (flatten_h32_decode) {
+        if (q.stride(0) != s_q * q.stride(1)) {
+            q_kernel = q.contiguous();
+        }
+        if (indices.stride(0) != s_q * indices.stride(1)) {
+            indices_kernel = indices.contiguous();
+        }
+    }
     auto opts = q.options();
     at::Tensor out = torch::empty({b, s_q, h_q, d_v}, opts);
     at::Tensor lse_tmp = torch::empty({b, s_q, h_q}, opts.dtype(at::kFloat));
@@ -285,12 +302,17 @@ run_gfx936_prefill_kernel_decode(
     if (auto forced_num_splits = force_num_splits_for_tuning(); forced_num_splits.has_value()) {
         requested_num_splits = forced_num_splits.value();
     }
+    if (flatten_h32_decode) {
+        requested_num_splits = 1;
+    }
     TORCH_CHECK(requested_num_splits >= 1 && requested_num_splits <= arch.num_sms,
                 "gfx936 BF16 DSA decode requires 1 <= num_splits <= num_sms");
     constexpr int64_t kGfx936BufferLoadAddressBytes = 1LL << 32;
     const int64_t padded_k_tokens = static_cast<int64_t>(kv.size(0)) * page_block_size;
     const int64_t padded_k_bytes = padded_k_tokens * d_qk * static_cast<int64_t>(sizeof(cutlass::bfloat16_t));
     const bool decode_use_c_load = padded_k_bytes > kGfx936BufferLoadAddressBytes;
+    TORCH_CHECK(!(flatten_h32_decode && decode_use_c_load),
+                "gfx936 BF16 DSA decode h_q == 32 does not support c-load path yet");
 
     at::Tensor topk_length_flat;
     int* topk_length_ptr = nullptr;
@@ -303,19 +325,22 @@ run_gfx936_prefill_kernel_decode(
         }
     }
 
+    const int fwd_s_q = flatten_h32_decode ? b * s_q : s_q;
+    const int fwd_split_b = flatten_h32_decode ? 0 : b;
+
     SparseAttnFwdParams fwd_params = {
-        s_q, static_cast<int>(kv.size(0) * page_block_size), h_q, h_kv, d_qk, d_v, topk,
+        fwd_s_q, static_cast<int>(kv.size(0) * page_block_size), h_q, h_kv, d_qk, d_v, topk,
         sm_scale, sm_scale * LOG_2_E,
 
-        reinterpret_cast<cutlass::bfloat16_t*>(q.data_ptr()),
+        reinterpret_cast<cutlass::bfloat16_t*>(q_kernel.data_ptr()),
         reinterpret_cast<cutlass::bfloat16_t*>(kv.data_ptr()),
-        reinterpret_cast<int*>(indices.data_ptr()),
+        reinterpret_cast<int*>(indices_kernel.data_ptr()),
         ku::get_optional_tensor_ptr<float>(attn_sink),
         topk_length_ptr,
 
-        int64_stride_to_int(q.stride(1)), int64_stride_to_int(q.stride(2)),
+        int64_stride_to_int(q_kernel.stride(1)), int64_stride_to_int(q_kernel.stride(2)),
         int64_stride_to_int(kv.stride(1)), int64_stride_to_int(kv.stride(2)),
-        int64_stride_to_int(indices.stride(1)), topk,
+        int64_stride_to_int(indices_kernel.stride(1)), topk,
 
         reinterpret_cast<cutlass::bfloat16_t*>(out.data_ptr()),
         max_logits.data_ptr<float>(),
@@ -324,11 +349,11 @@ run_gfx936_prefill_kernel_decode(
         arch.num_sms,
         at::cuda::getCurrentCUDAStream().stream(),
 
-        b,
+        fwd_split_b,
         requested_num_splits,
         topk,
-        int64_stride_to_int(q.stride(0)),
-        int64_stride_to_int(indices.stride(0)),
+        int64_stride_to_int(q_kernel.stride(0)),
+        int64_stride_to_int(indices_kernel.stride(0)),
         nullptr,
         nullptr,
         0, 0,
