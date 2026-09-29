@@ -13,6 +13,7 @@
 
 enum class FwdFeatures : int {
     HEAD_16,
+    HEAD_32,
     HEAD_64,
     HEAD_128,
 
@@ -36,6 +37,7 @@ public:
 
     DECLARE_SUPPORTED_FEATURES(
         FwdFeatures::HEAD_16,
+        FwdFeatures::HEAD_32,
         FwdFeatures::HEAD_64,
         FwdFeatures::HEAD_128,
         FwdFeatures::HEAD_DIM_512,
@@ -244,6 +246,8 @@ static std::vector<at::Tensor> sparse_attn_prefill_interface(
     std::vector<FwdFeatures> required_features;
     if (h_q <= 16) {
         required_features.push_back(FwdFeatures::HEAD_16);
+    } else if (h_q == 32) {
+        required_features.push_back(FwdFeatures::HEAD_32);
     } else if (h_q == 64) {
         required_features.push_back(FwdFeatures::HEAD_64);
     } else if (h_q == 128) {
