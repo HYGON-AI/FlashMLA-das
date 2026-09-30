@@ -126,9 +126,11 @@ flash_fwd_mla_combine_kernel(const CombineParams params) {
             {
                 if (!flash::is_positive_infinity(global_lse))
                 {
-                    float Attn_sink_exp2 = __builtin_amdgcn_exp2f(attn_sink * CUDART_L2E_F);
-                    float lse_exp2 = __builtin_amdgcn_exp2f(global_lse * CUDART_L2E_F);
-                    o_scale = lse_exp2 / (lse_exp2 + Attn_sink_exp2);
+                    // Stable sigmoid(LSE - sink): never exponentiate a positive value.
+                    float sink_delta = (global_lse - attn_sink) * CUDART_L2E_F;
+                    float sink_exp_neg_abs = __builtin_amdgcn_exp2f(-fabsf(sink_delta));
+                    o_scale = (sink_delta >= 0.0f ? 1.0f : sink_exp_neg_abs)
+                        / (1.0f + sink_exp_neg_abs);
                 }
             }
 
