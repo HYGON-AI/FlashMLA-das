@@ -132,9 +132,11 @@ __forceinline__ __device__ void decode_dsa_epilugue_rescale_acco(
                 if (rAttn_sink == INFINITY) {
                     attn_sink_o_scale = 0.0f;
                 } else if ((lse[mi].f32[min_tile_m] != -INFINITY) && (lse[mi].f32[min_tile_m] != INFINITY)) {
-                    float lse_exp2 = __builtin_amdgcn_exp2f(lse[mi].f32[min_tile_m] * CUDART_L2E_F);
-                    float rAttn_sink_exp2 = __builtin_amdgcn_exp2f(rAttn_sink * CUDART_L2E_F);
-                    attn_sink_o_scale = lse_exp2 / (lse_exp2 + rAttn_sink_exp2);
+                    // Stable sigmoid(LSE - sink): never exponentiate a positive value.
+                    float sink_delta = (lse[mi].f32[min_tile_m] - rAttn_sink) * CUDART_L2E_F;
+                    float sink_exp_neg_abs = __builtin_amdgcn_exp2f(-fabsf(sink_delta));
+                    attn_sink_o_scale = (sink_delta >= 0.0f ? 1.0f : sink_exp_neg_abs)
+                        / (1.0f + sink_exp_neg_abs);
                 }
             }
             ElementAccum scale = inv_sum * attn_sink_o_scale;
@@ -196,9 +198,11 @@ __forceinline__ __device__ void prefill_dsa_epilugue_rescale_acco(
                 if (rAttn_sink == INFINITY) {
                     attn_sink_o_scale = 0.0f;
                 } else if ((lse[mi].f32[min_tile_m] != -INFINITY) && (lse[mi].f32[min_tile_m] != INFINITY)) {
-                    float lse_exp2 = __builtin_amdgcn_exp2f(lse[mi].f32[min_tile_m] * CUDART_L2E_F);
-                    float rAttn_sink_exp2 = __builtin_amdgcn_exp2f(rAttn_sink * CUDART_L2E_F);
-                    attn_sink_o_scale = lse_exp2 / (lse_exp2 + rAttn_sink_exp2);
+                    // Stable sigmoid(LSE - sink): never exponentiate a positive value.
+                    float sink_delta = (lse[mi].f32[min_tile_m] - rAttn_sink) * CUDART_L2E_F;
+                    float sink_exp_neg_abs = __builtin_amdgcn_exp2f(-fabsf(sink_delta));
+                    attn_sink_o_scale = (sink_delta >= 0.0f ? 1.0f : sink_exp_neg_abs)
+                        / (1.0f + sink_exp_neg_abs);
                 }
             }
             ElementAccum scale = inv_sum * attn_sink_o_scale;

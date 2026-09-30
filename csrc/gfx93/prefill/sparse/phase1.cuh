@@ -730,9 +730,11 @@ __device__ void KernelTemplate_B_H_64<D_QK, HAVE_TOPK_LENGTH, IS_TOPK_2048, USE_
         if (flash::is_positive_infinity(rAttn_sink)) {
             attn_sink_o_scale = 0.0f;
         } else if (!flash::is_positive_infinity(lse(0))) {
-            float lse_exp2 = __builtin_amdgcn_exp2f(lse[0] * CUDART_L2E_F);
-            float rAttn_sink_exp2 = __builtin_amdgcn_exp2f(rAttn_sink * CUDART_L2E_F);
-            attn_sink_o_scale = lse_exp2 / (lse_exp2 + rAttn_sink_exp2);
+            // Stable sigmoid(LSE - sink): never exponentiate a positive value.
+            float sink_delta = (lse[0] - rAttn_sink) * CUDART_L2E_F;
+            float sink_exp_neg_abs = __builtin_amdgcn_exp2f(-fabsf(sink_delta));
+            attn_sink_o_scale = (sink_delta >= 0.0f ? 1.0f : sink_exp_neg_abs)
+                / (1.0f + sink_exp_neg_abs);
         }
     }
     auto maybe_apply_attn_sink = [&] (float value) -> float {
@@ -1300,9 +1302,11 @@ __device__ void KernelTemplate<D_QK, HAVE_TOPK_LENGTH>::devfunc(const SparseAttn
         {
             if (!flash::is_positive_infinity(lse(0)))
             {
-                float lse_exp2 = __builtin_amdgcn_exp2f(lse[0] * CUDART_L2E_F);
-                float rAttn_sink_exp2 = __builtin_amdgcn_exp2f(rAttn_sink * CUDART_L2E_F);
-                float o_scale = lse_exp2 / (lse_exp2 + rAttn_sink_exp2);
+                // Stable sigmoid(LSE - sink): never exponentiate a positive value.
+                float sink_delta = (lse[0] - rAttn_sink) * CUDART_L2E_F;
+                float sink_exp_neg_abs = __builtin_amdgcn_exp2f(-fabsf(sink_delta));
+                float o_scale = (sink_delta >= 0.0f ? 1.0f : sink_exp_neg_abs)
+                    / (1.0f + sink_exp_neg_abs);
                 for (int i = 0; i < size(acc_o); i++)
                 {
                     acc_o(i) *= o_scale;
