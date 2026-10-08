@@ -115,16 +115,22 @@ fi
 
 cd "${CI_PROJECT_DIR:?CI_PROJECT_DIR must be set by GitLab}"
 
-pip3 install rich -i https://mirrors.huaweicloud.com/artifactory/pypi-public/simple
-pip3 install pyyaml -i https://mirrors.huaweicloud.com/artifactory/pypi-public/simple
-pip3 install hypothesis -i https://mirrors.huaweicloud.com/artifactory/pypi-public/simple
-pip3 install Ninja -i https://mirrors.huaweicloud.com/artifactory/pypi-public/simple
-pip3 install MonkeyType -i https://mirrors.huaweicloud.com/artifactory/pypi-public/simple                        
-pip3 install wheel -i https://mirrors.huaweicloud.com/artifactory/pypi-public/simple
-pip3 install packaging -i https://mirrors.huaweicloud.com/artifactory/pypi-public/simple
-pip3 install einops -i https://mirrors.huaweicloud.com/artifactory/pypi-public/simple
-pip3 install pytest -i https://mirrors.huaweicloud.com/artifactory/pypi-public/simple
-pip3 install setuptools  --force-reinstall --no-deps -i https://mirrors.huaweicloud.com/artifactory/pypi-public/simple
+# Every install below resolves through ${PIP_INDEX_URL}, which this script selects
+# from DTK_VERSION above (nightly/dtk2604 vs nightly/dtk2610): a job in the 26.10
+# image pulls DTK-coupled packages (torch, triton, optest, ciupload) from the 26.10
+# index. Do NOT add -i/--index-url here -- a hardcoded public mirror would silently
+# override that choice. The DTK index proxies upstream PyPI, so generic
+# dependencies resolve from it too.
+pip3 install rich
+pip3 install pyyaml
+pip3 install hypothesis
+pip3 install Ninja
+pip3 install MonkeyType
+pip3 install wheel
+pip3 install packaging
+pip3 install einops
+pip3 install pytest
+pip3 install setuptools --force-reinstall --no-deps
 python -m pip install torch=="${TORCH_VERSION}" triton ciupload auditwheel patchelf
 python -m pip install optest -i "${PIP_INDEX_URL}" --trusted-host "${PIP_TRUSTED_HOST:-10.16.1.201}" --force-reinstall
 
@@ -151,8 +157,7 @@ python -m pip uninstall -y numpy 2>/dev/null || true
 python -m pip install numpy=="${NUMPY_VERSION}" \
   --force-reinstall \
   --no-deps \
-  --no-cache-dir \
-  -i https://pypi.tuna.tsinghua.edu.cn/simple/
+  --no-cache-dir
 
 python -c "import numpy; print(f'numpy {numpy.__version__} installed successfully')"
 
