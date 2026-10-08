@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 
 : "${DTK_VERSION:?DTK_VERSION must be set}"
-: "${TORCH_VERSION:?TORCH_VERSION must be set}"
+: "${DEPS_INDEX_URL:?DEPS_INDEX_URL must be set}"
 
-
-pypi_index_var="DTK${DTK_VERSION//./}_PIP_INDEX_URL"
-: "${!pypi_index_var:?${pypi_index_var} must be set}"
-export PIP_INDEX_URL="${!pypi_index_var}"
-echo "Using DTK ${DTK_VERSION} package index: ${PIP_INDEX_URL}"
+# Everything installed below is an ordinary third-party package (or an internal
+# tool shared by every DTK), so none of it follows the DTK version: the general
+# ones come from the public mirror, the internal ones from open/deps. The
+# DTK-coupled wheels (torch, triton) are installed by .gitlab-ci.yml, which
+# knows which index the DTK of the job has.
 
 cd "${CI_PROJECT_DIR:?CI_PROJECT_DIR must be set by GitLab}"
 
@@ -115,24 +115,19 @@ fi
 
 cd "${CI_PROJECT_DIR:?CI_PROJECT_DIR must be set by GitLab}"
 
-# Every install below resolves through ${PIP_INDEX_URL}, which this script selects
-# from DTK_VERSION above (nightly/dtk2604 vs nightly/dtk2610): a job in the 26.10
-# image pulls DTK-coupled packages (torch, triton, optest, ciupload) from the 26.10
-# index. Do NOT add -i/--index-url here -- a hardcoded public mirror would silently
-# override that choice. The DTK index proxies upstream PyPI, so generic
-# dependencies resolve from it too.
-pip3 install rich
-pip3 install pyyaml
-pip3 install hypothesis
-pip3 install Ninja
-pip3 install MonkeyType
-pip3 install wheel
-pip3 install packaging
-pip3 install einops
-pip3 install pytest
-pip3 install setuptools --force-reinstall --no-deps
-python -m pip install torch=="${TORCH_VERSION}" triton ciupload auditwheel patchelf
-python -m pip install optest -i "${PIP_INDEX_URL}" --trusted-host "${PIP_TRUSTED_HOST:-10.16.1.201}" --force-reinstall
+pip3 install rich -i https://mirrors.huaweicloud.com/artifactory/pypi-public/simple
+pip3 install pyyaml -i https://mirrors.huaweicloud.com/artifactory/pypi-public/simple
+pip3 install hypothesis -i https://mirrors.huaweicloud.com/artifactory/pypi-public/simple
+pip3 install Ninja -i https://mirrors.huaweicloud.com/artifactory/pypi-public/simple
+pip3 install MonkeyType -i https://mirrors.huaweicloud.com/artifactory/pypi-public/simple                        
+pip3 install wheel -i https://mirrors.huaweicloud.com/artifactory/pypi-public/simple
+pip3 install packaging -i https://mirrors.huaweicloud.com/artifactory/pypi-public/simple
+pip3 install einops -i https://mirrors.huaweicloud.com/artifactory/pypi-public/simple
+pip3 install pytest -i https://mirrors.huaweicloud.com/artifactory/pypi-public/simple
+pip3 install setuptools  --force-reinstall --no-deps -i https://mirrors.huaweicloud.com/artifactory/pypi-public/simple
+python -m pip install auditwheel patchelf -i https://mirrors.huaweicloud.com/artifactory/pypi-public/simple
+python -m pip install ciupload -i "${DEPS_INDEX_URL}" --trusted-host "${PIP_TRUSTED_HOST:-10.16.1.201}"
+python -m pip install optest -i "${DEPS_INDEX_URL}" --trusted-host "${PIP_TRUSTED_HOST:-10.16.1.201}" --force-reinstall
 
 export PYTHON_VERSION="$(python --version 2>&1 | awk -F '[ .]' '{print $2 "." $3}')"
 
@@ -157,10 +152,13 @@ python -m pip uninstall -y numpy 2>/dev/null || true
 python -m pip install numpy=="${NUMPY_VERSION}" \
   --force-reinstall \
   --no-deps \
-  --no-cache-dir
+  --no-cache-dir \
+  -i https://pypi.tuna.tsinghua.edu.cn/simple/
 
 python -c "import numpy; print(f'numpy {numpy.__version__} installed successfully')"
 
 hipcc --version
 
+# Installed by .gitlab-ci.yml from the index of this job's DTK, before this
+# script runs, so a broken index shows up here rather than in the build.
 python -c "import torch; print('torch:', torch.__version__); print('hip:', torch.version.hip)"
