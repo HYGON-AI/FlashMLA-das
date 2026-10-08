@@ -17,9 +17,6 @@ build:flashmla-wheel:
   timeout: 3h
   parallel:
     matrix:
-      # Each image pins one DTK together with the AICC build that matches it,
-      # and torch/triton are built against that pair, so the index is chosen
-      # here instead of being inherited from whatever the environment points at.
       - RUNNER_TAG: [nmz, bw]
         DTK_VERSION: "26.04"
         PY_VERSION: "3.12"
@@ -33,9 +30,6 @@ build:flashmla-wheel:
   rules:
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_TARGET_BRANCH_NAME == "master-aicc"'
   before_script:
-    # torch/triton are built against a DTK/AICC pair, so this line takes its
-    # index from the matrix row of this job's own DTK. It runs before
-    # prepare_environment.sh, whose last step imports torch.
     - python -m pip install "torch==${TORCH_VERSION}" triton -i "${DTK_PIP_INDEX_URL}" --trusted-host "${PIP_TRUSTED_HOST:-10.16.1.201}"
     - source ci_script/prepare_environment.sh
     # Configure non-interactive Git authentication without changing remote URL.
