@@ -7,7 +7,6 @@ variables:
   HARBOR_SITE: "10.16.1.152:5000"
   PYPI_URL: "http://10.16.1.201:9929"
   PIP_TRUSTED_HOST: "10.16.1.201"
-  DEPS_INDEX_URL: "${PYPI_URL}/open/deps/+simple/"
   AICC_BASE_URL: "http://10.16.1.201:8000/ai_cc/Nightly"
   TORCH_VERSION: "2.11.0"
 

@@ -1,13 +1,7 @@
 #!/usr/bin/env bash
 
 : "${DTK_VERSION:?DTK_VERSION must be set}"
-: "${DEPS_INDEX_URL:?DEPS_INDEX_URL must be set}"
-
-# Everything installed below is an ordinary third-party package (or an internal
-# tool shared by every DTK), so none of it follows the DTK version: the general
-# ones come from the public mirror, the internal ones from open/deps. The
-# DTK-coupled wheels (torch, triton) are installed by .gitlab-ci.yml, which
-# knows which index the DTK of the job has.
+: "${DTK_PIP_INDEX_URL:?DTK_PIP_INDEX_URL must be set}"
 
 cd "${CI_PROJECT_DIR:?CI_PROJECT_DIR must be set by GitLab}"
 
@@ -126,8 +120,10 @@ pip3 install einops -i https://mirrors.huaweicloud.com/artifactory/pypi-public/s
 pip3 install pytest -i https://mirrors.huaweicloud.com/artifactory/pypi-public/simple
 pip3 install setuptools  --force-reinstall --no-deps -i https://mirrors.huaweicloud.com/artifactory/pypi-public/simple
 python -m pip install auditwheel patchelf -i https://mirrors.huaweicloud.com/artifactory/pypi-public/simple
-python -m pip install ciupload -i "${DEPS_INDEX_URL}" --trusted-host "${PIP_TRUSTED_HOST:-10.16.1.201}"
-python -m pip install optest -i "${DEPS_INDEX_URL}" --trusted-host "${PIP_TRUSTED_HOST:-10.16.1.201}" --force-reinstall
+python -m pip install optest -i "${DTK_PIP_INDEX_URL}" \
+  --trusted-host "${PIP_TRUSTED_HOST:-10.16.1.201}" --force-reinstall
+python -m pip install ciupload -i "${DTK_PIP_INDEX_URL}" \
+  --trusted-host "${PIP_TRUSTED_HOST:-10.16.1.201}" --force-reinstall
 
 export PYTHON_VERSION="$(python --version 2>&1 | awk -F '[ .]' '{print $2 "." $3}')"
 
