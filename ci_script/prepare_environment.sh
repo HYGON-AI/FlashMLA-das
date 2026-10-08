@@ -47,10 +47,6 @@ if ! aicc_listing="$(wget -qO- -t 3 -T 30 "${AICC_BASE_URL}/")"; then
 fi
 aicc_log "listing OK"
 
-# The listing's links are percent-encoded, so "+" reads as "%2B"; requiring the
-# timestamp field directly after the tag keeps dtk2604 from matching dtk26042.
-# Tags are taken in the order above and, within a tag, newest build first, so a
-# half-uploaded build falls back to the previous one and then to the next tag.
 aicc_candidates=()
 for aicc_tag in "${aicc_tags[@]}"; do
   mapfile -t aicc_tag_candidates < <(
@@ -118,12 +114,12 @@ pip3 install wheel -i https://mirrors.huaweicloud.com/artifactory/pypi-public/si
 pip3 install packaging -i https://mirrors.huaweicloud.com/artifactory/pypi-public/simple
 pip3 install einops -i https://mirrors.huaweicloud.com/artifactory/pypi-public/simple
 pip3 install pytest -i https://mirrors.huaweicloud.com/artifactory/pypi-public/simple
-pip3 install setuptools  --force-reinstall --no-deps -i https://mirrors.huaweicloud.com/artifactory/pypi-public/simple
 python -m pip install auditwheel patchelf -i https://mirrors.huaweicloud.com/artifactory/pypi-public/simple
 python -m pip install optest -i "${DTK_PIP_INDEX_URL}" \
   --trusted-host "${PIP_TRUSTED_HOST:-10.16.1.201}" --force-reinstall
 python -m pip install ciupload -i "${DTK_PIP_INDEX_URL}" \
   --trusted-host "${PIP_TRUSTED_HOST:-10.16.1.201}" --force-reinstall
+python -m pip install setuptools==79.0.1 -i https://pypi.tuna.tsinghua.edu.cn/simple --force-reinstall
 
 export PYTHON_VERSION="$(python --version 2>&1 | awk -F '[ .]' '{print $2 "." $3}')"
 
