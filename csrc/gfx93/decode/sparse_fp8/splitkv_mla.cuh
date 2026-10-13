@@ -335,7 +335,11 @@ __device__ void KernelTemplate<MODEL_TYPE, NUM_HEADS>::compute_attn_1rowblock_sp
         MainloopArgs args;
         int total_topk_padded;
         if constexpr (MODEL_TYPE == ModelType::V32) {
-            total_topk_padded = params.topk;
+            // V32 支持动态 topk_length；无 extra KV
+            int topk_length = params.topk_length ? __ldg(params.topk_length + batch_idx) : params.topk;
+            total_topk_padded = max(ku::ceil(topk_length, (int)TOPK_BLOCK_SIZE), (int)TOPK_BLOCK_SIZE);
+            args.topk_length = topk_length;
+            args.num_orig_kv_blocks = total_topk_padded / TOPK_BLOCK_SIZE;
         } else {
             int topk_length = params.topk_length ? __ldg(params.topk_length + batch_idx) : params.topk;
             int orig_topk_padded = max(ku::ceil(topk_length, (int)TOPK_BLOCK_SIZE), (int)TOPK_BLOCK_SIZE);
@@ -386,11 +390,9 @@ __device__ void KernelTemplate<MODEL_TYPE, NUM_HEADS>::compute_attn_1rowblock_sp
         [[maybe_unused]] int topk_length = IS_EXTRA_BLOCK ? args.extra_topk_length : args.topk_length;
         [[maybe_unused]] int rel_block_idx = IS_EXTRA_BLOCK ? (block_idx - args.num_orig_kv_blocks) : block_idx;
         int token_index = indices_base[(lane_idx % 16) + warp_idx * 16];
-        if constexpr (MODEL_TYPE == ModelType::MODEL1) {
-            if (rel_block_idx*TOPK_BLOCK_SIZE + (lane_idx % 16) + warp_idx * 16 >= topk_length)
-            {
-                token_index = -1;
-            }
+        if (rel_block_idx*TOPK_BLOCK_SIZE + (lane_idx % 16) + warp_idx * 16 >= topk_length)
+        {
+            token_index = -1;
         }
         int block_index = token_index == -1 ? 0 : (int)((uint32_t)token_index/(uint32_t)page_block_size);   // Use uint32_t division and mod to improve performance        const int token_indexrel_idx_in_block = (token_index + page_block_size) % page_block_size;
         int rel_idx_in_block = (uint32_t)token_index % (uint32_t)page_block_size;   // NOTE When token_index is -1 (UINT_MAX), UINT_MAX%page_block_size < page_block_size, so there will be no illegal-memory-access error
@@ -742,11 +744,8 @@ __device__ void KernelTemplate<MODEL_TYPE, NUM_HEADS>::compute_attn_1rowblock_sp
         Tensor cS = make_identity_tensor(Shape<Int<BLOCK_M>, Int<TOPK_BLOCK_SIZE>>{});
         Tensor tScS = thr_mma.partition_C(cS);
         auto is_index_valid = [&](int index) -> bool {
-            if constexpr (MODEL_TYPE == ModelType::V32) {
-                return indices_base[int(get<1>(tScS(index)))] != -1;
-            } else {
-                return indices_base[int(get<1>(tScS(index)))] != -1 && (rel_block_idx*TOPK_BLOCK_SIZE + int(get<1>(tScS(index))) < topk_length);
-            }
+            return indices_base[int(get<1>(tScS(index)))] != -1
+                && (rel_block_idx*TOPK_BLOCK_SIZE + int(get<1>(tScS(index))) < topk_length);
         };
         for (int i = 0; i < size(acc_s); ++i) {
             // int idx = indices_base[int(get<1>(tScS(i)))] ;
@@ -1006,7 +1005,12 @@ __device__ void KernelTemplate<MODEL_TYPE, NUM_HEADS>::devfunc_fixed_split(
     const int batch_idx = split_linear_idx / params.fixed_num_splits;
     if (batch_idx >= params.b) return;
 
-    const int total_blocks = params.topk / TOPK_BLOCK_SIZE;
+    // 逐请求有效 token 数：有 topk_length 时按其截断，否则回到全量 topk。
+    // max(...,1) 保证零有效 token 也至少调度 1 个 block，由 lane 掩码产出 lse=+inf。
+    const int req_topk = params.topk_length
+        ? std::min((int)params.topk_length[batch_idx], params.topk)
+        : params.topk;
+    const int total_blocks = std::max(cute::ceil_div(req_topk, TOPK_BLOCK_SIZE), 1);
     const int blocks_per_split = cute::ceil_div(total_blocks, params.fixed_num_splits);
 
     DecodingSchedMeta fixed_meta{};
@@ -1052,7 +1056,6 @@ void KernelTemplate<MODEL_TYPE, NUM_HEADS>::run(const SparseAttnDecodeParams &pa
         }
     } else {
         KU_ASSERT(params.extra_kv == nullptr, "V3.2 does not support extra KV cache");
-        KU_ASSERT(params.topk_length == nullptr, "V3.2 does not support dynamic topk length");
         KU_ASSERT(params.stride_kv_row == 656);  // number of bytes per token (512 fp8 + 4 float32 + 64 bfloat16)
     }
     auto mla_kernel = &flash_fwd_splitkv_mla_fp8_sparse_kernel<KernelTemplate<MODEL_TYPE, NUM_HEADS>>;
@@ -1082,7 +1085,6 @@ void KernelTemplate<MODEL_TYPE, NUM_HEADS>::run_fixed_split(
         KU_ASSERT(params.topk_length == nullptr);
     } else {
         KU_ASSERT(params.extra_kv == nullptr, "V3.2 does not support extra KV cache");
-        KU_ASSERT(params.topk_length == nullptr, "V3.2 does not support dynamic topk length");
         KU_ASSERT(params.stride_kv_row == 656);
     }
 
