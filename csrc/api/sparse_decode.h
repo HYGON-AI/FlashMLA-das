@@ -354,7 +354,6 @@ sparse_attn_decode_interface(
         d_qk == 576 &&
         !have_extra_kcache &&
         !have_extra_topk_length &&
-        !have_topk_length &&
         topk % 64 == 0;
     if (use_fixed_split) {
         const int total_blocks = topk / 64;
