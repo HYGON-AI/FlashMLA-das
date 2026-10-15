@@ -572,6 +572,22 @@ __forceinline__ __device__ void store_float8(const Flash_fwd_mla_params &params,
  
 }
 
+// 运行时计算 causal 下需要做 mask 的 KV block 数（从 n_block_max - 1 往前数）。
+// 原实现写死为 ceil_div(kBlockM, kBlockN) + 1，只在 s_q 很小时成立；
+// q 行布局为 row = s_idx * ngroups + head，当 s_q / 64 > 1 时需遮挡的 key 会跨越更多 block。
+// 当前 m_block 中可见范围最小的是首行，其 col_limit 以下的 block 才可以安全跳过 mask。
+template<int kBlockM, int kBlockN, bool Is_causal>
+__forceinline__ __device__ int get_n_masking_steps(const Flash_fwd_mla_params &params, const int m_block,
+                                                   const int seqlen_k, const int n_block_max) {
+    if constexpr (!Is_causal) {
+        return 1;
+    } else {
+        // 首行可见的最大 key 下标（全局），大于它的 key 都需要 mask
+        const int col_limit_min = seqlen_k - 1 - (params.seqlen_q - 1 - m_block * kBlockM) / params.ngroups;
+        const int first_mask_block = col_limit_min + 1 <= 0 ? 0 : (col_limit_min + 1) / kBlockN;
+        return max(1, n_block_max - first_mask_block);
+    }
+}
 
 template<typename Kernel_traits, bool Is_causal, typename SharedStorage>
 __forceinline__ __device__ void compute_attn_1rowblock_splitkv_mla_fp8_gfx938(const Flash_fwd_mla_params &params,
@@ -907,7 +923,7 @@ __forceinline__ __device__ void compute_attn_1rowblock_splitkv_mla_fp8_gfx938(co
     Tensor tOrVt  = thr_mma_o.partition_fragment_B(sVtNoSwizzle);  
     
 
-    constexpr int n_masking_steps = !Is_causal ? 1 : cute::ceil_div(kBlockM, kBlockN) + 1;    
+    const int n_masking_steps = get_n_masking_steps<kBlockM, kBlockN, Is_causal>(params, m_block, seqlen_k, n_block_max);
     const int *block_table = params.block_table + bidb * params.block_table_batch_stride;
 
     int n_block = n_block_max - 1;
@@ -1129,10 +1145,8 @@ __forceinline__ __device__ void compute_attn_1rowblock_splitkv_mla_fp8_gfx938(co
         }
     };
 
-    if constexpr (n_masking_steps == 1) {
-        process_one_block(n_block, IsFirstMaskBlock{}); 
-        n_block--;
-    } else {
+    {
+        // n_masking_steps 为运行时值（>=1）：先处理带 mask 的尾部 block，其余 block 无需 mask
         int masking_step = 1;
         process_one_block(n_block, IsFirstMaskBlock{}); 
         n_block--;
@@ -1326,7 +1340,7 @@ __forceinline__ __device__ void compute_attn_1rowblock_splitkv_mla_fp8_gfx938_TP
     Tensor tOrVt  = thr_mma_o.partition_fragment_B(sVtNoSwizzle);  
     
 
-    constexpr int n_masking_steps = !Is_causal ? 1 : cute::ceil_div(kBlockM, kBlockN) + 1;    
+    const int n_masking_steps = get_n_masking_steps<kBlockM, kBlockN, Is_causal>(params, m_block, seqlen_k, n_block_max);
     const int *block_table = params.block_table + bidb * params.block_table_batch_stride;
 
     int n_block = n_block_max - 1;
@@ -1722,10 +1736,8 @@ __forceinline__ __device__ void compute_attn_1rowblock_splitkv_mla_fp8_gfx938_TP
     #if 0
     #endif 
     #if 1
-    if constexpr (n_masking_steps == 1) {
-        process_one_block(n_block, IsFirstMaskBlock{}); 
-        n_block--;
-    } else {
+    {
+        // n_masking_steps 为运行时值（>=1）：先处理带 mask 的尾部 block，其余 block 无需 mask
         int masking_step = 1;
         process_one_block(n_block, IsFirstMaskBlock{}); 
         n_block--;
