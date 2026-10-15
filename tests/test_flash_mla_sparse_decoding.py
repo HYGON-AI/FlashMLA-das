@@ -206,7 +206,10 @@ def test_flash_mla(p: TestParam) -> Result:
                 ]
                 combine_kernel_name = "flash_mla_splitkv_reduce_kernel"
         else:
-            main_kernel_names = ["flash_fwd_splitkv_mla_fp8_sparse_kernel"]
+            main_kernel_names = [
+                "flash_fwd_splitkv_mla_fp8_sparse_kernel",
+                "flash_fwd_fixed_splitkv_mla_fp8_sparse_kernel"
+            ]
             combine_kernel_name = "flash_fwd_mla_combine_kernel"
         
         # Get individual kernel time usages
