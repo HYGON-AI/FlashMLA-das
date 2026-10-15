@@ -576,9 +576,11 @@ __global__ void __launch_bounds__(256, 1) flash_mla_splitkv_reduce_kernel(
         if (rAttn_sink == INFINITY) {
             attn_sink_o_scale = 0.0f;
         } else if (lse_local_logsum != -INFINITY && lse_local_logsum != INFINITY) {
-            float lse_exp = __expf(lse_local_logsum);
-            float sink_exp = __expf(rAttn_sink);
-            attn_sink_o_scale = lse_exp / (lse_exp + sink_exp);
+            // Stable sigmoid(LSE - sink): never exponentiate a positive value.
+            float sink_delta = lse_local_logsum - rAttn_sink;
+            float sink_exp_neg_abs = __expf(-fabsf(sink_delta));
+            attn_sink_o_scale = (sink_delta >= 0.0f ? 1.0f : sink_exp_neg_abs)
+                / (1.0f + sink_exp_neg_abs);
         }
     }
 

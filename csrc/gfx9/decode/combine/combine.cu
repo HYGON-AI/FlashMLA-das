@@ -40,8 +40,12 @@ flash_fwd_mla_combine_kernel(const CombineParams params) {
     {
         start_split_idx = batch_idx * params.num_splits; 
         end_split_idx = (batch_idx + 1) * params.num_splits;
-        int seqlen_k = __ldg(params.seqlens_k_ptr + batch_idx);
-        end_split_idx = std::min(cute::ceil_div(cute::ceil_div(seqlen_k, 64), params.partition_block_nums), params.num_splits) + start_split_idx;
+        if (params.seqlens_k_ptr != nullptr && params.partition_block_nums > 0) {
+            int seqlen_k = __ldg(params.seqlens_k_ptr + batch_idx);
+            end_split_idx = std::min(
+                cute::ceil_div(cute::ceil_div(seqlen_k, 64), params.partition_block_nums),
+                params.num_splits) + start_split_idx;
+        }
         // if (lane_idx == 0 && batch_idx == 61)
         // {
         //     printf(" batch_idx = %d start_split_idx = %d end_split_idx = %d seqlen_k = %d \n",batch_idx, start_split_idx, end_split_idx, seqlen_k);
@@ -122,9 +126,11 @@ flash_fwd_mla_combine_kernel(const CombineParams params) {
             {
                 if (!flash::is_positive_infinity(global_lse))
                 {
-                    float Attn_sink_exp2 = __builtin_amdgcn_exp2f(attn_sink * CUDART_L2E_F);
-                    float lse_exp2 = __builtin_amdgcn_exp2f(global_lse * CUDART_L2E_F);
-                    o_scale = lse_exp2 / (lse_exp2 + Attn_sink_exp2);
+                    // Stable sigmoid(LSE - sink): never exponentiate a positive value.
+                    float sink_delta = (global_lse - attn_sink) * CUDART_L2E_F;
+                    float sink_exp_neg_abs = __builtin_amdgcn_exp2f(-fabsf(sink_delta));
+                    o_scale = (sink_delta >= 0.0f ? 1.0f : sink_exp_neg_abs)
+                        / (1.0f + sink_exp_neg_abs);
                 }
             }
 

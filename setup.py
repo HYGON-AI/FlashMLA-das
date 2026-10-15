@@ -2,6 +2,7 @@ import os
 from pathlib import Path
 from datetime import datetime
 import subprocess
+import shutil
 from typing import Optional
 from get_version import get_version
 
@@ -34,6 +35,102 @@ def get_arch_flags():
     arch_flags.append("--offload-arch=gfx938,gfx936,gfx928")
     return arch_flags
 
+def get_code_object_version():
+    override = os.getenv("FLASH_MLA_CODE_OBJECT_VERSION")
+    if override:
+        if override not in {"5", "6"}:
+            raise ValueError("FLASH_MLA_CODE_OBJECT_VERSION must be 5 or 6")
+        return override
+
+    search_roots = [
+        os.getenv("ROCM_HOME"),
+        os.getenv("ROCM_PATH"),
+        os.getenv("DTKROOT"),
+        "/opt/dtk",
+        "/opt/dtk-26.10",
+        "/opt/dtk-26.04",
+    ]
+    for root in search_roots:
+        if not root:
+            continue
+        bitcode = Path(root) / "dcc" / "dccgcn" / "bitcode" / "oclc_abi_version_600.bc"
+        if bitcode.exists():
+            return "6"
+    return "5"
+
+def get_compiler_major_version(compiler):
+    result = subprocess.run(
+        [compiler, "-dumpfullversion", "-dumpversion"],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+    )
+    if result.returncode != 0:
+        return None
+    version = result.stdout.strip().splitlines()[0]
+    try:
+        return int(version.split(".")[0])
+    except (IndexError, ValueError):
+        return None
+
+def compiler_accepts_flag(compiler, flag):
+    result = subprocess.run(
+        [compiler, flag, "-x", "c++", "-fsyntax-only", "-"],
+        input="int main() { return 0; }\n",
+        text=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    return result.returncode == 0
+
+def find_matching_c_compiler(cxx_compiler):
+    cxx_path = Path(cxx_compiler)
+    if not cxx_path.is_absolute():
+        resolved = shutil.which(cxx_compiler)
+        if resolved:
+            cxx_path = Path(resolved)
+    if cxx_path.name == "g++":
+        candidate = cxx_path.with_name("gcc")
+    else:
+        candidate = cxx_path.with_name("cc")
+    return str(candidate) if candidate.exists() else None
+
+def configure_host_compiler():
+    if os.getenv("CXX"):
+        cxx_candidates = [os.getenv("CXX")]
+    else:
+        cxx_candidates = ["c++", "g++"]
+
+    for candidate in cxx_candidates:
+        if Path(candidate).is_absolute():
+            compiler = candidate if Path(candidate).exists() else None
+        else:
+            compiler = shutil.which(candidate)
+        if not compiler:
+            continue
+        major_version = get_compiler_major_version(compiler)
+        if major_version is None or major_version < 9:
+            continue
+        if not compiler_accepts_flag(compiler, "-std=c++20"):
+            continue
+        os.environ["CXX"] = compiler
+        matching_cc = find_matching_c_compiler(compiler)
+        if matching_cc and not os.getenv("CC"):
+            os.environ["CC"] = matching_cc
+        print(f"Using host C++ compiler: {compiler}")
+        return compiler
+
+    raise RuntimeError(
+        "FlashMLA requires a host C++ compiler with GCC >= 9 and -std=c++20 support. "
+        "Enable a newer compiler toolchain or set CXX/CC to suitable compiler paths."
+    )
+
+def get_host_cxx_standard_flag():
+    compiler = configure_host_compiler()
+    if compiler_accepts_flag(compiler, "-std=c++20"):
+        return "-std=c++20"
+    raise RuntimeError(f"{compiler} does not support -std=c++20")
+
 # def get_nvcc_thread_args():
 #     # nvcc_threads = os.getenv("NVCC_THREADS") or "32"
 #     return ["--threads", nvcc_threads]
@@ -58,12 +155,16 @@ if False:
     cxx_args = ["/O2", "/std:c++20", "/DNDEBUG", "/W0"]
 else:
     asm_define = "-D" + "D" + "CU_ASM"
-    cxx_args = ["-O3", "-std=c++20", "-DNDEBUG", "-Wno-deprecated-declarations", asm_define, "-Wno-return-type", ]
+    host_cxx_standard_flag = get_host_cxx_standard_flag()
+    print(f"Using host C++ standard flag: {host_cxx_standard_flag}")
+    cxx_args = ["-O3", host_cxx_standard_flag, "-DNDEBUG", "-Wno-deprecated-declarations", asm_define, "-Wno-return-type", ]
 
 gpu_llvm_prefix = "-" + "a" + "mdgpu"
+code_object_version = get_code_object_version()
+print(f"Using code object version: {code_object_version}")
 
 aicc_flags = [
-    "-mcode-object-version=5",
+    f"-mcode-object-version={code_object_version}",
     "-mllvm=-support-768-vgprs=true",
     "-mllvm=-disable-machine-sink",
     "-mllvm=-disable-code-sink",

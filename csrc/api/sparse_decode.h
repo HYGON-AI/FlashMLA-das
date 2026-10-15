@@ -342,8 +342,107 @@ sparse_attn_decode_interface(
         at::cuda::getCurrentCUDAStream().stream()
     };
 
-    // Get MLA metadata if necessary
     at::Tensor o_accum, lse_accum;
+
+    // Fixed split-KV path for the common gfx938 FP8 sparse case. This keeps
+    // the existing FP8 math but removes scheduler metadata construction.
+    const bool disable_fixed_split =
+        std::getenv("FLASH_MLA_FP8_DISABLE_FIXED_SPLIT") != nullptr;
+    const bool use_fixed_split =
+        !disable_fixed_split &&
+        arch.is_gfx938() &&
+        d_qk == 576 &&
+        !have_extra_kcache &&
+        !have_extra_topk_length &&
+        topk % 64 == 0;
+    if (use_fixed_split) {
+        const int total_blocks = topk / 64;
+        int fixed_num_splits;
+        if (const char* value = std::getenv("FLASH_MLA_FP8_FIXED_SPLITS")) {
+            fixed_num_splits = std::atoi(value);
+        } else {
+            const int head_groups = std::max(cutlass::ceil_div(h_q, 64), 1);
+            const int target_ctas = h_q <= 16 ? 128 : 32;
+            fixed_num_splits = std::max(
+                target_ctas / std::max(b * s_q * head_groups, 1), 1);
+        }
+        fixed_num_splits = std::max(1, std::min(fixed_num_splits, total_blocks));
+        const int fixed_partition_blocks =
+            cutlass::ceil_div(total_blocks, fixed_num_splits);
+
+        params.use_fixed_split = 1;
+        params.fixed_num_splits = fixed_num_splits;
+        params.fixed_partition_size = fixed_partition_blocks * 64;
+        params.tile_scheduler_metadata_ptr = nullptr;
+        params.num_splits_ptr = nullptr;
+        params.num_sm_parts = 0;
+
+        if (fixed_num_splits > 1) {
+            const int total_num_splits = b * fixed_num_splits;
+            lse_accum = torch::empty({total_num_splits, s_q, h_q}, opts.dtype(at::kFloat));
+            o_accum = torch::empty({total_num_splits, s_q, h_q, d_v}, opts.dtype(at::kFloat));
+            KU_CHECK_CONTIGUOUS(lse_accum);
+            KU_CHECK_CONTIGUOUS(o_accum);
+            params.lse_accum = lse_accum.data_ptr<float>();
+            params.o_accum = o_accum.data_ptr<float>();
+            params.stride_lse_accum_split = int64_stride_to_int(lse_accum.stride(0));
+            params.stride_lse_accum_s_q = int64_stride_to_int(lse_accum.stride(1));
+            params.stride_o_accum_split = int64_stride_to_int(o_accum.stride(0));
+            params.stride_o_accum_s_q = int64_stride_to_int(o_accum.stride(1));
+            params.stride_o_accum_h_q = int64_stride_to_int(o_accum.stride(2));
+        } else {
+            params.lse_accum = nullptr;
+            params.o_accum = nullptr;
+            params.stride_lse_accum_split = 0;
+            params.stride_lse_accum_s_q = 0;
+            params.stride_o_accum_split = 0;
+            params.stride_o_accum_s_q = 0;
+            params.stride_o_accum_h_q = 0;
+        }
+
+        DISPATCH_MODEL_TYPE(params.model_type, MODEL_TYPE, [&]() {
+            DISPATCH_NUM_HEADS(params.h_q, NUM_HEADS, [&]() {
+                gfx93::decode::sparse_fp8::run_flash_fixed_splitkv_mla_fp8_sparse_kernel<
+                    MODEL_TYPE, NUM_HEADS>(params);
+            });
+        });
+
+        if (fixed_num_splits > 1) {
+            CombineParams combine_params = {
+                b, s_q, h_q, d_v,
+
+                params.lse,
+                params.out,
+                params.stride_lse_b, params.stride_lse_s_q,
+                params.stride_o_b, params.stride_o_s_q, params.stride_o_h_q,
+
+                params.lse_accum,
+                params.o_accum,
+                params.stride_lse_accum_split, params.stride_lse_accum_s_q,
+                params.stride_o_accum_split, params.stride_o_accum_s_q, params.stride_o_accum_h_q,
+
+                nullptr,
+                nullptr,
+                fixed_num_splits,
+
+                ku::get_optional_tensor_ptr<float>(attn_sink),
+                params.stream,
+
+                true,
+                fixed_num_splits,
+                nullptr,
+                0
+            };
+            gfx9::decode::run_flash_mla_combine_kernel<bf16>(combine_params);
+        }
+
+        delete impl;
+        tile_scheduler_metadata = std::nullopt;
+        num_splits = std::nullopt;
+        return {out, lse.transpose(1, 2), tile_scheduler_metadata, num_splits};
+    }
+
+    // Get MLA metadata if necessary
     if (!tile_scheduler_metadata.has_value()) {
         tile_scheduler_metadata = torch::empty({impl_meta.num_sm_parts, sizeof(DecodingSchedMeta)/4}, opts.dtype(torch::kInt32));
         num_splits = torch::empty({b+1}, opts.dtype(torch::kInt32));
