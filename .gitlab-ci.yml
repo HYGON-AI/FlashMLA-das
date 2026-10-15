@@ -1,4 +1,5 @@
 stages:
+  - quality-gate
   - build
   - publish
 
@@ -9,6 +10,24 @@ variables:
   PIP_TRUSTED_HOST: "10.16.1.201"
   AICC_BASE_URL: "http://10.16.1.201:8000/ai_cc/Nightly"
   TORCH_VERSION: "2.11.0"
+quality-gate:
+  stage: quality-gate
+  allow_failure: true
+  variables:
+    GIT_DEPTH: "0"
+    GATE_PIP_INDEX_URL: "${PYPI_URL}/nightly/dtk2604/+simple/"
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_TARGET_BRANCH_NAME == "master-aicc"'
+  tags:
+    - nmz
+  script:
+    - >-
+      python -m pip install "hygon_quality_gate[scanners]"
+      -i "${GATE_PIP_INDEX_URL}"
+      --trusted-host "${PIP_TRUSTED_HOST}"
+    - python -m hygon_pr_gate.install_tools
+    - git fetch origin "${CI_MERGE_REQUEST_TARGET_BRANCH_NAME}"
+    - quality-pr-scan --base "origin/${CI_MERGE_REQUEST_TARGET_BRANCH_NAME}" --head "${CI_COMMIT_SHA}"
 
 build:flashmla-wheel:
   stage: build
