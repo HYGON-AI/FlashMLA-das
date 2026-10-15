@@ -23,8 +23,8 @@ namespace gfx93::decode::sparse_fp8 {
 
 static constexpr float MAX_INIT_VAL = -1e30;    // Prevent (-inf) - (-inf) = nan
 
-template<ModelType MODEL_TYPE, int NUM_HEADS>
-__device__ void KernelTemplate<MODEL_TYPE, NUM_HEADS>::compute_attn_1rowblock_splitkv_sparse_mla_fp8(const SparseAttnDecodeParams &params, const DecodingSchedMeta& sched_meta, int batch_idx)
+template<ModelType MODEL_TYPE, int NUM_HEADS, bool HAVE_TOPK_LENGTH>
+__device__ void KernelTemplate<MODEL_TYPE, NUM_HEADS, HAVE_TOPK_LENGTH>::compute_attn_1rowblock_splitkv_sparse_mla_fp8(const SparseAttnDecodeParams &params, const DecodingSchedMeta& sched_meta, int batch_idx)
 {
     using Element = cutlass::bfloat16_t;
     using index_t = int64_t;
@@ -334,20 +334,22 @@ __device__ void KernelTemplate<MODEL_TYPE, NUM_HEADS>::compute_attn_1rowblock_sp
     auto get_cur_req_info = [&](int batch_idx) -> MainloopArgs {
         MainloopArgs args;
         int total_topk_padded;
-        if constexpr (MODEL_TYPE == ModelType::V32) {
-            // V32 支持动态 topk_length；无 extra KV
-            int topk_length = params.topk_length ? __ldg(params.topk_length + batch_idx) : params.topk;
+        if constexpr (HAVE_TOPK_LENGTH) {
+            // 动态 topk_length 截断，V32 与 MODEL1 共用；<true> 实例保证 topk_length 非空
+            int topk_length = __ldg(params.topk_length + batch_idx);
             total_topk_padded = max(ku::ceil(topk_length, (int)TOPK_BLOCK_SIZE), (int)TOPK_BLOCK_SIZE);
             args.topk_length = topk_length;
             args.num_orig_kv_blocks = total_topk_padded / TOPK_BLOCK_SIZE;
         } else {
-            int topk_length = params.topk_length ? __ldg(params.topk_length + batch_idx) : params.topk;
-            int orig_topk_padded = max(ku::ceil(topk_length, (int)TOPK_BLOCK_SIZE), (int)TOPK_BLOCK_SIZE);
+            // 静态 topk：编译期不生成 topk_length 相关代码，与基线等价（V32 与 MODEL1 共用）
+            total_topk_padded = params.topk;
+            args.num_orig_kv_blocks = params.topk / TOPK_BLOCK_SIZE;
+        }
+        if constexpr (MODEL_TYPE == ModelType::MODEL1) {
+            // extra_kv 仅 MODEL1，与 topk_length 相互独立，静态/动态都需截断 extra_topk_length
             int extra_topk_length = params.extra_topk_length ? __ldg(params.extra_topk_length + batch_idx) : params.extra_topk;
-            total_topk_padded = orig_topk_padded + ku::ceil(extra_topk_length, (int)TOPK_BLOCK_SIZE);
-            args.topk_length = topk_length;
+            total_topk_padded += ku::ceil(extra_topk_length, (int)TOPK_BLOCK_SIZE);
             args.extra_topk_length = extra_topk_length;
-            args.num_orig_kv_blocks = orig_topk_padded / TOPK_BLOCK_SIZE;
         }
 
         args.start_block_idx = batch_idx == sched_meta.begin_req_idx ? sched_meta.begin_block_idx : 0;
@@ -390,9 +392,13 @@ __device__ void KernelTemplate<MODEL_TYPE, NUM_HEADS>::compute_attn_1rowblock_sp
         [[maybe_unused]] int topk_length = IS_EXTRA_BLOCK ? args.extra_topk_length : args.topk_length;
         [[maybe_unused]] int rel_block_idx = IS_EXTRA_BLOCK ? (block_idx - args.num_orig_kv_blocks) : block_idx;
         int token_index = indices_base[(lane_idx % 16) + warp_idx * 16];
-        if (rel_block_idx*TOPK_BLOCK_SIZE + (lane_idx % 16) + warp_idx * 16 >= topk_length)
-        {
-            token_index = -1;
+        // 动态 topk_length（V32/MODEL1 原块）或 MODEL1 extra 块：按各自 topk_length 掩码截断。
+        // 静态非 extra 块（无 topk_length）不做掩码，与基线等价。
+        if constexpr (IS_EXTRA_BLOCK || HAVE_TOPK_LENGTH) {
+            if (rel_block_idx*TOPK_BLOCK_SIZE + (lane_idx % 16) + warp_idx * 16 >= topk_length)
+            {
+                token_index = -1;
+            }
         }
         int block_index = token_index == -1 ? 0 : (int)((uint32_t)token_index/(uint32_t)page_block_size);   // Use uint32_t division and mod to improve performance        const int token_indexrel_idx_in_block = (token_index + page_block_size) % page_block_size;
         int rel_idx_in_block = (uint32_t)token_index % (uint32_t)page_block_size;   // NOTE When token_index is -1 (UINT_MAX), UINT_MAX%page_block_size < page_block_size, so there will be no illegal-memory-access error
@@ -744,8 +750,12 @@ __device__ void KernelTemplate<MODEL_TYPE, NUM_HEADS>::compute_attn_1rowblock_sp
         Tensor cS = make_identity_tensor(Shape<Int<BLOCK_M>, Int<TOPK_BLOCK_SIZE>>{});
         Tensor tScS = thr_mma.partition_C(cS);
         auto is_index_valid = [&](int index) -> bool {
-            return indices_base[int(get<1>(tScS(index)))] != -1
-                && (rel_block_idx*TOPK_BLOCK_SIZE + int(get<1>(tScS(index))) < topk_length);
+            if constexpr (IS_EXTRA_BLOCK || HAVE_TOPK_LENGTH) {
+                return indices_base[int(get<1>(tScS(index)))] != -1
+                    && (rel_block_idx*TOPK_BLOCK_SIZE + int(get<1>(tScS(index))) < topk_length);
+            } else {
+                return indices_base[int(get<1>(tScS(index)))] != -1;
+            }
         };
         for (int i = 0; i < size(acc_s); ++i) {
             // int idx = indices_base[int(get<1>(tScS(i)))] ;
@@ -980,8 +990,8 @@ __device__ void KernelTemplate<MODEL_TYPE, NUM_HEADS>::compute_attn_1rowblock_sp
 }
 
 
-template<ModelType MODEL_TYPE, int NUM_HEADS>
-__device__ void KernelTemplate<MODEL_TYPE, NUM_HEADS>::devfunc(const SparseAttnDecodeParams &params) {
+template<ModelType MODEL_TYPE, int NUM_HEADS, bool HAVE_TOPK_LENGTH>
+__device__ void KernelTemplate<MODEL_TYPE, NUM_HEADS, HAVE_TOPK_LENGTH>::devfunc(const SparseAttnDecodeParams &params) {
     const int partition_idx = blockIdx.z;
     DecodingSchedMeta sched_meta = params.tile_scheduler_metadata_ptr[partition_idx];
 
@@ -999,20 +1009,23 @@ __device__ void KernelTemplate<MODEL_TYPE, NUM_HEADS>::devfunc(const SparseAttnD
     }
 }
 
-template<ModelType MODEL_TYPE, int NUM_HEADS>
-__device__ void KernelTemplate<MODEL_TYPE, NUM_HEADS>::devfunc_fixed_split(
+template<ModelType MODEL_TYPE, int NUM_HEADS, bool HAVE_TOPK_LENGTH>
+__device__ void KernelTemplate<MODEL_TYPE, NUM_HEADS, HAVE_TOPK_LENGTH>::devfunc_fixed_split(
     const SparseAttnDecodeParams &params) {
     const int split_linear_idx = blockIdx.z;
     const int split_idx = split_linear_idx % params.fixed_num_splits;
     const int batch_idx = split_linear_idx / params.fixed_num_splits;
     if (batch_idx >= params.b) return;
 
-    // 逐请求有效 token 数：有 topk_length 时按其截断，否则回到全量 topk。
+    // 逐请求有效 token 数：动态 topk 时按 topk_length 截断，否则回到全量 topk。
     // max(...,1) 保证零有效 token 也至少调度 1 个 block，由 lane 掩码产出 lse=+inf。
-    const int req_topk = params.topk_length
-        ? std::min((int)params.topk_length[batch_idx], params.topk)
-        : params.topk;
-    const int total_blocks = std::max(cute::ceil_div(req_topk, TOPK_BLOCK_SIZE), 1);
+    int total_blocks;
+    if constexpr (HAVE_TOPK_LENGTH) {
+        const int req_topk = std::min((int)params.topk_length[batch_idx], params.topk);
+        total_blocks = std::max(cute::ceil_div(req_topk, TOPK_BLOCK_SIZE), 1);
+    } else {
+        total_blocks = params.topk / TOPK_BLOCK_SIZE;
+    }
     const int blocks_per_split = cute::ceil_div(total_blocks, params.fixed_num_splits);
 
     DecodingSchedMeta fixed_meta{};
@@ -1043,8 +1056,8 @@ flash_fwd_fixed_splitkv_mla_fp8_sparse_kernel(const SparseAttnDecodeParams param
 #endif
 }
 
-template<ModelType MODEL_TYPE, int NUM_HEADS>
-void KernelTemplate<MODEL_TYPE, NUM_HEADS>::run(const SparseAttnDecodeParams &params) {
+template<ModelType MODEL_TYPE, int NUM_HEADS, bool HAVE_TOPK_LENGTH>
+void KernelTemplate<MODEL_TYPE, NUM_HEADS, HAVE_TOPK_LENGTH>::run(const SparseAttnDecodeParams &params) {
     KU_ASSERT(params.h_kv == 1);
     KU_ASSERT(params.topk % TOPK_BLOCK_SIZE == 0);
     KU_ASSERT(params.d_qk == HEAD_DIM_K);
@@ -1058,9 +1071,10 @@ void KernelTemplate<MODEL_TYPE, NUM_HEADS>::run(const SparseAttnDecodeParams &pa
         }
     } else {
         KU_ASSERT(params.extra_kv == nullptr, "V3.2 does not support extra KV cache");
+        KU_ASSERT((params.topk_length != nullptr) == HAVE_TOPK_LENGTH, "V3.2 topk_length must match the HAVE_TOPK_LENGTH instantiation");
         KU_ASSERT(params.stride_kv_row == 656);  // number of bytes per token (512 fp8 + 4 float32 + 64 bfloat16)
     }
-    auto mla_kernel = &flash_fwd_splitkv_mla_fp8_sparse_kernel<KernelTemplate<MODEL_TYPE, NUM_HEADS>>;
+    auto mla_kernel = &flash_fwd_splitkv_mla_fp8_sparse_kernel<KernelTemplate<MODEL_TYPE, NUM_HEADS, HAVE_TOPK_LENGTH>>;
     constexpr size_t smem_size = 32768; // lds复用
     // zhj debug
     // printf("NUM_M_BLOCKS = %d smem_size = %d \n",NUM_M_BLOCKS, smem_size);
@@ -1068,8 +1082,8 @@ void KernelTemplate<MODEL_TYPE, NUM_HEADS>::run(const SparseAttnDecodeParams &pa
 
 }
 
-template<ModelType MODEL_TYPE, int NUM_HEADS>
-void KernelTemplate<MODEL_TYPE, NUM_HEADS>::run_fixed_split(
+template<ModelType MODEL_TYPE, int NUM_HEADS, bool HAVE_TOPK_LENGTH>
+void KernelTemplate<MODEL_TYPE, NUM_HEADS, HAVE_TOPK_LENGTH>::run_fixed_split(
     const SparseAttnDecodeParams &params) {
     KU_ASSERT(params.h_kv == 1);
     KU_ASSERT(params.topk % TOPK_BLOCK_SIZE == 0);
@@ -1087,11 +1101,12 @@ void KernelTemplate<MODEL_TYPE, NUM_HEADS>::run_fixed_split(
         KU_ASSERT(params.topk_length == nullptr);
     } else {
         KU_ASSERT(params.extra_kv == nullptr, "V3.2 does not support extra KV cache");
+        KU_ASSERT((params.topk_length != nullptr) == HAVE_TOPK_LENGTH, "V3.2 topk_length must match the HAVE_TOPK_LENGTH instantiation");
         KU_ASSERT(params.stride_kv_row == 656);
     }
 
     auto mla_kernel =
-        &flash_fwd_fixed_splitkv_mla_fp8_sparse_kernel<KernelTemplate<MODEL_TYPE, NUM_HEADS>>;
+        &flash_fwd_fixed_splitkv_mla_fp8_sparse_kernel<KernelTemplate<MODEL_TYPE, NUM_HEADS, HAVE_TOPK_LENGTH>>;
     constexpr size_t smem_size = 32768;
     mla_kernel<<<dim3(NUM_M_BLOCKS, params.s_q, params.b * params.fixed_num_splits),
                  NUM_THREADS, smem_size, params.stream>>>(params);
@@ -1100,12 +1115,21 @@ void KernelTemplate<MODEL_TYPE, NUM_HEADS>::run_fixed_split(
 
 template<ModelType MODEL_TYPE, int NUM_HEADS>
 void run_flash_splitkv_mla_fp8_sparse_kernel(const SparseAttnDecodeParams &params) {
-    KernelTemplate<MODEL_TYPE, NUM_HEADS>::run(params);
+    // V32 与 MODEL1 统一：有 topk_length 走动态特化，否则走静态特化（与基线等价）
+    if (params.topk_length != nullptr) {
+        KernelTemplate<MODEL_TYPE, NUM_HEADS, true>::run(params);
+    } else {
+        KernelTemplate<MODEL_TYPE, NUM_HEADS, false>::run(params);
+    }
 }
 
 template<ModelType MODEL_TYPE, int NUM_HEADS>
 void run_flash_fixed_splitkv_mla_fp8_sparse_kernel(const SparseAttnDecodeParams &params) {
-    KernelTemplate<MODEL_TYPE, NUM_HEADS>::run_fixed_split(params);
+    if (params.topk_length != nullptr) {
+        KernelTemplate<MODEL_TYPE, NUM_HEADS, true>::run_fixed_split(params);
+    } else {
+        KernelTemplate<MODEL_TYPE, NUM_HEADS, false>::run_fixed_split(params);
+    }
 }
 
 }
