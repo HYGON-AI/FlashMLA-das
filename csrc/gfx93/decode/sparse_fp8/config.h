@@ -12,7 +12,7 @@ using namespace cute;
 
 namespace gfx93::decode::sparse_fp8 {
 
-template<ModelType MODEL_TYPE, int NUM_HEADS>
+template<ModelType MODEL_TYPE, int NUM_HEADS, bool HAVE_TOPK_LENGTH>
 class KernelTemplate {
 public:
 
