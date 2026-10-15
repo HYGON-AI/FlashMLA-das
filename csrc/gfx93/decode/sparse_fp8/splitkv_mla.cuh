@@ -335,7 +335,11 @@ __device__ void KernelTemplate<MODEL_TYPE, NUM_HEADS>::compute_attn_1rowblock_sp
         MainloopArgs args;
         int total_topk_padded;
         if constexpr (MODEL_TYPE == ModelType::V32) {
-            total_topk_padded = params.topk;
+            // V32 支持动态 topk_length；无 extra KV
+            int topk_length = params.topk_length ? __ldg(params.topk_length + batch_idx) : params.topk;
+            total_topk_padded = max(ku::ceil(topk_length, (int)TOPK_BLOCK_SIZE), (int)TOPK_BLOCK_SIZE);
+            args.topk_length = topk_length;
+            args.num_orig_kv_blocks = total_topk_padded / TOPK_BLOCK_SIZE;
         } else {
             int topk_length = params.topk_length ? __ldg(params.topk_length + batch_idx) : params.topk;
             int orig_topk_padded = max(ku::ceil(topk_length, (int)TOPK_BLOCK_SIZE), (int)TOPK_BLOCK_SIZE);
@@ -386,11 +390,9 @@ __device__ void KernelTemplate<MODEL_TYPE, NUM_HEADS>::compute_attn_1rowblock_sp
         [[maybe_unused]] int topk_length = IS_EXTRA_BLOCK ? args.extra_topk_length : args.topk_length;
         [[maybe_unused]] int rel_block_idx = IS_EXTRA_BLOCK ? (block_idx - args.num_orig_kv_blocks) : block_idx;
         int token_index = indices_base[(lane_idx % 16) + warp_idx * 16];
-        if constexpr (MODEL_TYPE == ModelType::MODEL1) {
-            if (rel_block_idx*TOPK_BLOCK_SIZE + (lane_idx % 16) + warp_idx * 16 >= topk_length)
-            {
-                token_index = -1;
-            }
+        if (rel_block_idx*TOPK_BLOCK_SIZE + (lane_idx % 16) + warp_idx * 16 >= topk_length)
+        {
+            token_index = -1;
         }
         int block_index = token_index == -1 ? 0 : (int)((uint32_t)token_index/(uint32_t)page_block_size);   // Use uint32_t division and mod to improve performance        const int token_indexrel_idx_in_block = (token_index + page_block_size) % page_block_size;
         int rel_idx_in_block = (uint32_t)token_index % (uint32_t)page_block_size;   // NOTE When token_index is -1 (UINT_MAX), UINT_MAX%page_block_size < page_block_size, so there will be no illegal-memory-access error
@@ -742,11 +744,8 @@ __device__ void KernelTemplate<MODEL_TYPE, NUM_HEADS>::compute_attn_1rowblock_sp
         Tensor cS = make_identity_tensor(Shape<Int<BLOCK_M>, Int<TOPK_BLOCK_SIZE>>{});
         Tensor tScS = thr_mma.partition_C(cS);
         auto is_index_valid = [&](int index) -> bool {
-            if constexpr (MODEL_TYPE == ModelType::V32) {
-                return indices_base[int(get<1>(tScS(index)))] != -1;
-            } else {
-                return indices_base[int(get<1>(tScS(index)))] != -1 && (rel_block_idx*TOPK_BLOCK_SIZE + int(get<1>(tScS(index))) < topk_length);
-            }
+            return indices_base[int(get<1>(tScS(index)))] != -1
+                && (rel_block_idx*TOPK_BLOCK_SIZE + int(get<1>(tScS(index))) < topk_length);
         };
         for (int i = 0; i < size(acc_s); ++i) {
             // int idx = indices_base[int(get<1>(tScS(i)))] ;
@@ -833,9 +832,11 @@ __device__ void KernelTemplate<MODEL_TYPE, NUM_HEADS>::compute_attn_1rowblock_sp
             {
                 if (!flash::is_positive_infinity(lse(0)))
                 {
-                    float lse_exp2 = __builtin_amdgcn_exp2f(lse[0] * CUDART_L2E_F);
-                    float rAttn_sink_exp2 = __builtin_amdgcn_exp2f(rAttn_sink * CUDART_L2E_F);
-                    float o_scale = lse_exp2 / (lse_exp2 + rAttn_sink_exp2);
+                    // Stable sigmoid(LSE - sink): never exponentiate a positive value.
+                    float sink_delta = (lse[0] - rAttn_sink) * CUDART_L2E_F;
+                    float sink_exp_neg_abs = __builtin_amdgcn_exp2f(-fabsf(sink_delta));
+                    float o_scale = (sink_delta >= 0.0f ? 1.0f : sink_exp_neg_abs)
+                        / (1.0f + sink_exp_neg_abs);
                     for (int i = 0; i < size(acc_o); i++)
                     {
                         acc_o(i) *= o_scale;
@@ -932,7 +933,9 @@ __device__ void KernelTemplate<MODEL_TYPE, NUM_HEADS>::compute_attn_1rowblock_sp
         int start_head_idx = head_block_idx*BLOCK_M;
         Tensor lse = softmax.template normalize_softmax_lse<false, true>(acc_o, sRow_sum_reduce_buffer, params.sm_scale);
         int n_split_idx = batch_idx == sched_meta.begin_req_idx ? sched_meta.begin_split_idx : 0;
-        int split_idx = __ldg(params.num_splits_ptr+batch_idx) + n_split_idx;
+        int split_idx = params.use_fixed_split
+            ? batch_idx * params.fixed_num_splits + n_split_idx
+            : __ldg(params.num_splits_ptr + batch_idx) + n_split_idx;
         float* oaccum_ptr = (float*)params.o_accum + split_idx*params.stride_o_accum_split + s_q_idx*params.stride_o_accum_s_q + start_head_idx*params.stride_o_accum_h_q;	// (BLOCK_M, HEAD_DIM_V) : (params.stride_o_accum_h_q, 1)
         Tensor gOaccum = make_tensor(make_gmem_ptr(oaccum_ptr), make_layout(
             Shape<Int<BLOCK_M>, Int<HEAD_DIM_V>>{},
@@ -996,11 +999,47 @@ __device__ void KernelTemplate<MODEL_TYPE, NUM_HEADS>::devfunc(const SparseAttnD
     }
 }
 
+template<ModelType MODEL_TYPE, int NUM_HEADS>
+__device__ void KernelTemplate<MODEL_TYPE, NUM_HEADS>::devfunc_fixed_split(
+    const SparseAttnDecodeParams &params) {
+    const int split_linear_idx = blockIdx.z;
+    const int split_idx = split_linear_idx % params.fixed_num_splits;
+    const int batch_idx = split_linear_idx / params.fixed_num_splits;
+    if (batch_idx >= params.b) return;
+
+    // 逐请求有效 token 数：有 topk_length 时按其截断，否则回到全量 topk。
+    // max(...,1) 保证零有效 token 也至少调度 1 个 block，由 lane 掩码产出 lse=+inf。
+    const int req_topk = params.topk_length
+        ? std::min((int)params.topk_length[batch_idx], params.topk)
+        : params.topk;
+    const int total_blocks = std::max(cute::ceil_div(req_topk, TOPK_BLOCK_SIZE), 1);
+    const int blocks_per_split = cute::ceil_div(total_blocks, params.fixed_num_splits);
+
+    DecodingSchedMeta fixed_meta{};
+    fixed_meta.begin_req_idx = batch_idx;
+    fixed_meta.end_req_idx = batch_idx;
+    fixed_meta.begin_block_idx = split_idx * blocks_per_split;
+    fixed_meta.end_block_idx = min(total_blocks, fixed_meta.begin_block_idx + blocks_per_split);
+    fixed_meta.begin_split_idx = split_idx;
+    fixed_meta.is_first_req_splitted = params.fixed_num_splits > 1;
+    fixed_meta.is_last_req_splitted = params.fixed_num_splits > 1;
+
+    compute_attn_1rowblock_splitkv_sparse_mla_fp8(params, fixed_meta, batch_idx);
+}
+
 template<typename Kernel>
 __global__ void __launch_bounds__(Kernel::NUM_THREADS, 1)
 flash_fwd_splitkv_mla_fp8_sparse_kernel(const SparseAttnDecodeParams params) {
 #if defined(__gfx936__) || defined(__gfx938__)
     Kernel::devfunc(params);
+#endif
+}
+
+template<typename Kernel>
+__global__ void __launch_bounds__(Kernel::NUM_THREADS, 1)
+flash_fwd_fixed_splitkv_mla_fp8_sparse_kernel(const SparseAttnDecodeParams params) {
+#if defined(__gfx936__) || defined(__gfx938__)
+    Kernel::devfunc_fixed_split(params);
 #endif
 }
 
@@ -1019,7 +1058,6 @@ void KernelTemplate<MODEL_TYPE, NUM_HEADS>::run(const SparseAttnDecodeParams &pa
         }
     } else {
         KU_ASSERT(params.extra_kv == nullptr, "V3.2 does not support extra KV cache");
-        KU_ASSERT(params.topk_length == nullptr, "V3.2 does not support dynamic topk length");
         KU_ASSERT(params.stride_kv_row == 656);  // number of bytes per token (512 fp8 + 4 float32 + 64 bfloat16)
     }
     auto mla_kernel = &flash_fwd_splitkv_mla_fp8_sparse_kernel<KernelTemplate<MODEL_TYPE, NUM_HEADS>>;
@@ -1031,11 +1069,45 @@ void KernelTemplate<MODEL_TYPE, NUM_HEADS>::run(const SparseAttnDecodeParams &pa
 }
 
 template<ModelType MODEL_TYPE, int NUM_HEADS>
+void KernelTemplate<MODEL_TYPE, NUM_HEADS>::run_fixed_split(
+    const SparseAttnDecodeParams &params) {
+    KU_ASSERT(params.h_kv == 1);
+    KU_ASSERT(params.topk % TOPK_BLOCK_SIZE == 0);
+    KU_ASSERT(params.d_qk == HEAD_DIM_K);
+    KU_ASSERT(params.d_v == HEAD_DIM_V);
+    KU_ASSERT(params.use_fixed_split);
+    KU_ASSERT(params.fixed_num_splits >= 1);
+    KU_ASSERT(params.fixed_partition_size >= TOPK_BLOCK_SIZE);
+    KU_ASSERT(params.fixed_partition_size % TOPK_BLOCK_SIZE == 0);
+
+    if constexpr (MODEL_TYPE == ModelType::MODEL1) {
+        constexpr int BYTES_PER_TOKEN = HEAD_DIM_NOPE + 2*HEAD_DIM_ROPE + 8;
+        KU_ASSERT(params.stride_kv_row == BYTES_PER_TOKEN);
+        KU_ASSERT(params.extra_kv == nullptr);
+        KU_ASSERT(params.topk_length == nullptr);
+    } else {
+        KU_ASSERT(params.extra_kv == nullptr, "V3.2 does not support extra KV cache");
+        KU_ASSERT(params.stride_kv_row == 656);
+    }
+
+    auto mla_kernel =
+        &flash_fwd_fixed_splitkv_mla_fp8_sparse_kernel<KernelTemplate<MODEL_TYPE, NUM_HEADS>>;
+    constexpr size_t smem_size = 32768;
+    mla_kernel<<<dim3(NUM_M_BLOCKS, params.s_q, params.b * params.fixed_num_splits),
+                 NUM_THREADS, smem_size, params.stream>>>(params);
+    CHECK_CUDA_KERNEL_LAUNCH();
+}
+
+template<ModelType MODEL_TYPE, int NUM_HEADS>
 void run_flash_splitkv_mla_fp8_sparse_kernel(const SparseAttnDecodeParams &params) {
     KernelTemplate<MODEL_TYPE, NUM_HEADS>::run(params);
 }
 
+template<ModelType MODEL_TYPE, int NUM_HEADS>
+void run_flash_fixed_splitkv_mla_fp8_sparse_kernel(const SparseAttnDecodeParams &params) {
+    KernelTemplate<MODEL_TYPE, NUM_HEADS>::run_fixed_split(params);
 }
 
+}
 
 

@@ -109,6 +109,12 @@ struct SparseAttnDecodeParams {
     DecodingSchedMeta* __restrict__ tile_scheduler_metadata_ptr; // [num_sm_parts, ], contiguous
     int* __restrict__ num_splits_ptr; // [batch_size+1, ], contiguous
     int num_sm_parts;
+
+    // Fixed split-KV path. When enabled, blockIdx.z is
+    // batch_idx * fixed_num_splits + split_idx and no scheduler metadata is used.
+    int use_fixed_split;
+    int fixed_num_splits;
+    int fixed_partition_size;
 };
 
 struct CombineParams {
@@ -192,15 +198,6 @@ struct SparseAttnFwdParams {
     int split_stride_lse_accum_split, split_stride_lse_accum_s_q;
     int split_stride_o_accum_split, split_stride_o_accum_s_q, split_stride_o_accum_h_q;
     bool split_decode_c_load;
-
-    // Optional extra sparse scope for gfx936 BF16 DSA decode via prefill kernel.
-    int extra_s_kv;
-    int extra_topk;
-    cutlass::bfloat16_t* __restrict__ extra_kv;
-    int* __restrict__ extra_indices;
-    int* __restrict__ extra_topk_length;
-    int stride_extra_kv_s_kv, stride_extra_kv_h_kv;
-    int stride_extra_indices_b, stride_extra_indices_s_q, stride_extra_indices_h_kv;
 };
 
 // We have some kernels that implement both prefill and decode modes in a single kernel (with different template instantiations). The following enum helps to distinguish the modes.

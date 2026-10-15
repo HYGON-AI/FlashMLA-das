@@ -1,41 +1,106 @@
 #!/usr/bin/env bash
 
-: "${DTK_PKG:?DTK_PKG must point to the DTK archive mounted on the Runner}"
-: "${TORCH_VERSION:?TORCH_VERSION must be set}"
-
-cp -f "${DTK_PKG}" /opt/
-cd /opt
-tar -xzf "$(basename "${DTK_PKG}")"
-rm -rf dtk
-mv dtk-* dtk
-source /opt/dtk/env.sh
+: "${DTK_VERSION:?DTK_VERSION must be set}"
+: "${DTK_PIP_INDEX_URL:?DTK_PIP_INDEX_URL must be set}"
 
 cd "${CI_PROJECT_DIR:?CI_PROJECT_DIR must be set by GitLab}"
 
-# Install the newest AICC package available on the Runner's shared storage.
-# Its absence is non-fatal because some Runners include AICC already.
-latest_aicc_run="$(ls /ArchivedFile/ai_cc/nightly/dtk_llvm_*.run 2>/dev/null | sort -t '_' -k4 -nr | head -n1)"
-if [[ -n "${latest_aicc_run}" ]]; then
-  aicc_installer="$(basename "${latest_aicc_run}")"
-  cp "${latest_aicc_run}" "/opt/${aicc_installer}"
-  cd /opt
+
+# Install the newest AICC package published on the AICC nightly server
+# AICC filename format:
+#   dtk_llvm_aicc-<pkg_version>+<dtk_tag>.<YYMMDDHHMM>.<commit>-x86_64.run
+#
+# <dtk_tag> names the DTK release and does not follow DTK_VERSION: dtk2610
+# already has builds under its own tag, the transitional dtk26042 is only a
+# fallback for as long as it is published.
+#
+# Every line below is bracketed or prefixed so that one run's whole AICC story
+# can be pulled back out of a job log with:  grep -n 'AICC' job.log
+aicc_banner() {
+  local rule
+  rule="$(printf '=%.0s' {1..96})"
+  echo "${rule}"
+  printf '= %-92s =\n' "$1"
+  echo "${rule}"
+}
+aicc_log() { echo "[AICC] $*"; }
+
+if [[ -z "${AICC_BASE_URL}" ]]; then
+  aicc_banner "AICC result: FAILED, AICC_BASE_URL is not set"
+  exit 1
+fi
+case "${DTK_VERSION}" in
+  26.04) aicc_tags=(dtk2604) ;;
+  26.10) aicc_tags=(dtk2610 dtk26042) ;;
+  *)
+    aicc_banner "AICC result: FAILED, no tag configured for DTK ${DTK_VERSION}"
+    exit 1
+    ;;
+esac
+
+aicc_banner "AICC install: DTK ${DTK_VERSION}, tag(s): ${aicc_tags[*]}"
+aicc_log "base URL: ${AICC_BASE_URL}"
+
+if ! aicc_listing="$(wget -qO- -t 3 -T 30 "${AICC_BASE_URL}/")"; then
+  aicc_banner "AICC result: FAILED, cannot list ${AICC_BASE_URL}/"
+  exit 1
+fi
+aicc_log "listing OK"
+
+aicc_candidates=()
+for aicc_tag in "${aicc_tags[@]}"; do
+  mapfile -t aicc_tag_candidates < <(
+    printf '%s\n' "${aicc_listing}" \
+      | grep -oE "dtk_llvm_aicc-[^\"%]*%2B${aicc_tag}\.[0-9]{8,12}\.[^\"]*\.run" \
+      | sed -E "s/.*%2B${aicc_tag}\.([0-9]{8,12})\..*/\1 &/" \
+      | awk '!seen[$0]++' \
+      | sort -nr | cut -d' ' -f2- | head -n 3
+  )
+  aicc_log "tag ${aicc_tag}: ${#aicc_tag_candidates[@]} candidate(s)"
+  aicc_candidates+=("${aicc_tag_candidates[@]}")
+done
+
+cd /opt || exit 1
+aicc_installer=""
+
+for aicc_index in "${!aicc_candidates[@]}"; do
+  aicc_url_name="${aicc_candidates[$aicc_index]}"
+  aicc_installer="${aicc_url_name//%2B/+}"
+  aicc_wget_log="${aicc_installer}.wget.log"
+  aicc_log "downloading $((aicc_index + 1))/${#aicc_candidates[@]}: ${aicc_installer}"
+
+  if wget -nv -c -t 3 -T 300 -O "${aicc_installer}.part" \
+       "${AICC_BASE_URL}/${aicc_url_name}" 2>"${aicc_wget_log}" \
+     && mv -f "${aicc_installer}.part" "${aicc_installer}" \
+     && [[ -s "${aicc_installer}" ]]; then
+    aicc_log "download OK: $(stat -c '%s' "${aicc_installer}") bytes"
+    rm -f "${aicc_wget_log}"
+    break
+  fi
+
+  aicc_log "download FAILED, falling back to the next candidate: ${aicc_installer}"
+  sed 's/^/[AICC]   wget: /' "${aicc_wget_log}" | tail -n 20 >&2 || true
+  rm -f "${aicc_installer}.part" "${aicc_installer}" "${aicc_wget_log}"
+  aicc_installer=""
+done
+
+if [[ -n "${aicc_installer}" ]]; then
+  aicc_log "installing ${aicc_installer}"
   chmod +x "${aicc_installer}"
 
-  # GitLab Runner enables pipefail.  When the installer exits, `yes` may get
-  # SIGPIPE and make the whole pipeline look failed even though installation
-  # succeeded.  Temporarily disable pipefail and keep the installer's status.
   set +o pipefail
   yes | bash "${aicc_installer}"
   aicc_status="${PIPESTATUS[1]}"
   set -o pipefail
+
   if [[ "${aicc_status}" -ne 0 ]]; then
-    echo "AICC installation failed: ${aicc_installer}" >&2
+    aicc_banner "AICC result: INSTALL FAILED (exit ${aicc_status})"
     exit "${aicc_status}"
   fi
 
-  echo "AICC installation completed: ${aicc_installer}"
+  aicc_banner "AICC result: INSTALLED ${aicc_installer}"
 else
-  echo "No AICC installer found; continuing with the existing environment."
+  aicc_banner "AICC result: SKIPPED, no usable installer for ${aicc_tags[*]}"
 fi
 
 cd "${CI_PROJECT_DIR:?CI_PROJECT_DIR must be set by GitLab}"
@@ -49,8 +114,12 @@ pip3 install wheel -i https://mirrors.huaweicloud.com/artifactory/pypi-public/si
 pip3 install packaging -i https://mirrors.huaweicloud.com/artifactory/pypi-public/simple
 pip3 install einops -i https://mirrors.huaweicloud.com/artifactory/pypi-public/simple
 pip3 install pytest -i https://mirrors.huaweicloud.com/artifactory/pypi-public/simple
-pip3 install setuptools  --force-reinstall --no-deps -i https://mirrors.huaweicloud.com/artifactory/pypi-public/simple
-python -m pip install torch=="${TORCH_VERSION}" triton ciupload auditwheel patchelf
+python -m pip install auditwheel patchelf -i https://mirrors.huaweicloud.com/artifactory/pypi-public/simple
+python -m pip install optest -i "${DTK_PIP_INDEX_URL}" \
+  --trusted-host "${PIP_TRUSTED_HOST:-10.16.1.201}" --force-reinstall
+python -m pip install ciupload -i "${DTK_PIP_INDEX_URL}" \
+  --trusted-host "${PIP_TRUSTED_HOST:-10.16.1.201}" --force-reinstall
+python -m pip install setuptools==79.0.1 -i https://pypi.tuna.tsinghua.edu.cn/simple --force-reinstall
 
 export PYTHON_VERSION="$(python --version 2>&1 | awk -F '[ .]' '{print $2 "." $3}')"
 
@@ -80,7 +149,8 @@ python -m pip install numpy=="${NUMPY_VERSION}" \
 
 python -c "import numpy; print(f'numpy {numpy.__version__} installed successfully')"
 
-python -m pip install optest -i http://10.16.1.201:9929/nightly/dtk2604/+simple/ --trusted-host 10.16.1.201 --force-reinstall
-
 hipcc --version
+
+# Installed by .gitlab-ci.yml from the index of this job's DTK, before this
+# script runs, so a broken index shows up here rather than in the build.
 python -c "import torch; print('torch:', torch.__version__); print('hip:', torch.version.hip)"

@@ -1,13 +1,19 @@
 #pragma once
 
-#include <span>
-
+#include <array>
+#include <cstddef>
+#include <iterator>
+#include <limits>
+#include <string>
+#include <string_view>
+#include <type_traits>
+#include <utility>
+#include <vector>
+#include <cutlass/bfloat16.h>
 #include <torch/extension.h>
 #include <ATen/cuda/CUDAContext.h>
 #include <c10/cuda/CUDAGuard.h>
 #include <kerutils/supplemental/torch_tensors.h>
-#include <string>
-#include <cutlass/bfloat16.h>
 
 static constexpr float LOG_2_E = 1.44269504f;
 
@@ -143,7 +149,7 @@ static constexpr std::size_t get_enum_max(){
 }
 
 template<typename T>
-static constexpr std::string get_dynamic_enum_name(T value){
+static inline std::string get_dynamic_enum_name(T value){
     static_assert(std::is_enum<T>::value, 
                 "Template parameter T must be an enumeration type");
     constexpr std::size_t num = get_enum_max<T>();
@@ -266,5 +272,3 @@ std::string getDtypeString(const torch::Tensor& tensor) {
     std::string dtype_str = c10::toString(tensor.scalar_type());
     return dtype_str;
 }
-
-

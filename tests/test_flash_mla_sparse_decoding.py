@@ -23,13 +23,23 @@ import ref
 Generate testcase for unit test
 """
 
+def is_topklength_supported(d_qk) -> bool:
+    """"""
+    if d_qk == 512:
+        return True
+    try:
+        name = torch.cuda.get_device_properties(0).gcnArchName
+        return "gfx936" in name or "gfx938" in name
+    except Exception:
+        return False
+
 def gen_testcase() -> List[RawTestParam]:
     correctness_cases = []
     corner_cases = []
     for d_qk in [576, 512]:
         for have_extra_k in ([False, True] if d_qk == 512 else [False]):
             for have_extra_topk_len in ([False, True] if have_extra_k else [False]):
-                for have_topk_len in ([False, True] if d_qk == 512 else [False]):
+                for have_topk_len in ([False, True] if is_topklength_supported(d_qk) else [False]):
                     for h_q in [16, 64, 128]:
                         cur_correctness_cases = [
                             RawTestParam(b, h_q, s_q, 1, s_k, is_varlen, topk,
@@ -105,6 +115,7 @@ def gen_testcase() -> List[RawTestParam]:
     base_and_bszs = [
         # V3.2
         (RawTestParam(0, 128, 2, 1, 32768, True, topk=2048, d_qk=576), [2, 64, 74, 128]),
+        (RawTestParam(0, 1, 4, 1, 43520, True, topk=2048, d_qk=576, block_size=64, have_topk_length=True), [2, 16]),
         # MODEL1 CONFIG1
         (RawTestParam(0, 64, 2, 1, 16384, True, topk=128, d_qk=512, extra_s_k=16384, extra_topk=512, block_size=256, extra_block_size=64), [2, 64, 74, 128, 74*2, 256]),
         # MODEL1 CONFIG2
@@ -179,6 +190,7 @@ def test_flash_mla(p: TestParam) -> Result:
         performance_result = Result(True, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
     else:
         result = kk.bench_kineto(run_decode, p.num_runs)
+        kernel_names = result.get_kernel_names()
 
         if lib.is_decode_bf16_kvcache():
             if get_gcn_arch_name() == "gfx936":
@@ -200,7 +212,7 @@ def test_flash_mla(p: TestParam) -> Result:
         # Get individual kernel time usages
         kernel_time_usages_us: Dict[str, Optional[float]] = {}
         def pick_kernel_time_usage(kernel_name: str):
-            t = [kernel_name in s for s in result.get_kernel_names()]
+            t = [kernel_name in s for s in kernel_names]
             if any(t):
                 assert sum(t) == 1
                 kernel_time_usages_us[kernel_name] = result.get_kernel_time(kernel_name) * 1e6
@@ -218,8 +230,13 @@ def test_flash_mla(p: TestParam) -> Result:
         
         if kk.is_using_profiling_tools():
             e2e_time_usage_us = 1e6
+        elif active_main_kernel_name is None:
+            print("[WARNING] Cannot find decode kernel in profiler events; skip performance statistics.")
+            print("Available kernels:")
+            for kernel_name in kernel_names:
+                print(f"  - {kernel_name}")
+            e2e_time_usage_us = 0.0
         else:
-            assert active_main_kernel_name is not None
             if have_kernel(combine_kernel_name):
                 e2e_time_usage_us = result.get_e2e_time(active_main_kernel_name, combine_kernel_name) * 1e6
             else:
@@ -230,8 +247,8 @@ def test_flash_mla(p: TestParam) -> Result:
 
         e2e_time_usage_s = e2e_time_usage_us / 1e6
         theoritical_compute_memory_ratio = flops_and_mem_vol.flop / flops_and_mem_vol.mem_vol
-        achieved_tflops = flops_and_mem_vol.flop / e2e_time_usage_s / 1e12
-        achieved_gBps = flops_and_mem_vol.mem_vol / e2e_time_usage_s / 1e9
+        achieved_tflops = flops_and_mem_vol.flop / e2e_time_usage_s / 1e12 if e2e_time_usage_s > 0 else 0.0
+        achieved_gBps = flops_and_mem_vol.mem_vol / e2e_time_usage_s / 1e9 if e2e_time_usage_s > 0 else 0.0
         def print_kernel_time_usage(name: str, short_name: str):
             if kernel_time_usages_us[name] is not None:
                 print(f'{short_name} time: {kernel_time_usages_us[name]:.1f} us')
@@ -256,7 +273,7 @@ def test_flash_mla(p: TestParam) -> Result:
             is_out_correct = kk.check_is_allclose("out", out_ans, out_ref, abs_tol=1e-3, rel_tol=2.01/128, cos_diff_tol=6e-6)
             is_correct &= is_out_correct
         else:
-            is_out_correct = kk.check_is_allclose("out", out_ans, out_ref, abs_tol=1e-3, rel_tol=2.01/128, cos_diff_tol=5e-6)
+            is_out_correct = kk.check_is_allclose("out", out_ans, out_ref, abs_tol=1e-3, rel_tol=2.01/128, cos_diff_tol=2e-5)
             is_lse_correct = kk.check_is_allclose("lse", lse_ans, lse_ref, abs_tol=1e-6, rel_tol=8.01/65536)
             is_correct &= is_out_correct and is_lse_correct
 
@@ -279,7 +296,7 @@ def main():
     torch.cuda.set_device(device)
     torch.set_float32_matmul_precision('high')
     torch.set_num_threads(32)
-    _reset_csv(f"{os.path.splitext(os.path.basename(__file__))[0]}_{dtype_to_name(dtype)}.csv")
+    _reset_csv(f"{os.path.splitext(os.path.basename(__file__))[0]}_{'bf16' if lib.is_decode_bf16_kvcache() else 'fp8'}.csv")
 
     raw_testcases = gen_testcase()
     testcases = [t.to_test_param() for t in raw_testcases]

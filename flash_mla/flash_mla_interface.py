@@ -77,6 +77,19 @@ def _is_gfx936_tensor(t: torch.Tensor) -> bool:
         return False
 
 
+def _is_gfx938_tensor(t: torch.Tensor) -> bool:
+    if not t.is_cuda:
+        return False
+    try:
+        props = torch.cuda.get_device_properties(t.device)
+        arch = getattr(props, "gcnArchName", "") or getattr(props, "gcn_arch_name", "")
+        if "gfx938" in str(arch):
+            return True
+        return "gfx938" in torch.cuda.get_device_name(t.device)
+    except Exception:
+        return False
+
+
 if triton is not None:
     @triton.jit(do_not_specialize=[
         "s_kv",
@@ -187,6 +200,26 @@ def _should_sort_d576_sparse_prefill(
         and (q.shape[1] == 64 or q.shape[1] <= 16)
         and d_v == 512
         and indices.shape[-1] == 2048
+        and topk_length is None
+        and attn_sink is None
+    )
+
+
+def _should_use_full_topk_length_for_d576_sparse_prefill(
+    q: torch.Tensor,
+    kv: torch.Tensor,
+    indices: torch.Tensor,
+    d_v: int,
+    attn_sink: Optional[torch.Tensor],
+    topk_length: Optional[torch.Tensor],
+) -> bool:
+    return (
+        _is_gfx938_tensor(q)
+        and q.shape[-1] == 576
+        and q.shape[1] in [64, 128]
+        and d_v == 512
+        and indices.shape[-1] == 2048
+        and kv.shape[0] >= 65536
         and topk_length is None
         and attn_sink is None
     )
@@ -440,6 +473,10 @@ def flash_mla_sparse_fwd(
         and q.shape[0] <= 128
     )
     if (
+        _should_use_full_topk_length_for_d576_sparse_prefill(q, kv, indices, d_v, attn_sink, topk_length)
+    ):
+        topk_length = torch.full((q.shape[0],), indices.shape[-1], dtype=torch.int32, device=indices.device)
+    elif (
         not skip_sort_for_small_d576_gfx936
         and _should_sort_d576_sparse_prefill(q, kv, indices, d_v, attn_sink, topk_length)
     ):
