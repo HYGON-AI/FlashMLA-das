@@ -2,13 +2,6 @@
 
 #include "splitkv_mla.h"
 
-// #include <cuda_fp8.h>
-// #include <math_constants.h>
-// #include <cutlass/barrier.h>
-// #include <cutlass/arch/barrier.h>
-// #include <cutlass/arch/reg_reconfig.h>
-// #include <cutlass/cluster_launch.hpp>
-
 #include <kerutils/kerutils.cuh>
 
 #include "utils.h"
@@ -21,11 +14,214 @@ using namespace cute;
 namespace gfx93::decode::sparse_fp8 {
 #define CUDART_L2E_F            1.442695041F
 
-static constexpr float MAX_INIT_VAL = -1e30;    // Prevent (-inf) - (-inf) = nan
+// ---- KernelTemplate 的 V32 辅助函数（static，可直接内联，不依赖 this）----
 
 template<ModelType MODEL_TYPE, int NUM_HEADS, bool HAVE_TOPK_LENGTH>
-__device__ void KernelTemplate<MODEL_TYPE, NUM_HEADS, HAVE_TOPK_LENGTH>::compute_attn_1rowblock_splitkv_sparse_mla_fp8(const SparseAttnDecodeParams &params, const DecodingSchedMeta& sched_meta, int batch_idx)
-{
+__device__ __forceinline__ auto
+KernelTemplate<MODEL_TYPE, NUM_HEADS, HAVE_TOPK_LENGTH>::dequant_fp8_to_bf16(const Fp8_storage& data0, float kv_scale, int idx)
+    -> std::tuple<Element, Element, Element, Element> {
+    #if defined(__gfx938__)
+    auto res1 = __builtin_amdgcn_cvt_pk_f32_fp8(data0.fp8_array[idx / 4], false);
+    auto res2 = __builtin_amdgcn_cvt_pk_f32_fp8(data0.fp8_array[idx / 4], true);
+    auto f1 = res1[0];
+    auto f2 = res1[1];
+    auto f3 = res2[0];
+    auto f4 = res2[1];
+    #else
+    const auto fp8x2_low = *reinterpret_cast<const __hip_fp8x2_storage_t*>(&data0.fp8_array[idx / 4]);
+    const auto fp8x2_high = *(reinterpret_cast<const __hip_fp8x2_storage_t*>(&(data0.fp8_array[idx / 4])) + 1);
+    auto f1 = flash::fp8e4m3_to_fp32(static_cast<__hip_fp8_storage_t>((fp8x2_low << 8) >> 8));
+    auto f2 = flash::fp8e4m3_to_fp32(static_cast<__hip_fp8_storage_t>((fp8x2_low >> 8)));
+    auto f3 = flash::fp8e4m3_to_fp32(static_cast<__hip_fp8_storage_t>((fp8x2_high << 8) >> 8));
+    auto f4 = flash::fp8e4m3_to_fp32(static_cast<__hip_fp8_storage_t>((fp8x2_high) >> 8));
+    #endif
+    f1 *= kv_scale;
+    f2 *= kv_scale;
+    f3 *= kv_scale;
+    f4 *= kv_scale;
+    cutlass::NumericConverter<Element, float, cutlass::FloatRoundStyle::round_toward_zero> convert_;
+    return {convert_(f1), convert_(f2), convert_(f3), convert_(f4)};
+}
+
+template<ModelType MODEL_TYPE, int NUM_HEADS, bool HAVE_TOPK_LENGTH>
+__device__ __forceinline__ auto
+KernelTemplate<MODEL_TYPE, NUM_HEADS, HAVE_TOPK_LENGTH>::issue_kv_loads(const SparseAttnDecodeParams& params, int token_index, int col_idx, bool is_extra)
+    -> PfKV {
+    PfKV pf;
+    uint8_t* k_ptr = is_extra ? (uint8_t*)params.extra_kv : (uint8_t*)params.kv;
+    int page_block_size = is_extra ? params.extra_page_block_size : params.page_block_size;
+    int64_t k_block_stride = is_extra ? params.stride_extra_kv_block : params.stride_kv_block;
+    int64_t k_row_stride = is_extra ? params.stride_extra_kv_row : params.stride_kv_row;
+    int block_index = token_index == -1 ? 0 : (int)((uint32_t)token_index / (uint32_t)page_block_size);
+    int rel_idx_in_block = (uint32_t)token_index % (uint32_t)page_block_size;
+    const int64_t offset_k = (int64_t)(block_index) * k_block_stride;
+    uint8_t* gK_base;
+    if constexpr (MODEL_TYPE == ModelType::V32) {
+        // V32: K = 512 fp8 (4 个 128 段 scale) + 64 bf16 rope，scale 为 fp32 紧跟在 fp8 之后
+        gK_base = k_ptr + offset_k + rel_idx_in_block * k_row_stride;
+        float* scale_ptr = (float*)(gK_base + HEAD_DIM_NOPE);
+        if (token_index == -1) {
+            for (int i = 0; i < NUM_SCALES; i++) pf.scales[i] = 0.0f;
+            for (int i = 0; i < 4; i++) {
+                pf.kA[i].data_128 = {0};
+                pf.kB[i].data_128 = {0};
+            }
+        } else {
+            for (int i = 0; i < NUM_SCALES; i++) pf.scales[i] = scale_ptr[i];
+            for (int i = 0; i < 4; i++) pf.kA[i].data_128 = *((__fp16x8_t*)(gK_base + col_idx * 16 + (4 + i) * 64));
+            for (int i = 0; i < 4; i++) pf.kB[i].data_128 = *((__fp16x8_t*)(gK_base + col_idx * 16 + i * 64));
+        }
+        pf.rope0.data_128 = *((uint32x4_t*)(gK_base + col_idx * 16 * 2 + HEAD_DIM_NOPE + 16));
+        pf.rope1.data_128 = *((uint32x4_t*)(gK_base + col_idx * 16 * 2 + 8 * 2 + HEAD_DIM_NOPE + 16));
+    } else {
+        // MODEL1: K = 448 fp8 (每 64 一段 scale, 共 7 段) + 64 bf16 rope；scale 为 e8m0，存放在 block 末尾
+        gK_base = k_ptr + offset_k + rel_idx_in_block * (HEAD_DIM_NOPE + HEAD_DIM_ROPE * 2);
+        uint8_t* scale_ptr = k_ptr + offset_k + page_block_size * (HEAD_DIM_NOPE + HEAD_DIM_ROPE * 2) + rel_idx_in_block * NUM_SCALES;
+        if (token_index == -1) {
+            for (int i = 0; i < NUM_SCALES; i++) pf.scales[i] = 0.0f;
+            for (int i = 0; i < 4; i++) {
+                pf.kA[i].data_128 = {0};
+                pf.kB[i].data_128 = {0};
+            }
+            pf.rope0.data_128 = {0};
+            pf.rope1.data_128 = {0};
+        } else {
+            union Scale_e8m0 {
+                __fp16x4_t tmp;
+                __hip_fp8_storage_t fp8_e8m0[NUM_SCALES];
+            };
+            Scale_e8m0 scale_e8m0;
+            scale_e8m0.tmp = *(__fp16x4_t*)(scale_ptr);
+            union Fp32 {
+                uint32_t as_bits;
+                float as_value;
+            };
+            Fp32 fp32;
+            for (int i = 0; i < NUM_SCALES - 1; i++) {
+                fp32.as_bits = (scale_e8m0.fp8_e8m0[i] << 23);
+                pf.scales[i] = fp32.as_value;
+            }
+            for (int i = 0; i < 3; i++) pf.kA[i].data_128 = *((__fp16x8_t*)(gK_base + col_idx * 16 + (4 + i) * 64));
+            for (int i = 0; i < 4; i++) pf.kB[i].data_128 = *((__fp16x8_t*)(gK_base + col_idx * 16 + i * 64));
+            pf.rope0.data_128 = *((uint32x4_t*)(gK_base + col_idx * 16 * 2 + HEAD_DIM_NOPE));
+            pf.rope1.data_128 = *((uint32x4_t*)(gK_base + col_idx * 16 * 2 + 8 * 2 + HEAD_DIM_NOPE));
+        }
+    }
+    return pf;
+}
+
+template<ModelType MODEL_TYPE, int NUM_HEADS, bool HAVE_TOPK_LENGTH>
+__device__ __forceinline__ void
+KernelTemplate<MODEL_TYPE, NUM_HEADS, HAVE_TOPK_LENGTH>::lds_direct_copy_q(const Element* q_ptr, const SparseAttnDecodeParams& params, Element* s_q,
+                                                                          int head_block_idx, int lane_idx, int warp_idx, int k_idx, int offset_k) {
+    struct PtrWrapper {
+        uint32_t former;
+        uint32_t latter;
+    };
+    PtrWrapper glob_ptr;
+    *(uint64_t*)&glob_ptr = reinterpret_cast<uint64_t>(q_ptr);
+    uint32x4_t global_addr = {0};
+    global_addr[0] = (glob_ptr.former);
+    global_addr[1] = (glob_ptr.latter);
+    global_addr[2] = 0x80000000;
+    global_addr[3] = 0x00020000;
+    constexpr int bytes_per_warp = 64 * 8 * 2;
+    constexpr int bytes_per_block = bytes_per_warp * 4;
+    const int row_idx = lane_idx % 16;
+    const int col_idx = lane_idx / 16;
+    const int row_offset = row_idx;
+    if constexpr (MODEL_TYPE == ModelType::V32) {
+        int col_offset;
+        if (k_idx == 2) {
+            col_offset = k_idx * 256 + warp_idx * 8 + col_idx * 16;
+        } else {
+            col_offset = k_idx * 256 + warp_idx * 64 + col_idx * 16 + offset_k * 8;
+        }
+        int offset_v = (row_offset * params.stride_q_h_q + col_offset) * 2;
+        if (head_block_idx * BLOCK_M + row_idx >= params.h_q) {
+            offset_v = -1;
+        }
+        if (k_idx == 2 && warp_idx >= 2) {
+            offset_v = -1;
+        }
+        const int offset_s = 0;
+        int ldsAddrPerWave = reinterpret_cast<size_t>(s_q) + warp_idx * bytes_per_warp + k_idx * bytes_per_block
+            + offset_k * 3 * bytes_per_block;
+        __builtin_amdgcn_sched_barrier(0);
+        asm volatile(
+            "s_mov_b32 m0, %1 \n\t"
+            "s_nop 0 \n\t"
+            "buffer_load_dwordx4 %0, %2, %3 ,offen  offset:0, lds \n" ::"v"(offset_v),
+            "s"(ldsAddrPerWave), "s"(global_addr), "s"(offset_s)
+        :);
+        __builtin_amdgcn_sched_barrier(0);
+    } else {
+        const int col_offset = k_idx * 256 + warp_idx * 64 + col_idx * 16 + offset_k * 8;
+        int offset_v = (row_offset * params.stride_q_h_q + col_offset) * 2;
+        if (head_block_idx * BLOCK_M + row_idx >= params.h_q) {
+            offset_v = -1;
+        }
+        const int offset_s = 0;
+        int ldsAddrPerWave = reinterpret_cast<size_t>(s_q) + warp_idx * bytes_per_warp + k_idx * bytes_per_block
+            + offset_k * 2 * bytes_per_block;
+        __builtin_amdgcn_sched_barrier(0);
+        asm volatile(
+            "s_mov_b32 m0, %1 \n\t"
+            "s_nop 0 \n\t"
+            "buffer_load_dwordx4 %0, %2, %3 ,offen  offset:0, lds \n" ::"v"(offset_v),
+            "s"(ldsAddrPerWave), "s"(global_addr), "s"(offset_s)
+        :);
+        __builtin_amdgcn_sched_barrier(0);
+    }
+}
+
+// 解析本次请求的调度信息（block 范围、是否 no-split、topk_length 等）
+template<ModelType MODEL_TYPE, int NUM_HEADS, bool HAVE_TOPK_LENGTH>
+__device__ __forceinline__ auto
+KernelTemplate<MODEL_TYPE, NUM_HEADS, HAVE_TOPK_LENGTH>::get_cur_req_info(const SparseAttnDecodeParams& params, const DecodingSchedMeta& sched_meta, int batch_idx)
+    -> MainloopArgs {
+    MainloopArgs args;
+    int total_topk_padded;
+    if constexpr (HAVE_TOPK_LENGTH) {
+        // 动态 topk_length 截断，V32 与 MODEL1 共用；<true> 实例保证 topk_length 非空
+        int topk_length = __ldg(params.topk_length + batch_idx);
+        total_topk_padded = max(ku::ceil(topk_length, (int)TOPK_BLOCK_SIZE), (int)TOPK_BLOCK_SIZE);
+        args.topk_length = topk_length;
+        args.num_orig_kv_blocks = total_topk_padded / TOPK_BLOCK_SIZE;
+    } else {
+        // 静态 topk：编译期不生成 topk_length 相关代码，与基线等价（V32 与 MODEL1 共用）
+        total_topk_padded = params.topk;
+        args.num_orig_kv_blocks = params.topk / TOPK_BLOCK_SIZE;
+    }
+    if constexpr (MODEL_TYPE == ModelType::MODEL1) {
+        // extra_kv 仅 MODEL1，与 topk_length 相互独立，静态/动态都需截断 extra_topk_length
+        int extra_topk_length = params.extra_topk_length ? __ldg(params.extra_topk_length + batch_idx) : params.extra_topk;
+        total_topk_padded += ku::ceil(extra_topk_length, (int)TOPK_BLOCK_SIZE);
+        args.extra_topk_length = extra_topk_length;
+    }
+
+    args.start_block_idx = batch_idx == sched_meta.begin_req_idx ? sched_meta.begin_block_idx : 0;
+    args.end_block_idx = batch_idx == sched_meta.end_req_idx ? sched_meta.end_block_idx : total_topk_padded / TOPK_BLOCK_SIZE;
+    args.is_no_split = batch_idx == sched_meta.begin_req_idx ? !sched_meta.is_first_req_splitted : (batch_idx == sched_meta.end_req_idx ? !sched_meta.is_last_req_splitted : true);
+
+    return args;
+}
+
+template<ModelType MODEL_TYPE, int NUM_HEADS, bool HAVE_TOPK_LENGTH>
+__device__ __forceinline__ uint16_t
+KernelTemplate<MODEL_TYPE, NUM_HEADS, HAVE_TOPK_LENGTH>::float2bf16(float s) {
+    uint32_t x32 = reinterpret_cast<uint32_t const &>(s);
+    #ifndef FLASH_MLA_BF16_TYPE
+    #define FLASH_MLA_BF16_TYPE 0
+    #endif
+    #if FLASH_MLA_BF16_TYPE == 1
+    x32 += 0x8000u;
+    #endif
+    return uint16_t(x32 >> 16);
+}
+
+template<ModelType MODEL_TYPE, int NUM_HEADS, bool HAVE_TOPK_LENGTH>
+__device__ void KernelTemplate<MODEL_TYPE, NUM_HEADS, HAVE_TOPK_LENGTH>::compute_attn_1rowblock_splitkv_sparse_mla_fp8(const SparseAttnDecodeParams &params, const DecodingSchedMeta& sched_meta, int batch_idx) {
     using Element = cutlass::bfloat16_t;
     using index_t = int64_t;
     const int tidx = threadIdx.x;
@@ -40,132 +236,25 @@ __device__ void KernelTemplate<MODEL_TYPE, NUM_HEADS, HAVE_TOPK_LENGTH>::compute
     Tensor gQ = make_tensor(make_gmem_ptr(reinterpret_cast<Element *>(params.q) + row_offset_q),
                             Shape<Int<BLOCK_M>, Int<HEAD_DIM_K>>{},
                             make_stride(params.stride_q_h_q, _1{}));
-    const index_t row_offset_k = 0;
-    Tensor gK = make_tensor(make_gmem_ptr(reinterpret_cast<uint8_t *>(params.kv) + row_offset_k),
-                            Shape<Int<TOPK_BLOCK_SIZE>, Int<HEAD_DIM_K>>{},
-                            make_stride(params.stride_kv_row, _1{}));
-    Tensor sV = make_tensor(make_smem_ptr(plan.smem_v.data()), SmemLayoutV{});
-    Tensor sK = make_tensor(make_smem_ptr(plan.smem_v.data()), SmemLayoutK{});
-    Tensor sP = make_tensor(make_smem_ptr(plan.smem_p.data()), SmemLayoutP{});    
-    Tensor sVt = make_tensor(sV.data(), SmemLayoutVtransposed{});
-    Tensor sVtNoSwizzle = make_tensor(sV.data(), SmemLayoutVtransposedNoSwizzle{});
-    Tensor sRow_max_reduce_buffer = make_tensor(make_smem_ptr(plan.smem_row_max.data()), SmemLayoutRow{});    
-    Tensor sRow_sum_reduce_buffer = make_tensor(make_smem_ptr(plan.smem_row_sum.data()), SmemLayoutRow{});
-
-    const index_t row_offset_topk =  batch_idx * params.stride_indices_b + s_q_idx * params.stride_indices_s_q; // todo
-    int* gIndices = reinterpret_cast<int *>(params.indices) + row_offset_topk;
-    int* gExtraIndices = params.extra_indices + batch_idx*params.stride_extra_indices_b + s_q_idx*params.stride_extra_indices_s_q; // (extra_topk) : (1)
-    TiledMMA tiled_mma = TiledMma{}; 
+    TiledMMA tiled_mma = TiledMma{};
     auto thr_mma = tiled_mma.get_thread_slice(tidx);
-    TiledMMA tiled_mma_16x16x32 = TiledMma_16_16_32{}; 
-    auto thr_mma_16x16x32 = tiled_mma_16x16x32.get_thread_slice(tidx);
-    TiledMMA tiled_mma_o = TiledMma_O{}; 
-    auto thr_mma_o = tiled_mma_o.get_thread_slice(tidx);
-#if 0
-    // load Q
-    auto gmem_tiled_copy_Q = make_tiled_copy_A(Copy_Atom<DefaultCopy, Element>{}, tiled_mma);
-    auto gmem_thr_copy_Q = gmem_tiled_copy_Q.get_thread_slice(tidx);
-    Tensor tSgQ = gmem_thr_copy_Q.partition_S(gQ);
-    Tensor tSrQ = thr_mma.partition_fragment_A(gQ);
-    Tensor cQ = make_identity_tensor(make_shape(size<0>(gQ), size<1>(gQ)));
-    Tensor tQcQ = gmem_thr_copy_Q.partition_S(cQ);
-    Tensor tQpQ = make_tensor<bool>(make_shape(size<2>(tSgQ)));
-    flash::copy</*Is_even_MN=*/false, /*Is_even_K=*/true>(gmem_tiled_copy_Q, tSgQ, tSrQ, tQcQ, tQpQ, params.h_q - head_block_idx * BLOCK_M);
-    __syncthreads();
-#else
     Tensor tSrQ = thr_mma.partition_fragment_A(gQ);
     // 需要的最大空间为 16 * 576 * 2
     Element* s_q = reinterpret_cast<Element *>(shared_memory);
-    auto lds_direct_copy_q = [&](const int k_idx, const int offset_k) {
-        // static_assert(offset_k == 0 || offset_k == 1);
-        // static_assert(k_idx < 3);
-        struct PtrWrapper {
-            uint32_t former;
-            uint32_t latter;
-        };
-        PtrWrapper glob_ptr;
-        *(uint64_t*)&glob_ptr = reinterpret_cast<uint64_t>(gQ.data().get());
-        uint32x4_t global_addr = {0};
-        global_addr[0] = (glob_ptr.former);
-        global_addr[1] = (glob_ptr.latter);
-        global_addr[2] = 0x80000000;
-        global_addr[3] = 0x00020000;
-        constexpr int elements_per_thread = 8;
-        constexpr int bytes_per_warp = 64 * 8 * 2;
-        constexpr int bytes_per_block = bytes_per_warp * 4;
-        const int row_idx = lane_idx % 16;
-        const int col_idx = lane_idx / 16;
-        const int row_offset = row_idx;
-        if constexpr (MODEL_TYPE == ModelType::V32)
-        {
-            int col_offset;
-            if (k_idx == 2)
-            {
-                col_offset = k_idx * 256 + warp_idx * 8 + col_idx * 16;
-            }
-            else
-            {
-                col_offset = k_idx * 256 + warp_idx * 64 + col_idx * 16 + offset_k * 8;
-            }
-            int offset_v = (row_offset * params.stride_q_h_q + col_offset) * 2;
-            if (head_block_idx * BLOCK_M + row_idx >= params.h_q) {
-                offset_v = -1;
-            }
-            if (k_idx == 2 && warp_idx >= 2)
-            {
-                offset_v = -1;
-            }
-            const int offset_s = 0;
-            int ldsAddrPerWave = reinterpret_cast<size_t>(s_q) + warp_idx * bytes_per_warp + k_idx * bytes_per_block
-                + offset_k * 3 * bytes_per_block;
-            __builtin_amdgcn_sched_barrier(0);
-            asm volatile(
-                "s_mov_b32 m0, %1 \n\t"
-                "s_nop 0 \n\t"
-                "buffer_load_dwordx4 %0, %2, %3 ,offen  offset:0, lds \n" ::"v"(offset_v),
-                "s"(ldsAddrPerWave), "s"(global_addr), "s"(offset_s)
-            :);  
-            __builtin_amdgcn_sched_barrier(0);
-        }
-        else
-        {
-            const int col_offset = k_idx * 256 + warp_idx * 64 + col_idx * 16 + offset_k * 8;
-            int offset_v = (row_offset * params.stride_q_h_q + col_offset) * 2;
-            if (head_block_idx * BLOCK_M + row_idx >= params.h_q) {
-                offset_v = -1;
-            }
 
-            const int offset_s = 0;
-            int ldsAddrPerWave = reinterpret_cast<size_t>(s_q) + warp_idx * bytes_per_warp + k_idx * bytes_per_block
-                + offset_k * 2 * bytes_per_block;
-            __builtin_amdgcn_sched_barrier(0);
-            asm volatile(
-                "s_mov_b32 m0, %1 \n\t"
-                "s_nop 0 \n\t"
-                "buffer_load_dwordx4 %0, %2, %3 ,offen  offset:0, lds \n" ::"v"(offset_v),
-                "s"(ldsAddrPerWave), "s"(global_addr), "s"(offset_s)
-            :);  
-            __builtin_amdgcn_sched_barrier(0);
-        }
-  
-    };
-
-    if constexpr (MODEL_TYPE == ModelType::V32)
-    {
-        // __builtin_amdgcn_sched_barrier(0);
-        lds_direct_copy_q(0, 0);
-        lds_direct_copy_q(1, 0);
-        lds_direct_copy_q(0, 1);
-        lds_direct_copy_q(1, 1);
-        lds_direct_copy_q(2, 0);
+    if constexpr (MODEL_TYPE == ModelType::V32) {
+        const auto q_ptr = gQ.data().get();
+        lds_direct_copy_q(q_ptr, params, s_q, head_block_idx, lane_idx, warp_idx, 0, 0);
+        lds_direct_copy_q(q_ptr, params, s_q, head_block_idx, lane_idx, warp_idx, 1, 0);
+        lds_direct_copy_q(q_ptr, params, s_q, head_block_idx, lane_idx, warp_idx, 0, 1);
+        lds_direct_copy_q(q_ptr, params, s_q, head_block_idx, lane_idx, warp_idx, 1, 1);
+        lds_direct_copy_q(q_ptr, params, s_q, head_block_idx, lane_idx, warp_idx, 2, 0);
         Element* s_q_read_ptr = s_q + lane_idx * 8;
         __builtin_amdgcn_sched_barrier(0);
         asm volatile("s_waitcnt vmcnt(4) \n s_barrier"); 
         __builtin_amdgcn_sched_barrier(0);
-        for (int k = 0; k < 4; k++)
-        {
-            for (int i = 0; i < 8; i++)
-            {
+        for (int k = 0; k < 4; k++) {
+            for (int i = 0; i < 8; i++) {
                 tSrQ(i, 0, k) = s_q_read_ptr[i];
             }
             s_q_read_ptr += 16 * 32;
@@ -173,10 +262,8 @@ __device__ void KernelTemplate<MODEL_TYPE, NUM_HEADS, HAVE_TOPK_LENGTH>::compute
         __builtin_amdgcn_sched_barrier(0);
         asm volatile("s_waitcnt vmcnt(3) \n s_barrier"); 
         __builtin_amdgcn_sched_barrier(0);
-        for (int k = 4; k < 8; k++)
-        {
-            for (int i = 0; i < 8; i++)
-            {
+        for (int k = 4; k < 8; k++) {
+            for (int i = 0; i < 8; i++) {
                 tSrQ(i, 0, k) = s_q_read_ptr[i];
             }
             s_q_read_ptr += 16 * 32;
@@ -185,10 +272,8 @@ __device__ void KernelTemplate<MODEL_TYPE, NUM_HEADS, HAVE_TOPK_LENGTH>::compute
         asm volatile("s_waitcnt vmcnt(2) \n s_barrier"); 
         __builtin_amdgcn_sched_barrier(0);
         s_q_read_ptr = s_q + lane_idx * 8 + 3 * 4 * 16 * 4 * 8;
-        for (int k = 0; k < 4; k++)
-        {
-            for (int i = 8; i < 16; i++)
-            {
+        for (int k = 0; k < 4; k++) {
+            for (int i = 8; i < 16; i++) {
                 tSrQ(i, 0, k) = s_q_read_ptr[i - 8];
             }
             s_q_read_ptr += 16 * 32;
@@ -196,10 +281,8 @@ __device__ void KernelTemplate<MODEL_TYPE, NUM_HEADS, HAVE_TOPK_LENGTH>::compute
         __builtin_amdgcn_sched_barrier(0);
         asm volatile("s_waitcnt vmcnt(1) \n s_barrier"); 
         __builtin_amdgcn_sched_barrier(0);
-        for (int k = 4; k < 8; k++)
-        {
-            for (int i = 8; i < 16; i++)
-            {
+        for (int k = 4; k < 8; k++) {
+            for (int i = 8; i < 16; i++) {
                 tSrQ(i, 0, k) = s_q_read_ptr[i - 8];
             }
             s_q_read_ptr += 16 * 32;
@@ -208,45 +291,35 @@ __device__ void KernelTemplate<MODEL_TYPE, NUM_HEADS, HAVE_TOPK_LENGTH>::compute
         asm volatile("s_waitcnt vmcnt(0) \n s_barrier"); 
         __builtin_amdgcn_sched_barrier(0);
         s_q_read_ptr = s_q + lane_idx * 8 + 2 * 4 * 16 * 4 * 8;
-        for (int k = 8; k < 9; k++)
-        {
-            for (int i = 0; i < 8; i++)
-            {
+        for (int k = 8; k < 9; k++) {
+            for (int i = 0; i < 8; i++) {
                 tSrQ(i, 0, k) = s_q_read_ptr[i];
             }
             s_q_read_ptr += 16 * 32;
         }
-        for (int k = 8; k < 9; k++)
-        {
-            for (int i = 8; i < 16; i++)
-            {
+        for (int k = 8; k < 9; k++) {
+            for (int i = 8; i < 16; i++) {
                 tSrQ(i, 0, k) = s_q_read_ptr[i-8];
             }
             s_q_read_ptr += 16 * 32;
         }
-        // __syncthreads();
         __builtin_amdgcn_sched_barrier(0);
         asm volatile("s_waitcnt lgkmcnt(0) \n s_barrier"); 
         __builtin_amdgcn_sched_barrier(0);
 
-        // __builtin_amdgcn_sched_barrier(0);
-    }
-    else
-    {    
-        // __builtin_amdgcn_sched_barrier(0);
-        lds_direct_copy_q(0, 0);
-        lds_direct_copy_q(1, 0);
-        lds_direct_copy_q(0, 1);
-        lds_direct_copy_q(1, 1);
+    } else {
+        const auto q_ptr = gQ.data().get();
+        lds_direct_copy_q(q_ptr, params, s_q, head_block_idx, lane_idx, warp_idx, 0, 0);
+        lds_direct_copy_q(q_ptr, params, s_q, head_block_idx, lane_idx, warp_idx, 1, 0);
+        lds_direct_copy_q(q_ptr, params, s_q, head_block_idx, lane_idx, warp_idx, 0, 1);
+        lds_direct_copy_q(q_ptr, params, s_q, head_block_idx, lane_idx, warp_idx, 1, 1);
 
         Element* s_q_read_ptr = s_q + lane_idx * 8;
         __builtin_amdgcn_sched_barrier(0);
         asm volatile("s_waitcnt vmcnt(3) \n s_barrier"); 
         __builtin_amdgcn_sched_barrier(0);
-        for (int k = 0; k < 4; k++)
-        {
-            for (int i = 0; i < 8; i++)
-            {
+        for (int k = 0; k < 4; k++) {
+            for (int i = 0; i < 8; i++) {
                 tSrQ(i, 0, k) = s_q_read_ptr[i];
             }
             s_q_read_ptr += 16 * 32;
@@ -254,10 +327,8 @@ __device__ void KernelTemplate<MODEL_TYPE, NUM_HEADS, HAVE_TOPK_LENGTH>::compute
         __builtin_amdgcn_sched_barrier(0);
         asm volatile("s_waitcnt vmcnt(2) \n s_barrier"); 
         __builtin_amdgcn_sched_barrier(0);
-        for (int k = 4; k < 8; k++)
-        {
-            for (int i = 0; i < 8; i++)
-            {
+        for (int k = 4; k < 8; k++) {
+            for (int i = 0; i < 8; i++) {
                 tSrQ(i, 0, k) = s_q_read_ptr[i];
             }
             s_q_read_ptr += 16 * 32;
@@ -265,10 +336,8 @@ __device__ void KernelTemplate<MODEL_TYPE, NUM_HEADS, HAVE_TOPK_LENGTH>::compute
         __builtin_amdgcn_sched_barrier(0);
         asm volatile("s_waitcnt vmcnt(1) \n s_barrier"); 
         __builtin_amdgcn_sched_barrier(0);
-        for (int k = 0; k < 4; k++)
-        {
-            for (int i = 8; i < 16; i++)
-            {
+        for (int k = 0; k < 4; k++) {
+            for (int i = 8; i < 16; i++) {
                 tSrQ(i, 0, k) = s_q_read_ptr[i - 8];
             }
             s_q_read_ptr += 16 * 32;
@@ -276,10 +345,8 @@ __device__ void KernelTemplate<MODEL_TYPE, NUM_HEADS, HAVE_TOPK_LENGTH>::compute
         __builtin_amdgcn_sched_barrier(0);
         asm volatile("s_waitcnt vmcnt(0) \n s_barrier"); 
         __builtin_amdgcn_sched_barrier(0);
-        for (int k = 4; k < 8; k++)
-        {
-            for (int i = 8; i < 16; i++)
-            {
+        for (int k = 4; k < 8; k++) {
+            for (int i = 8; i < 16; i++) {
                 tSrQ(i, 0, k) = s_q_read_ptr[i - 8];
             }
             s_q_read_ptr += 16 * 32;
@@ -289,376 +356,107 @@ __device__ void KernelTemplate<MODEL_TYPE, NUM_HEADS, HAVE_TOPK_LENGTH>::compute
         __builtin_amdgcn_sched_barrier(0);
     }
    
-#endif
-    // zhj debug
-    // if (head_block_idx == 0)
-    // {
-    //     printf("tidx = %d, %.2f %.2f %.2f %.2f \n", tidx, float(tSrQ(0)), float(tSrQ(1)), float(tSrQ(2)), float(tSrQ(3)));
-    // }
+    Tensor gK = make_tensor(make_gmem_ptr(reinterpret_cast<uint8_t *>(params.kv)),
+                            Shape<Int<TOPK_BLOCK_SIZE>, Int<HEAD_DIM_K>>{},
+                            make_stride(params.stride_kv_row, _1{}));
     Tensor tSrK  = thr_mma.partition_fragment_B(gK); 
+    TiledMMA tiled_mma_16x16x32 = TiledMma_16_16_32{};
     auto smem_tiled_copy_K = make_tiled_copy_B(Copy_Atom<DefaultCopy, Element>{}, tiled_mma_16x16x32);
     auto smem_thr_copy_K = smem_tiled_copy_K.get_thread_slice(tidx);
+    Tensor sK = make_tensor(make_smem_ptr(plan.smem_v.data()), SmemLayoutK{});
     Tensor tOsV = smem_thr_copy_K.partition_S(sK);
 
+    TiledMMA tiled_mma_o = TiledMma_O{};
+    auto thr_mma_o = tiled_mma_o.get_thread_slice(tidx);
     auto smem_tiled_copy_V = make_tiled_copy_B(Copy_Atom<GFX928_DS_READ_DS_M32x16_B16, Element>{}, tiled_mma_o);
     auto smem_thr_copy_V = smem_tiled_copy_V.get_thread_slice(tidx);
+    Tensor sV = make_tensor(make_smem_ptr(plan.smem_v.data()), SmemLayoutV{});
+    Tensor sVt = make_tensor(sV.data(), SmemLayoutVtransposed{});
     Tensor tOsVt = smem_thr_copy_V.partition_S(sVt);
     Tensor tOrVt  = thr_mma_o.partition_fragment_B(sVt);
     Tensor tOrVt_copy_view = smem_thr_copy_V.retile_D(tOrVt);
 
-    const auto gK_data = gK.data();
-    typedef unsigned int __hip_fp8x4_storage_t;
-    typedef unsigned short int __hip_fp8x2_storage_t;
-    typedef unsigned char __hip_fp8_storage_t;
-    typedef  __fp16  __fp16x8_t __attribute__((ext_vector_type(8)));
-    typedef  __fp16  __fp16x4_t __attribute__((ext_vector_type(4)));
-    typedef  int  v2i  __attribute__((ext_vector_type(2)));
-    
-    union Fp8_storage{
-        __fp16x8_t data_128;
-        __hip_fp8x4_storage_t fp8_array[4];
-    };
-
-    union bf16_storage{
-        uint32x4_t data_128;
-        uint16_t data_array[8];
-    };
-    struct MainloopArgs {
-        int start_block_idx, end_block_idx;
-        bool is_no_split;
-
-        // The following fields are only valid for MODEL1
-        int topk_length, extra_topk_length, num_orig_kv_blocks;
-    };
-
-    auto get_cur_req_info = [&](int batch_idx) -> MainloopArgs {
-        MainloopArgs args;
-        int total_topk_padded;
-        if constexpr (HAVE_TOPK_LENGTH) {
-            // 动态 topk_length 截断，V32 与 MODEL1 共用；<true> 实例保证 topk_length 非空
-            int topk_length = __ldg(params.topk_length + batch_idx);
-            total_topk_padded = max(ku::ceil(topk_length, (int)TOPK_BLOCK_SIZE), (int)TOPK_BLOCK_SIZE);
-            args.topk_length = topk_length;
-            args.num_orig_kv_blocks = total_topk_padded / TOPK_BLOCK_SIZE;
-        } else {
-            // 静态 topk：编译期不生成 topk_length 相关代码，与基线等价（V32 与 MODEL1 共用）
-            total_topk_padded = params.topk;
-            args.num_orig_kv_blocks = params.topk / TOPK_BLOCK_SIZE;
-        }
-        if constexpr (MODEL_TYPE == ModelType::MODEL1) {
-            // extra_kv 仅 MODEL1，与 topk_length 相互独立，静态/动态都需截断 extra_topk_length
-            int extra_topk_length = params.extra_topk_length ? __ldg(params.extra_topk_length + batch_idx) : params.extra_topk;
-            total_topk_padded += ku::ceil(extra_topk_length, (int)TOPK_BLOCK_SIZE);
-            args.extra_topk_length = extra_topk_length;
-        }
-
-        args.start_block_idx = batch_idx == sched_meta.begin_req_idx ? sched_meta.begin_block_idx : 0;
-        args.end_block_idx = batch_idx == sched_meta.end_req_idx ? sched_meta.end_block_idx : total_topk_padded / TOPK_BLOCK_SIZE;
-        args.is_no_split = batch_idx == sched_meta.begin_req_idx ? !sched_meta.is_first_req_splitted : (batch_idx == sched_meta.end_req_idx ? !sched_meta.is_last_req_splitted : true);
-
-        return args;
-    };
-
     Tensor acc_o = partition_fragment_C(tiled_mma_o, Shape<Int<BLOCK_M>, Int<HEAD_DIM_V>>{});
     clear(acc_o);
     flash::Softmax<size<1>(acc_o)> softmax;
-    MainloopArgs args = get_cur_req_info(batch_idx);
+    MainloopArgs args = get_cur_req_info(params, sched_meta, batch_idx);
+
+    // idx_of / consume_block_pf 依赖的上下文（indices 与 smem 视图）
+    const index_t row_offset_topk =  batch_idx * params.stride_indices_b + s_q_idx * params.stride_indices_s_q;
+    int* gIndices = reinterpret_cast<int *>(params.indices) + row_offset_topk;
+    int* gExtraIndices = params.extra_indices + batch_idx*params.stride_extra_indices_b + s_q_idx*params.stride_extra_indices_s_q; // (extra_topk) : (1)
+    Tensor sP = make_tensor(make_smem_ptr(plan.smem_p.data()), SmemLayoutP{});
+    Tensor sRow_max_reduce_buffer = make_tensor(make_smem_ptr(plan.smem_row_max.data()), SmemLayoutRow{});
+    Tensor sRow_sum_reduce_buffer = make_tensor(make_smem_ptr(plan.smem_row_sum.data()), SmemLayoutRow{});
+
+    // 取 block_idx 对应 lane 的 token：超出 topk_length 的位置按 -1 处理，使 K/V 加载为 0
+    // （避免 0 x NaN 在 PV 中传播出 NaN）。
+    auto idx_of = [&](int block_idx, bool is_extra) -> int {
+        const int off = (lane_idx % 16) + warp_idx * 16;
+        int* indices_base = is_extra
+            ? gExtraIndices + (block_idx - args.num_orig_kv_blocks) * TOPK_BLOCK_SIZE
+            : gIndices + block_idx * TOPK_BLOCK_SIZE;
+        [[maybe_unused]] int rel_block_idx = is_extra ? (block_idx - args.num_orig_kv_blocks) : block_idx;
+        [[maybe_unused]] int topk_length = is_extra ? args.extra_topk_length : args.topk_length;
+        int token = indices_base[off];
+        if (is_extra || HAVE_TOPK_LENGTH) {
+            if (rel_block_idx * TOPK_BLOCK_SIZE + off >= topk_length) token = -1;
+        }
+        return token;
+    };
 
     struct IsOrigBlock {};
     struct IsExtraBlock {};
-    auto process_one_block = [&](int block_idx, auto is_extra_block_t) {
-        static constexpr bool IS_EXTRA_BLOCK = std::is_same_v<decltype(is_extra_block_t), IsExtraBlock>;
-        Tensor acc_s = partition_fragment_C(tiled_mma, Shape<Int<BLOCK_M>, Int<TOPK_BLOCK_SIZE>>{}); 
-        clear(acc_s);
-        int col_idx = lane_idx / 16;
 
-        int* indices_base;
-        int page_block_size;
-        int64_t k_block_stride, k_row_stride;
-        uint8_t* k_ptr;
-        if constexpr (!IS_EXTRA_BLOCK) {
-            indices_base = gIndices + (block_idx)*TOPK_BLOCK_SIZE;
-            page_block_size = params.page_block_size;
-            k_block_stride = params.stride_kv_block;
-            k_row_stride = params.stride_kv_row;
-            k_ptr = (uint8_t*)params.kv;
-        } else {
-           indices_base = gExtraIndices + (block_idx-args.num_orig_kv_blocks)*TOPK_BLOCK_SIZE;
-           page_block_size = params.extra_page_block_size;
-           k_block_stride = params.stride_extra_kv_block;
-           k_row_stride = params.stride_extra_kv_row;
-           k_ptr = (uint8_t*)params.extra_kv;
-        }
+    // 消费一个已预取到寄存器的 block：QK -> mask -> softmax -> PV
+    auto consume_block_pf = [&](int block_idx, const PfKV& pf, auto is_extra_block_t) {
+        static constexpr bool IS_EXTRA_BLOCK = std::is_same_v<decltype(is_extra_block_t), IsExtraBlock>;
+        Tensor acc_s = partition_fragment_C(tiled_mma, Shape<Int<BLOCK_M>, Int<TOPK_BLOCK_SIZE>>{});
+        clear(acc_s);
+        int* indices_base = IS_EXTRA_BLOCK
+            ? gExtraIndices + (block_idx - args.num_orig_kv_blocks) * TOPK_BLOCK_SIZE
+            : gIndices + block_idx * TOPK_BLOCK_SIZE;
         [[maybe_unused]] int topk_length = IS_EXTRA_BLOCK ? args.extra_topk_length : args.topk_length;
         [[maybe_unused]] int rel_block_idx = IS_EXTRA_BLOCK ? (block_idx - args.num_orig_kv_blocks) : block_idx;
-        int token_index = indices_base[(lane_idx % 16) + warp_idx * 16];
-        // 动态 topk_length（V32/MODEL1 原块）或 MODEL1 extra 块：按各自 topk_length 掩码截断。
-        // 静态非 extra 块（无 topk_length）不做掩码，与基线等价。
-        if constexpr (IS_EXTRA_BLOCK || HAVE_TOPK_LENGTH) {
-            if (rel_block_idx*TOPK_BLOCK_SIZE + (lane_idx % 16) + warp_idx * 16 >= topk_length)
-            {
-                token_index = -1;
-            }
-        }
-        int block_index = token_index == -1 ? 0 : (int)((uint32_t)token_index/(uint32_t)page_block_size);   // Use uint32_t division and mod to improve performance        const int token_indexrel_idx_in_block = (token_index + page_block_size) % page_block_size;
-        int rel_idx_in_block = (uint32_t)token_index % (uint32_t)page_block_size;   // NOTE When token_index is -1 (UINT_MAX), UINT_MAX%page_block_size < page_block_size, so there will be no illegal-memory-access error
-        const index_t offset_k = (index_t)(block_index) * k_block_stride;
-        uint8_t* gK_base;
-        float scales[NUM_SCALES];
-        if constexpr (MODEL_TYPE == ModelType::V32) {
-            gK_base = k_ptr + offset_k + rel_idx_in_block * k_row_stride;
-            float* scale_ptr = (float*)(gK_base + HEAD_DIM_NOPE);
-            static_assert(NUM_SCALES == 4);
-            static_assert(HEAD_DIM_NOPE == 512);
-            if (token_index == -1)
-            {
-                for (int i = 0; i < NUM_SCALES; i++)
-                {
-                    scales[i] = 0.0f;
-                }
-            }
-            else
-            {
-                for (int i = 0; i < NUM_SCALES; i++)
-                {
-                    scales[i] = scale_ptr[i];
-                }
-            }
-        } else {
-            gK_base = k_ptr + offset_k + rel_idx_in_block*(HEAD_DIM_NOPE + HEAD_DIM_ROPE*2);;
-            static_assert(NUM_SCALES == 8);
-            #if 1
-            uint8_t* scale_ptr =  k_ptr + offset_k + page_block_size*(HEAD_DIM_NOPE+HEAD_DIM_ROPE*2) + rel_idx_in_block*NUM_SCALES;
-            if (token_index == -1)
-            {
-                for (int i = 0; i < NUM_SCALES; i++)
-                {
-                    scales[i] = 0.0f;
-                }
-            }
-            else
-            {
-                union Scale_e8m0
-                {
-                    __fp16x4_t tmp;
-                    __hip_fp8_storage_t fp8_e8m0[NUM_SCALES];
-                };
-                Scale_e8m0 scale_e8m0;
-                scale_e8m0.tmp = *(__fp16x4_t*)(scale_ptr);
-                union Fp32{
-                    uint32_t as_bits;
-                    float as_value;
-                };
-                Fp32 fp32;
-                for (int i = 0; i < NUM_SCALES - 1; i++)
-                {
-                    fp32.as_bits = (scale_e8m0.fp8_e8m0[i] << 23);
-                    scales[i] = fp32.as_value;
-                }
 
+        // QK A: V32 -> k_idx 4..7 (dims 256..511)；MODEL1 -> k_idx 4..6 (dims 256..447)
+        constexpr int k_idx_a_end = MODEL_TYPE == ModelType::V32 ? 8 : 7;
+        for (int k_idx = 4; k_idx < k_idx_a_end; k_idx++) {
+            for (int j = 0; j < 16; j += 4) {
+                auto [rst0, rst1, rst2, rst3] = dequant_fp8_to_bf16(pf.kA[k_idx - 4], pf.scales[MODEL_TYPE == ModelType::V32 ? k_idx / 2 : k_idx], j);
+                tSrK(j, 0, k_idx) = rst0;
+                tSrK(j + 1, 0, k_idx) = rst1;
+                tSrK(j + 2, 0, k_idx) = rst2;
+                tSrK(j + 3, 0, k_idx) = rst3;
             }
-            #else
-            struct PtrWrapper {
-                uint32_t former;
-                uint32_t latter;
-            };
-            PtrWrapper glob_ptr;
-            *(uint64_t*)&glob_ptr = reinterpret_cast<uint64_t>(k_ptr + offset_k + page_block_size*(HEAD_DIM_NOPE+HEAD_DIM_ROPE*2));
-            uint32x4_t global_addr = {0};
-            global_addr[0] = (glob_ptr.former);
-            global_addr[1] = (glob_ptr.latter);
-            global_addr[2] = 0x80000000;
-            global_addr[3] = 0x00020000;
-            int offset_v = token_index == -1 ? -1: rel_idx_in_block*NUM_SCALES;
-            union Scale_e8m0
-            {
-                v2i tmp;
-                __hip_fp8_storage_t fp8_e8m0[NUM_SCALES];
-            };
-            Scale_e8m0 scale_e8m0;
-            scale_e8m0.tmp = __builtin_amdgcn_buffer_load_dwordx2(global_addr, 0, offset_v, 0, 0);
-            union Fp32{
-                uint32_t as_bits;
-                float as_value;
-            };
-            Fp32 fp32;
-            for (int i = 0; i < NUM_SCALES - 1; i++)
-            {
-                fp32.as_bits = (scale_e8m0.fp8_e8m0[i] << 23);
-                scales[i] = fp32.as_value;
-            }
-            #endif
-
-                // if (block0() && threadIdx.x < 64)
-                // {
-                //     printf("tidx = %d, %.3f %.2f %.2f \n",tidx, scales[0], scales[1], scales[2]);
-                // }
-        }
-
-        // // zhj debug
-        // if (head_block_idx == 0 && threadIdx.x < 64)
-        // {
-        //     printf("tidx = %d, %.2f %.2f %.2f %.2f %d offset_k = %d rel_idx_in_block = %d params.stride_kv_row = %d %p params.kv  = %p \n", tidx, float(scales[0]), float(scales[1]), float(scales[2]), float(scales[3]), 
-        //     token_index,
-        //     offset_k,
-        //     rel_idx_in_block,
-        //     params.stride_kv_row,
-        //     gK_base,
-        //     params.kv 
-        //     );
-        // }
-        auto dequant_to_bf16 = [&](const Fp8_storage& data0, const float& kv_scale, int idx) -> std::tuple<Element, Element, Element, Element> {
-            #if defined(__gfx938__)
-            auto res1 =  __builtin_amdgcn_cvt_pk_f32_fp8(data0.fp8_array[idx/4], false);
-            auto res2 =  __builtin_amdgcn_cvt_pk_f32_fp8(data0.fp8_array[idx/4], true);
-
-            auto f1 = res1[0];
-            auto f2 = res1[1];
-            auto f3 = res2[0];
-            auto f4 = res2[1];           
-            #else
-            const auto fp8x2_low = *reinterpret_cast<const __hip_fp8x2_storage_t*>(&data0.fp8_array[idx / 4]);
-            const auto fp8x2_high = *(reinterpret_cast<const __hip_fp8x2_storage_t*>(&(data0.fp8_array[idx / 4])) + 1);
-            auto f1 =  flash::fp8e4m3_to_fp32(static_cast<__hip_fp8_storage_t>((fp8x2_low << 8) >> 8));
-            auto f2 =  flash::fp8e4m3_to_fp32(static_cast<__hip_fp8_storage_t>((fp8x2_low >> 8)));
-            auto f3 =  flash::fp8e4m3_to_fp32(static_cast<__hip_fp8_storage_t>((fp8x2_high << 8) >> 8));
-            auto f4 =  flash::fp8e4m3_to_fp32(static_cast<__hip_fp8_storage_t>((fp8x2_high) >> 8));
-            #endif
-
-            f1 *= kv_scale;
-            f2 *= kv_scale;
-            f3 *= kv_scale;
-            f4 *= kv_scale;
-            cutlass::NumericConverter<Element, float, cutlass::FloatRoundStyle::round_toward_zero> convert_;
-            auto rst0 = convert_(f1);
-            auto rst1 = convert_(f2);
-            auto rst2 = convert_(f3);
-            auto rst3 = convert_(f4);
-
-            return {rst0, rst1, rst2, rst3};
-        };
-        if constexpr (MODEL_TYPE == ModelType::V32)
-        {
-            Fp8_storage data[4];
-            for (int k_idx = 4; k_idx < 8; k_idx++) 
-            {
-                if (token_index == -1) {
-                    data[k_idx - 4].data_128 = {0};
-                } else {
-                    data[k_idx - 4].data_128 = *((__fp16x8_t*)(gK_base + col_idx * 16 + k_idx * 64));
-                }
-            }
-            for (int k_idx = 4; k_idx < 8; k_idx++)
-            {
-                for (int j = 0; j < 16; j+=4) {
-                    auto [rst0, rst1, rst2, rst3] = dequant_to_bf16(data[k_idx - 4], scales[k_idx / 2], j);
-                    
-                    tSrK(j, 0, k_idx) = rst0;
-                    tSrK(j + 1, 0, k_idx) = rst1;
-                    tSrK(j + 2, 0, k_idx) = rst2;
-                    tSrK(j + 3, 0, k_idx) = rst3;
-
-                }
-                // cute::copy(smem_tiled_copy_K, tSrK(_, _, k_idx), tOsV(_, _, k_idx % 4));
-                // __builtin_amdgcn_sched_barrier(0);
-
-                #pragma unroll
-                for (int j = 0; j < 8; j++) {
-                    tOsV(j, 0, (k_idx - 4) * 2) =  tSrK(j, 0, k_idx);
-                }
-                #pragma unroll     
-                for (int j = 8; j < 16; j++) {
-                    tOsV(j - 8, 0, (k_idx - 4) * 2 + 1) =  tSrK(j, 0, k_idx);
-                }    
-                // __builtin_amdgcn_sched_barrier(0);
-
-                cute::gemm(tiled_mma, tSrQ(_, _, k_idx), tSrK(_, _, k_idx), acc_s);
-            }
-        }
-        else
-        {
-            Fp8_storage data[3];
-            for (int k_idx = 4; k_idx < 7; k_idx++) 
-            {
-                if (token_index == -1) {
-                    data[k_idx - 4].data_128 = {0};
-                } else {
-                    data[k_idx - 4].data_128 = *((__fp16x8_t*)(gK_base + col_idx * 16 + k_idx * 64));
-                }
-            }
-            for (int k_idx = 4; k_idx < 7; k_idx++)
-            {
-                for (int j = 0; j < 16; j+=4) {
-                    auto [rst0, rst1, rst2, rst3] = dequant_to_bf16(data[k_idx - 4], scales[k_idx], j);
-                    
-                    tSrK(j, 0, k_idx) = rst0;
-                    tSrK(j + 1, 0, k_idx) = rst1;
-                    tSrK(j + 2, 0, k_idx) = rst2;
-                    tSrK(j + 3, 0, k_idx) = rst3;
-
-                }
-                // cute::copy(smem_tiled_copy_K, tSrK(_, _, k_idx), tOsV(_, _, k_idx % 4));
-                // __builtin_amdgcn_sched_barrier(0);
-
-                #pragma unroll
-                for (int j = 0; j < 8; j++) {
-                    tOsV(j, 0, (k_idx - 4) * 2) =  tSrK(j, 0, k_idx);
-                }
-                #pragma unroll     
-                for (int j = 8; j < 16; j++) {
-                    tOsV(j - 8, 0, (k_idx - 4) * 2 + 1) =  tSrK(j, 0, k_idx);
-                }    
-                // __builtin_amdgcn_sched_barrier(0);
-
-                cute::gemm(tiled_mma, tSrQ(_, _, k_idx), tSrK(_, _, k_idx), acc_s);
-            }
-        //             if (head_block_idx == 0)
-        // {
-        //     printf("tidx = %d, %.2f %.2f %.2f %.2f \n", tidx, float(acc_s(0)), float(acc_s(1)), float(acc_s(2)), float(acc_s(3)));
-        // }
-            bf16_storage bf16_data0;
-            bf16_storage bf16_data1;
-            if (token_index == -1)
-            {
-                bf16_data0.data_128 = {0};
-                bf16_data1.data_128 = {0};
-            }
-            else
-            {
-                bf16_data0.data_128 = *((uint32x4_t*)(gK_base + col_idx * 16 * 2 + HEAD_DIM_NOPE));
-                bf16_data1.data_128 = *((uint32x4_t*)(gK_base + col_idx * 16 * 2 + 8 * 2 + HEAD_DIM_NOPE));
-            }
-            for (int j = 0; j < 8; j++) {
-                auto rst = cutlass::bfloat16_t::bitcast(bf16_data0.data_array[j]);
-                tSrK(j, 0, 7) = rst;
-            }
-            for (int j = 8; j < 16; j++) {
-                auto rst = cutlass::bfloat16_t::bitcast(bf16_data1.data_array[j - 8]);
-                tSrK(j, 0, 7) = rst;
-            }
-            constexpr static int k_idx = 7;
-            // if (block0())
-            // {
-            //     printf(" %.4f %.4f %.4f %.4f \n", 
-            //         float(tSrK(0, 0, 7)),
-            //         float(tSrK(1, 0, 7)),
-            //         float(tSrK(2, 0, 7)),
-            //         float(tSrK(3, 0, 7))
-
-            //     );
-            // }
-            cute::gemm(tiled_mma, tSrQ(_, _, 7), tSrK(_, _, 7), acc_s);    
             #pragma unroll
             for (int j = 0; j < 8; j++) {
-                // tOsV(j, 0, (k_idx - 4) * 2) =  Element(j);
-                tOsV(j, 0, (k_idx - 4) * 2) =  tSrK(j, 0, k_idx);
+                tOsV(j, 0, (k_idx - 4) * 2) = tSrK(j, 0, k_idx);
             }
-            #pragma unroll     
+            #pragma unroll
             for (int j = 8; j < 16; j++) {
-                tOsV(j - 8, 0, (k_idx - 4) * 2 + 1) =  tSrK(j, 0, k_idx);
-            }  
+                tOsV(j - 8, 0, (k_idx - 4) * 2 + 1) = tSrK(j, 0, k_idx);
+            }
+            cute::gemm(tiled_mma, tSrQ(_, _, k_idx), tSrK(_, _, k_idx), acc_s);
         }
-
+        if constexpr (MODEL_TYPE == ModelType::MODEL1) {
+            // MODEL1: k_idx 7 = rope (dims 448..511)，且属于 V（写入 tOsV slot 6/7）
+            for (int j = 0; j < 8; j++) {
+                tSrK(j, 0, 7) = cutlass::bfloat16_t::bitcast(pf.rope0.data_array[j]);
+            }
+            for (int j = 8; j < 16; j++) {
+                tSrK(j, 0, 7) = cutlass::bfloat16_t::bitcast(pf.rope1.data_array[j - 8]);
+            }
+            cute::gemm(tiled_mma, tSrQ(_, _, 7), tSrK(_, _, 7), acc_s);
+            #pragma unroll
+            for (int j = 0; j < 8; j++) {
+                tOsV(j, 0, 6) = tSrK(j, 0, 7);
+            }
+            #pragma unroll
+            for (int j = 8; j < 16; j++) {
+                tOsV(j - 8, 0, 7) = tSrK(j, 0, 7);
+            }
+        }
         __syncthreads();
         __builtin_amdgcn_sched_barrier(0);
         flash::__ds_read_m32x16_row_col_rrow_alt<0, 0, 2>(tOsVt, tOrVt_copy_view);
@@ -671,49 +469,27 @@ __device__ void KernelTemplate<MODEL_TYPE, NUM_HEADS, HAVE_TOPK_LENGTH>::compute
         flash::__ds_read_m32x16_row_col_rrow_alt<1, 3, 3>(tOsVt, tOrVt_copy_view);
         __builtin_amdgcn_sched_barrier(0);
         __syncthreads();
-        // if (block0() && threadIdx.x >= 192)
-        // {
-        //     printf(" %.4f %.4f %.4f %.4f %p %p\n", 
-        //         float(tOsVt(0, 3, 0)), float(tOsVt(1, 3, 0)), float( tSrK(8, 0, 7)), float( tSrK(9, 0, 7)),  
-        //         &(tOsVt(0, 1, 3)), &(tOsV(0, 0, 7)));
-        // }
         __builtin_amdgcn_sched_barrier(0);
-        Fp8_storage data[4];
-        // __ds_read_m64x16_row_col_rrow<0, 0, 4>(tOsVt, tOrVt_copy_view);
-        for (int k_idx = 0; k_idx < 4; k_idx++)
-        {
-            if (token_index == -1) {
-                data[k_idx].data_128 = {0};
-            } else {
-                data[k_idx].data_128 = *((__fp16x8_t*)(gK_base + col_idx * 16 + k_idx * 64));
-            }        
-        }
-        for (int k_idx = 0; k_idx < 4; k_idx++)
-        {
-            for (int j = 0; j < 16; j+=4) {
-                auto [rst0, rst1, rst2, rst3] = dequant_to_bf16(data[k_idx], scales[MODEL_TYPE == ModelType::V32 ? k_idx / 2 : k_idx], j);
+
+        // QK B: k_idx 0..3 (dims 0..255)
+        for (int k_idx = 0; k_idx < 4; k_idx++) {
+            for (int j = 0; j < 16; j += 4) {
+                auto [rst0, rst1, rst2, rst3] = dequant_fp8_to_bf16(pf.kB[k_idx], pf.scales[MODEL_TYPE == ModelType::V32 ? k_idx / 2 : k_idx], j);
                 tSrK(j, 0, k_idx) = rst0;
                 tSrK(j + 1, 0, k_idx) = rst1;
                 tSrK(j + 2, 0, k_idx) = rst2;
                 tSrK(j + 3, 0, k_idx) = rst3;
-
             }
-            // for (int j = 0; j < 16; j++) {
-            //     tOsV(j % 8, 0, (k_idx % 4) * 2 + ( j / 8) ) = tSrK(j, 0, k_idx);
-            // }
-            // __builtin_amdgcn_sched_barrier(0);
             #pragma unroll
             for (int j = 0; j < 8; j++) {
-                tOsV(j, 0, k_idx * 2) =  tSrK(j, 0, k_idx);
+                tOsV(j, 0, k_idx * 2) = tSrK(j, 0, k_idx);
             }
-            #pragma unroll     
+            #pragma unroll
             for (int j = 8; j < 16; j++) {
-                tOsV(j - 8, 0, k_idx * 2 + 1) =  tSrK(j, 0, k_idx);
-            }   
-            // __builtin_amdgcn_sched_barrier(0);  
+                tOsV(j - 8, 0, k_idx * 2 + 1) = tSrK(j, 0, k_idx);
+            }
             cute::gemm(tiled_mma, tSrQ(_, _, k_idx), tSrK(_, _, k_idx), acc_s);
         }
-
         __syncthreads();
         __builtin_amdgcn_sched_barrier(0);
         flash::__ds_read_m32x16_row_col_rrow_alt<0, 0, 0>(tOsVt, tOrVt_copy_view);
@@ -721,107 +497,67 @@ __device__ void KernelTemplate<MODEL_TYPE, NUM_HEADS, HAVE_TOPK_LENGTH>::compute
         flash::__ds_read_m32x16_row_col_rrow_alt<0, 2, 0>(tOsVt, tOrVt_copy_view);
         flash::__ds_read_m32x16_row_col_rrow_alt<0, 3, 0>(tOsVt, tOrVt_copy_view);
         __builtin_amdgcn_sched_barrier(0);
-        if constexpr (MODEL_TYPE == ModelType::V32)
-        {
-            bf16_storage bf16_data0;
-            bf16_storage bf16_data1;
-            bf16_data0.data_128 = *((uint32x4_t*)(gK_base + col_idx * 16 * 2 + 512 + 16));
-            bf16_data1.data_128 = *((uint32x4_t*)(gK_base + col_idx * 16 * 2 + 8 * 2 + 512 + 16));
+        if constexpr (MODEL_TYPE == ModelType::V32) {
+            // V32: k_idx 8 = rope (dims 512..575)，不属于 V
             for (int j = 0; j < 8; j++) {
-                auto rst = cutlass::bfloat16_t::bitcast(bf16_data0.data_array[j]);
-                tSrK(j, 0, 8) = rst;
+                tSrK(j, 0, 8) = cutlass::bfloat16_t::bitcast(pf.rope0.data_array[j]);
             }
             for (int j = 8; j < 16; j++) {
-                auto rst = cutlass::bfloat16_t::bitcast(bf16_data1.data_array[j - 8]);
-                tSrK(j, 0, 8) = rst;
+                tSrK(j, 0, 8) = cutlass::bfloat16_t::bitcast(pf.rope1.data_array[j - 8]);
             }
-            cute::gemm(tiled_mma, tSrQ(_, _, 8), tSrK(_, _, 8), acc_s);    
-
+            cute::gemm(tiled_mma, tSrQ(_, _, 8), tSrK(_, _, 8), acc_s);
         }
-        // zhj debug
-        // if (head_block_idx == 0)
-        // {
-        //     printf("tidx = %d, %.2f %.2f %.2f %.2f \n", tidx, float(acc_s(0)), float(acc_s(1)), float(acc_s(2)), float(acc_s(3)));
-        // }
         __builtin_amdgcn_sched_barrier(0);
         asm volatile("s_waitcnt lgkmcnt(0) \n\t s_barrier\n\t");
         __builtin_amdgcn_sched_barrier(0);
 
+        // mask + softmax
         Tensor cS = make_identity_tensor(Shape<Int<BLOCK_M>, Int<TOPK_BLOCK_SIZE>>{});
         Tensor tScS = thr_mma.partition_C(cS);
-        auto is_index_valid = [&](int index) -> bool {
-            if constexpr (IS_EXTRA_BLOCK || HAVE_TOPK_LENGTH) {
-                return indices_base[int(get<1>(tScS(index)))] != -1
-                    && (rel_block_idx*TOPK_BLOCK_SIZE + int(get<1>(tScS(index))) < topk_length);
-            } else {
-                return indices_base[int(get<1>(tScS(index)))] != -1;
-            }
-        };
         for (int i = 0; i < size(acc_s); ++i) {
-            // int idx = indices_base[int(get<1>(tScS(i)))] ;
-            if (not is_index_valid(i)) acc_s(i) = -INFINITY;
+            if constexpr (IS_EXTRA_BLOCK || HAVE_TOPK_LENGTH) {
+                int col = int(get<1>(tScS(i)));
+                if (indices_base[col] == -1 || (rel_block_idx * TOPK_BLOCK_SIZE + col >= topk_length)) acc_s(i) = -INFINITY;
+            } else {
+                if (indices_base[int(get<1>(tScS(i)))] == -1) acc_s(i) = -INFINITY;
+            }
         }
         block_idx == args.start_block_idx
         ? softmax.template softmax_rescale_o_prefill</*Is_first=*/true,  /*Check_inf=*/Is_causal>(acc_s, acc_o, sRow_max_reduce_buffer, params.sm_scale_div_log2)
         :   softmax.template softmax_rescale_o_prefill</*Is_first=*/false, /*Check_inf=*/Is_causal>(acc_s, acc_o, sRow_max_reduce_buffer, params.sm_scale_div_log2);
-        // if (head_block_idx == 0 && batch_idx == 0)
-        // {
-        //     printf("tidx = %d, %.2f %.2f %.2f %.2f \n", tidx, float(acc_s(0)), float(acc_s(1)), float(acc_s(2)), float(acc_s(3)));
-        // }
         Tensor rP = flash::convert_type<Element>(acc_s);
         Tensor tOrP = flash::convert_layout_acc_Aregs(tiled_mma, tiled_mma_o, rP, sP);
 
+        // PV
         {
-            // __ds_read_m32x16_row_col<0, 0>(tOsVt, tOrVt_copy_view);
             flash::__ds_read_m32x16_row_col_alt<1, 0>(tOsVt, tOrVt_copy_view);
-            // __ds_read_m32x16_row_col<2, 0>(tOsVt, tOrVt_copy_view);
-
-            // __ds_read_m32x16_row_col<0, 1>(tOsVt, tOrVt_copy_view);
             flash::__ds_read_m32x16_row_col_alt<1, 1>(tOsVt, tOrVt_copy_view);
-            // __ds_read_m32x16_row_col<2, 1>(tOsVt, tOrVt_copy_view);
             cute::gemm(tiled_mma_o, tOrP(_, _, 0), tOrVt(_, _, 0), acc_o);
             cute::gemm(tiled_mma_o, tOrP(_, _, 1), tOrVt(_, _, 1), acc_o);
-            // __ds_read_m32x16_row_col<0, 2>(tOsVt, tOrVt_copy_view);
             flash::__ds_read_m32x16_row_col_alt<1, 2>(tOsVt, tOrVt_copy_view);
-            // __ds_read_m32x16_row_col<2, 2>(tOsVt, tOrVt_copy_view);
-            
-            
-            // __ds_read_m32x16_row_col<0, 3>(tOsVt, tOrVt_copy_view);
             flash::__ds_read_m32x16_row_col_alt<1, 3>(tOsVt, tOrVt_copy_view);
-            // __ds_read_m32x16_row_col<2, 3>(tOsVt, tOrVt_copy_view);
-            
-            
             cute::gemm(tiled_mma_o, tOrP(_, _, 2), tOrVt(_, _, 2), acc_o);
             cute::gemm(tiled_mma_o, tOrP(_, _, 3), tOrVt(_, _, 3), acc_o);
         }
     };
 
+    const int col_idx_pf = lane_idx / 16;
     if constexpr (MODEL_TYPE == ModelType::V32) {
-        for (int block_idx = args.start_block_idx; block_idx < args.end_block_idx; block_idx++) {
-            process_one_block(block_idx, IsOrigBlock{});
+        for (int block_idx = args.start_block_idx; block_idx < args.end_block_idx; ++block_idx) {
+            PfKV pf = issue_kv_loads(params, idx_of(block_idx, false), col_idx_pf, false);
+            consume_block_pf(block_idx, pf, IsOrigBlock{});
         }
     } else {
         for (int block_idx = args.start_block_idx; block_idx < min(args.num_orig_kv_blocks, args.end_block_idx); ++block_idx) {
-            process_one_block(block_idx, IsOrigBlock{});
+            PfKV pf = issue_kv_loads(params, idx_of(block_idx, false), col_idx_pf, false);
+            consume_block_pf(block_idx, pf, IsOrigBlock{});
         }
         for (int block_idx = max(args.start_block_idx, args.num_orig_kv_blocks); block_idx < args.end_block_idx; ++block_idx) {
-            process_one_block(block_idx, IsExtraBlock{});
+            PfKV pf = issue_kv_loads(params, idx_of(block_idx, true), col_idx_pf, true);
+            consume_block_pf(block_idx, pf, IsExtraBlock{});
         }
     }
-    // if (head_block_idx == 0 && threadIdx.x < 64 && batch_idx == 0)
-    // {
-    //     printf(" %.4f %.4f \n", acc_o(0), acc_o(1));
-    // }
-    auto float2bf16 = [] (float s) -> uint16_t {
-        uint32_t x32 = reinterpret_cast<uint32_t const &>(s);
-        #ifndef FLASH_MLA_BF16_TYPE
-        #define FLASH_MLA_BF16_TYPE 0
-        #endif
-        #if FLASH_MLA_BF16_TYPE == 1
-        x32 += 0x8000u;
-        #endif
-        return uint16_t(x32 >> 16);
-    };
+    
     if (args.is_no_split) {
         int start_head_idx = head_block_idx*BLOCK_M;
         Tensor lse = softmax.template normalize_softmax_lse<false>(acc_o, sRow_sum_reduce_buffer, params.sm_scale);
@@ -831,10 +567,8 @@ __device__ void KernelTemplate<MODEL_TYPE, NUM_HEADS, HAVE_TOPK_LENGTH>::compute
                                         make_stride(params.stride_o_h_q, _1{}));
         if (params.attn_sink != nullptr) {
             float rAttn_sink = __ldg((float*)params.attn_sink + start_head_idx + lane_idx % 16); 
-            if (flash::is_positive_infinity(rAttn_sink))
-            {
-                for (int i = 0; i < size(acc_o); i++)
-                {
+            if (flash::is_positive_infinity(rAttn_sink)) {
+                for (int i = 0; i < size(acc_o); i++) {
                     acc_o(i) = 0.0f;
                 } 
             }
@@ -855,23 +589,8 @@ __device__ void KernelTemplate<MODEL_TYPE, NUM_HEADS, HAVE_TOPK_LENGTH>::compute
             }
 
         }
-        // if (block0() && tidx % 16 == 0)
-        // {
-        //     printf(" tidx = %d %.3f %.3f %.3f %.3f %.3f %.3f %.3f %3f \n ", 
-        //         tidx,
-        //         float(acc_o(0)),
-        //         float(acc_o(1)),
-        //         float(acc_o(2)),
-        //         float(acc_o(3)),
-        //         float(acc_o(4)),
-        //         float(acc_o(5)),
-        //         float(acc_o(6)),
-        //         float(acc_o(7))
-        //     );
-        // }
         float* gSoftmaxLse = (float*)params.lse + batch_idx * params.stride_lse_b + start_head_idx + s_q_idx * params.stride_lse_s_q;	// (BLOCK_M) : (1)
         {
-            // auto rO = flash::convert_type<Element>(acc_o);
             using result_type = cutlass::Array<Element, 2>;
             int row, col;
             const int warpId = tidx / 64;
@@ -880,7 +599,6 @@ __device__ void KernelTemplate<MODEL_TYPE, NUM_HEADS, HAVE_TOPK_LENGTH>::compute
                 row = mi * BLOCK_M + laneId % 16;
                 if (row < params.h_q) {
                     for (int ni = 0; ni < size<2>(acc_o); ++ni) {
-                        // col = (laneId / 16) + ni * 128 + warpId * 32 ;
                         // 为了使用global_loadx4指令, V矩阵吸入lds的时候 N方向发生了了交换
                         /*
                         ------------------- N 方向----------------------
@@ -907,38 +625,15 @@ __device__ void KernelTemplate<MODEL_TYPE, NUM_HEADS, HAVE_TOPK_LENGTH>::compute
                             res[0] = e0;
                             res[1] = e1;
                             #endif
-                            // gO(row, col) = res[0];
-                            // gO(row, col + 1) = res[1];
                             *(result_type*)(&gO(row, col)) = res;
                             col += 16;    
-                            // for (int j = 0; j < 2; j++) {
-                            //     gO(row, col) = rO(i * 2 + j, mi, ni);
-                            //     col += 4;
-                            // }
-                            // col += 8;
                         }
-                        // for (int ei = 0; ei < size<0>(acc_o); ++ei) {
-                        //     gO(row, col) = rO(ei, mi, ni);
-                        //     col += 4;
-                        // }
                     }
                     if (tidx / 16 == 0)
                         gSoftmaxLse[row] = lse(mi);
                 }
-
-
-                // if (s_q_idx == 1)
-                // {
-                //     printf(" %.2f \n", lse(mi));
-                // }
-
-                
-                // gMax_logits[row] = softmax.row_max(mi) * params.sm_scale_div_log2;
-            
             }
         }
-
-
     } else {
         int start_head_idx = head_block_idx*BLOCK_M;
         Tensor lse = softmax.template normalize_softmax_lse<false, true>(acc_o, sRow_sum_reduce_buffer, params.sm_scale);
@@ -953,7 +648,6 @@ __device__ void KernelTemplate<MODEL_TYPE, NUM_HEADS, HAVE_TOPK_LENGTH>::compute
         ));
         float* gSoftmaxLseAccum = (float*)params.lse_accum + split_idx*params.stride_lse_accum_split + s_q_idx*params.stride_lse_accum_s_q + start_head_idx;	// (BLOCK_M) : (1)
         {
-            // auto rO = flash::convert_type<Element>(acc_o);
             int row, col;
             const int warpId = tidx / 64;
             const int laneId = tidx % 64;
@@ -961,28 +655,16 @@ __device__ void KernelTemplate<MODEL_TYPE, NUM_HEADS, HAVE_TOPK_LENGTH>::compute
                 row = mi * BLOCK_M + laneId % 16;
                 if (row < params.h_q) {
                     for (int ni = 0; ni < size<2>(acc_o); ++ni) {
-                        // col = (laneId / 16) + ni * 128 + warpId * 32 ;
-                        // for (int ei = 0; ei < size<0>(acc_o); ++ei) {
-                        //     gOaccum(row, col) = acc_o(ei, mi, ni);
-                        //     col += 4;
-                        // }
                         col = (laneId / 16) * 2 + ni * 128 + (warpId % 2) * 8 + (warpId / 2) * 64;
                         for (int i = 0; i < 4; i ++) {
                             gOaccum(row, col) = acc_o(i, mi, ni);
                             gOaccum(row, col + 1) = acc_o(i + 4, mi, ni);
-                            // for (int j = 0; j < 2; j++) {
-                            //     gOaccum(row, col) = acc_o(i * 2 + j, mi, ni);
-                            //     col += 4;
-                            // }
                             col += 16;
                         }
                     }
                     if (tidx / 16 == 0)
                         gSoftmaxLseAccum[row] = lse(mi);
                 }
-
-                // gMax_logits[row] = softmax.row_max(mi) * params.sm_scale_div_log2;
-            
             }
         }
     }
@@ -997,15 +679,10 @@ __device__ void KernelTemplate<MODEL_TYPE, NUM_HEADS, HAVE_TOPK_LENGTH>::devfunc
 
     if (sched_meta.begin_req_idx >= params.b) return;
     for (int batch_idx = sched_meta.begin_req_idx; batch_idx <= sched_meta.end_req_idx; ++batch_idx) {
-        // if (threadIdx.x == 0)
-        // {
-        //     printf(" batch_idx = %d end_req_idx = %d \n ", batch_idx, sched_meta.end_req_idx);
-        // }
         if (batch_idx > sched_meta.begin_req_idx) {
             __syncthreads();  
         }
         compute_attn_1rowblock_splitkv_sparse_mla_fp8(params, sched_meta, batch_idx);
-    
     }
 }
 
@@ -1062,24 +739,20 @@ void KernelTemplate<MODEL_TYPE, NUM_HEADS, HAVE_TOPK_LENGTH>::run(const SparseAt
     KU_ASSERT(params.topk % TOPK_BLOCK_SIZE == 0);
     KU_ASSERT(params.d_qk == HEAD_DIM_K);
     KU_ASSERT(params.d_v == HEAD_DIM_V);
-    // KU_ASSERT(params.h_q % BLOCK_M == 0);
     if constexpr (MODEL_TYPE == ModelType::MODEL1) {
         constexpr int BYTES_PER_TOKEN = HEAD_DIM_NOPE + 2*HEAD_DIM_ROPE + 8;
-        KU_ASSERT(params.stride_kv_row == BYTES_PER_TOKEN, "Each page block in KV cache must be contiguous for head64 sparse fp8 decoding attention in MODEL1");  // Each block must be contiguous
+        KU_ASSERT(params.stride_kv_row == BYTES_PER_TOKEN, "Each page block in KV cache must be contiguous for head64 sparse fp8 decoding attention in MODEL1");
         if (params.extra_kv != nullptr) {
-            KU_ASSERT(params.stride_extra_kv_row == BYTES_PER_TOKEN, "Each page block in extra KV cache must be contiguous for head64 sparse fp8 decoding attention in MODEL1");  // Each block must be contiguous
+            KU_ASSERT(params.stride_extra_kv_row == BYTES_PER_TOKEN, "Each page block in extra KV cache must be contiguous for head64 sparse fp8 decoding attention in MODEL1");
         }
     } else {
         KU_ASSERT(params.extra_kv == nullptr, "V3.2 does not support extra KV cache");
         KU_ASSERT((params.topk_length != nullptr) == HAVE_TOPK_LENGTH, "V3.2 topk_length must match the HAVE_TOPK_LENGTH instantiation");
-        KU_ASSERT(params.stride_kv_row == 656);  // number of bytes per token (512 fp8 + 4 float32 + 64 bfloat16)
+        KU_ASSERT(params.stride_kv_row == 656);
     }
     auto mla_kernel = &flash_fwd_splitkv_mla_fp8_sparse_kernel<KernelTemplate<MODEL_TYPE, NUM_HEADS, HAVE_TOPK_LENGTH>>;
     constexpr size_t smem_size = 32768; // lds复用
-    // zhj debug
-    // printf("NUM_M_BLOCKS = %d smem_size = %d \n",NUM_M_BLOCKS, smem_size);
     mla_kernel<<<dim3(NUM_M_BLOCKS, params.s_q, params.num_sm_parts), NUM_THREADS, smem_size, params.stream>>>(params);
-
 }
 
 template<ModelType MODEL_TYPE, int NUM_HEADS, bool HAVE_TOPK_LENGTH>
@@ -1133,5 +806,3 @@ void run_flash_fixed_splitkv_mla_fp8_sparse_kernel(const SparseAttnDecodeParams 
 }
 
 }
-
-
