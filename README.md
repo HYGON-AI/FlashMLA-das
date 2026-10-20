@@ -24,6 +24,8 @@ HYGON 的原创修改包括：
 
 HYGON 版权声明仅适用于其原创贡献，不替代或覆盖 DeepSeek 及其他上游作者的版权声明。原有版权声明及 MIT 许可文本完整保留。
 
+本项目的直接上游为 DeepSeek FlashMLA。部分文件保留的 FlashAttention 引用可在 DeepSeek FlashMLA 的早期源码中找到，不代表本项目另行从 FlashAttention 仓库导入了这些文件；相关来源注释和作者署名予以保留。
+
 第三方组件、固定版本及仍需补充的来源信息见 [Third-Party Notices](THIRD_PARTY_NOTICES.md)。
 
 ## Introduction

@@ -40,28 +40,55 @@ copyright notices or license terms of third-party components.
   original upstream CUTLASS release is not an equivalent substitute for this
   customized commit.
 
-## FlashAttention-derived and legacy code
+## DeepSeek historical sources and retained attribution
 
-The following source comments identify adaptation from FlashAttention:
+The maintainer confirms that the project was obtained directly from DeepSeek
+FlashMLA. The FlashAttention references in the following files also appear in
+DeepSeek FlashMLA's historical sources; those references alone do not establish
+a separate import from the FlashAttention repository into this project.
 
-| Local file | Source path recorded in the file |
+| Local file | Corresponding early DeepSeek FlashMLA path |
 | --- | --- |
-| `csrc/extension/flash_api.h` | `Dao-AILab/flash-attention`, `csrc/flash_attn/flash_api.cpp` |
-| `csrc/extension/softmax.h` | `Dao-AILab/flash-attention`, `csrc/flash_attn/src/softmax.h` |
-| `csrc/extension/utils.h` | `Dao-AILab/flash-attention`, `hopper/utils.h` |
+| `csrc/extension/flash_api.h` | `csrc/flash_api.cpp` |
+| `csrc/extension/softmax.h` | `csrc/softmax.h` |
+| `csrc/extension/utils.h` | `csrc/utils.h` |
 
-Source repository: https://github.com/Dao-AILab/flash-attention
+Verified upstream records:
 
-`csrc/extension/flash_api.h` retains Copyright (c) 2024, Tri Dao.
+- DeepSeek FlashMLA's [initial commit](https://github.com/deepseek-ai/FlashMLA/commit/414a2f3eedeb5ad3c4a6e89d8641e059519cacc9),
+  `414a2f3eedeb5ad3c4a6e89d8641e059519cacc9`, contains all three early paths
+  with their FlashAttention source references already present.
+- DeepSeek FlashMLA's [copyright update](https://github.com/deepseek-ai/FlashMLA/commit/b31bfe72a83ea205467b3271a5845440a03ed7cb),
+  `b31bfe72a83ea205467b3271a5845440a03ed7cb`, adds the Tri Dao copyright
+  notices to those upstream files. Both commits are ancestors of the declared
+  FlashMLA baseline. That upstream tree includes the MIT license.
+- The local `csrc/extension/` paths were added by commit
+  `c353b35b3c90f8aeb684261d882f3c7975bb5d51` to restore the older interface.
+
+These records establish that the references predate this project's adaptations.
+They do not identify the exact DeepSeek snapshot used for every restored file,
+or mean that the current files are byte-for-byte copies of the initial commit.
+The source references and the existing Tri Dao copyright in `flash_api.h`
+are retained. The direct upstream remains DeepSeek FlashMLA.
+
+Pending: map the restored files to the exact DeepSeek revisions and record the
+local adaptation scope where that mapping is not already established. A missing
+mapping is not evidence that the project separately imported FlashAttention.
+
+## Legacy file attribution
+
 The files `block_info.h`, `flash.h`, and `kernel_traits.h` under
 `csrc/gfx93/prefill/sparse/dsa_mls/legacy/include/` retain
-Copyright (c) 2023, Tri Dao.
+Copyright (c) 2023, Tri Dao. Those notices identify existing attribution;
+they do not identify the repository or revision from which the local files
+were obtained. The directory name `legacy` is not a source designation.
 
-Pending: the recorded source URLs reference a moving `main` branch. The actual
-imported revisions, their license texts, the adaptation scope, and the origin
-of the remaining legacy files must be confirmed by their maintainers. These
-files must not be treated as entirely new Hygon code merely because their
-paths do not occur in the FlashMLA baseline. Existing attribution is retained.
+Pending: reconcile the individual legacy files with the maintainer's stated
+DeepSeek source and record the relevant revisions, license texts, and local
+modifications. The historical evidence for the three extension files above
+does not establish the origin of every legacy file. Existing notices remain
+intact; the directory is not classified wholesale as either a separate
+FlashAttention import or entirely new Hygon code.
 
 ## Precompiled gfx938 assembly
 
