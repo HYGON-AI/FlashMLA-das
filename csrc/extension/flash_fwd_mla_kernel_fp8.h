@@ -2866,7 +2866,7 @@ void run_flash_splitkv_fwd_mla_fp8(Flash_fwd_mla_params &params, cudaStream_t st
     else {
         static char* FLASH_MLA_ASM_DIR = std::getenv("FLASH_MLA_ROOT_DIR"); 
         constexpr size_t smem_size = 32768;
-        const std::string asm_target = std::string("a") + "mdgcn-" + "a" + "md-" + "a" + "mdhsa";
+        const std::string asm_target = "amdgcn-amd-amdhsa";
         std::string co_file = std::string(FLASH_MLA_ASM_DIR) +
                 "flash_fwd_mla_fp8_gfx938-hip-" + asm_target + "-gfx938.co";
         hipError_t status = hipSuccess;

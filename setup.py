@@ -154,12 +154,12 @@ if not (cutlass_dir / "include").exists():
 if False:
     cxx_args = ["/O2", "/std:c++20", "/DNDEBUG", "/W0"]
 else:
-    asm_define = "-D" + "D" + "CU_ASM"
+    # Required by the pinned CUTLASS fork; migrate this flag with its consumers.
+    asm_define = "-DDCU_ASM"
     host_cxx_standard_flag = get_host_cxx_standard_flag()
     print(f"Using host C++ standard flag: {host_cxx_standard_flag}")
     cxx_args = ["-O3", host_cxx_standard_flag, "-DNDEBUG", "-Wno-deprecated-declarations", asm_define, "-Wno-return-type", ]
 
-gpu_llvm_prefix = "-" + "a" + "mdgpu"
 code_object_version = get_code_object_version()
 print(f"Using code object version: {code_object_version}")
 
@@ -168,12 +168,12 @@ aicc_flags = [
     "-mllvm=-support-768-vgprs=true",
     "-mllvm=-disable-machine-sink",
     "-mllvm=-disable-code-sink",
-    "-mllvm=" + gpu_llvm_prefix + "-enable-rewrite-partial-reg-uses=false",
+    "-mllvm=-amdgpu-enable-rewrite-partial-reg-uses=false",
     "-mllvm=-allow-gvn-convergent-call=true",
     "-mllvm=-disallow-uniform-vmed3-combine=true",
     "-mllvm=-hcu-pre-emit-load-store-opt=false",
-    "-mllvm=" + gpu_llvm_prefix + "-early-inline-all=true",
-    "-mllvm=" + gpu_llvm_prefix + "-function-calls=false",
+    "-mllvm=-amdgpu-early-inline-all=true",
+    "-mllvm=-amdgpu-function-calls=false",
     "-fno-finite-math-only",
     "--gpu-max-threads-per-block=256"
 ]
