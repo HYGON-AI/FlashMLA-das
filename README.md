@@ -1,4 +1,28 @@
-# FlashMLA
+# FlashMLA-das
+
+## 上游来源与修改说明
+
+本项目基于 DeepSeek FlashMLA，面向 Hygon HCU 平台进行适配与优化。
+
+- 上游项目：FlashMLA
+- 上游仓库：[deepseek-ai/FlashMLA](https://github.com/deepseek-ai/FlashMLA)
+- 上游基线分支：`main`
+- 上游基线 Commit：`48c6dc426f045cb7743b18f5c7329f35f1b7ed79`
+- 上游许可证：MIT
+- 本仓库许可证：[MIT](LICENSE)
+
+Modified by Hygon Information Technology Co., Ltd.
+
+Copyright (c) 2026 Hygon Information Technology Co., Ltd.
+
+HYGON 的原创修改包括：
+
+- gfx936/gfx938 平台适配及相关构建工具链适配。
+- BF16/FP8 MLA 算子、KV cache 及 Python 接口适配。
+- sparse MLA prefill/decode 路径的功能与性能优化，包括 `topk_length` 支持。
+- 与上述平台适配相关的测试、基准测试和构建流程调整。
+
+HYGON 版权声明仅适用于其原创贡献，不替代或覆盖 DeepSeek 及其他上游作者的版权声明。原有版权声明及 MIT 许可文本完整保留。
 
 ## Introduction
 
@@ -78,15 +102,18 @@ Support matrix:
 ## Installation
 
 ```bash
-git clone -b master-aicc ssh://git@10.16.1.204:10022/dcutoolkit/deeplearing/flashmla.git flashmla
+git clone -b main https://github.com/HYGON-AI/FlashMLA-das.git flashmla
 cd flashmla
 git submodule update --init --recursive
 pip install -v .
 ```
 
-The CUTLASS dependency is pinned as `csrc/cutlass/cutlass_3.2.1` on branch
-`feature/16x64-mmac`. If the submodule is missing, `setup.py` will try to
-initialize it before compiling.
+The customized CUTLASS dependency is pinned at commit
+`33e45645599f371c2382e67920085498f5905955` in
+`csrc/cutlass/cutlass_3.2.1`, with branch `feature/16x64-mmac-aicc` configured
+in `.gitmodules`. Building requires access to that repository and the pinned
+commit. If the submodule is missing, `setup.py` will try to initialize it
+before compiling.
 
 When running tests directly from the source tree, prefer an in-place build so
 the local `flash_mla` package can find the compiled `flash_mla.cuda` extension:
