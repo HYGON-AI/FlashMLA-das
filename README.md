@@ -19,10 +19,12 @@ HYGON 的原创修改包括：
 
 - gfx936/gfx938 平台适配及相关构建工具链适配。
 - BF16/FP8 MLA 算子、KV cache 及 Python 接口适配。
-- sparse MLA prefill/decode 路径的功能与性能优化，包括 `topk_length` 支持。
+- sparse MLA prefill/decode 与 DSA/MLS 路径的功能与性能优化，包括 split-KV、索引排序、边界保护、extra KV 和 `topk_length` 支持。
 - 与上述平台适配相关的测试、基准测试和构建流程调整。
 
 HYGON 版权声明仅适用于其原创贡献，不替代或覆盖 DeepSeek 及其他上游作者的版权声明。原有版权声明及 MIT 许可文本完整保留。
+
+第三方组件、固定版本及仍需补充的来源信息见 [Third-Party Notices](THIRD_PARTY_NOTICES.md)。
 
 ## Introduction
 
