@@ -18,6 +18,11 @@ copyright notices or license terms of third-party components.
 - `docs/assets/MLA Kernel Sched.drawio.svg` is byte-for-byte unchanged from
   this baseline. Its upstream documentation and attribution are retained.
 
+The [baseline source comparison](docs/source-provenance.md) records the
+path-level inventory, copy/rename history, historical-source candidates, and
+remaining questions from the original source-review queue. It uses the
+application's fixed DeepSeek commit before requesting maintainer confirmation.
+
 ## Customized CUTLASS dependency
 
 - Local path: `csrc/cutlass/cutlass_3.2.1` (Git submodule).
