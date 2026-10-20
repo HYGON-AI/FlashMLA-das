@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Hygon Information Technology Co., Ltd.
+// SPDX-License-Identifier: MIT
+
 #include "mla_qk_gemm_utils_mls_ds.h"
 #include "static_switch.h"
 

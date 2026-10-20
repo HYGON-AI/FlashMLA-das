@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Hygon Information Technology Co., Ltd.
+// SPDX-License-Identifier: MIT
+
 #ifdef DEBUGING
 #define print_qk(block_id_m, bidb, bidh) {\
     int qk_warp_n_offset = warp_id * WARP_M_ * params.seqlen_k; \

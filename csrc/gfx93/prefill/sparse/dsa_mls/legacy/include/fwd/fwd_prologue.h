@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Hygon Information Technology Co., Ltd.
+// SPDX-License-Identifier: MIT
+
 
 
 template<int Layout, int kBlockM, int kBlockN, int kHeadDim, int kHeadDimV, int kHeadDimVOrigin, int SplitD, bool Is_even_MN, bool Is_PaddingMask, typename Params, typename BlockInfo, typename index_t=int>

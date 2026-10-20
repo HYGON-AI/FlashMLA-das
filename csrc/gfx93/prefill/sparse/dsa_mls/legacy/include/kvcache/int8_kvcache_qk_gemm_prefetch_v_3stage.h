@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Hygon Information Technology Co., Ltd.
+// SPDX-License-Identifier: MIT
+
 #pragma once
 #include "int8_kvcache_qk_gemm_utils.h"
 #include "int8_kvcache_pv_gemm_utils.h"

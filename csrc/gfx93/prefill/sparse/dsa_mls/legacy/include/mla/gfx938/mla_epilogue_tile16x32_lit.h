@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Hygon Information Technology Co., Ltd.
+// SPDX-License-Identifier: MIT
+
 #include "numeric_types.h"
 #include "intrinsic.h"
 #define CUDART_L2E_F            1.442695041F

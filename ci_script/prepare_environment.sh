@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright (c) 2026 Hygon Information Technology Co., Ltd.
+# SPDX-License-Identifier: MIT
+
 
 : "${DTK_VERSION:?DTK_VERSION must be set}"
 : "${DTK_PIP_INDEX_URL:?DTK_PIP_INDEX_URL must be set}"

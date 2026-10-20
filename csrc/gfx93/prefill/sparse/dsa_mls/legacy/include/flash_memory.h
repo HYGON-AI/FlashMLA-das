@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Hygon Information Technology Co., Ltd.
+// SPDX-License-Identifier: MIT
+
 
 #define DEFINE_SPLITKV_MEMORY_MANAGER \
 class SplitkvMemoryManager { \

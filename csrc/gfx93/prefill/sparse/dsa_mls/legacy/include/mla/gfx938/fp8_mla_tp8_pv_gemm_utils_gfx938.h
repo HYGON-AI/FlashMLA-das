@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Hygon Information Technology Co., Ltd.
+// SPDX-License-Identifier: MIT
+
 #pragma once
 #include "fp8_mla_tp8_pv_gemm_prefetch_k_gfx938.h"
 

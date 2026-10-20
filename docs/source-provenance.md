@@ -31,15 +31,40 @@ unchanged files as copy sources.
 | Baseline lineage candidate; at least one edge below 80% | 14 | Inspect the copy/rename edge before accepting the mapping. |
 | Historical DeepSeek content candidate | 14 | Shared source content provides a review lead beyond the baseline snapshot. |
 | Generated version metadata | 1 | `flash_mla/version.py` is produced by `get_version.py`. |
-| Post-baseline addition without a deterministic source match | 137 | Branch introduction is established; external origin and ownership remain unresolved. |
+| Post-baseline addition without a deterministic source match | 137 | Automated comparison did not resolve origin; the subsequent maintainer declaration is recorded below. |
 
 The 80% boundary only separates review queues. Neither this boundary nor Git's
 copy/rename detection constitutes an ownership determination. A baseline path
 history does not establish the authorship of every line subsequently added.
 
 The 137 unmatched paths comprise 112 under `dsa_mls/legacy`, four extension
-instantiations, and 21 other source paths. They are not automatically classified
-as Hygon-original merely because the baseline lacks those paths.
+instantiations, and 21 other source paths. These are the results of automated
+comparison before the maintainer declaration, not the current unresolved count.
+
+## Maintainer Confirmation and Notice Treatment
+
+On 2026-10-20, the project maintainer confirmed that code absent from the
+declared DeepSeek baseline was written locally. This declaration supplies
+the ownership information that the automated comparison alone could not infer.
+It is recorded as a maintainer declaration, separately from Git evidence.
+
+| Treatment of the original 195 source-review paths | Files |
+| --- | ---: |
+| Maintainer-confirmed Hygon-original source; Hygon 2026 copyright and SPDX MIT added | 133 |
+| Existing baseline lineage or historical content evidence retained; upstream notices unchanged | 57 |
+| Local contributions confirmed, but existing third-party attribution or source references retained without a whole-file Hygon-only header | 4 |
+| Generated version metadata; generator relationship retained | 1 |
+
+The four files in the third row are `block_info.h`, `kernel_traits.h`,
+`philox.cuh`, and `static_switch.h` in
+`csrc/gfx93/prefill/sparse/dsa_mls/legacy/include/`. The first two retain Tri Dao
+copyright; the others retain PyTorch or NVIDIA DALI source references. The
+maintainer's confirmation is not used to remove or supersede those records.
+
+The newly added `.gitlab-ci.yml`, which was outside the original 195-item
+source table, also receives the Hygon/MIT notice. Thus 134 source/configuration
+files receive notices. Shebangs, encoding lines, file bodies, original
+attribution, generated metadata, and precompiled artifacts are preserved.
 
 ## Recorded Examples
 
@@ -63,13 +88,13 @@ or a license determination. No reviewed blob among these 195 paths exactly
 matches an upstream historical blob. For additions without baseline lineage,
 checking their introduction blobs also did not establish an exact upstream copy.
 
-## Remaining Review
+## Supporting Records and Review
 
-Use the recorded baseline and historical candidates before requesting new
-maintainer evidence. Confirm the unresolved import or generation details and
-the actual scope of local changes. Preserve upstream notices and apply the
-appropriate treatment after the source relationship is established; do not
-batch-add copyright headers to the original 195-item queue.
+The original broad source-ownership question has now received a maintainer
+answer. Do not request the same confirmation again for the 133 declared
+original files. Keep exact historical mapping leads and inherited source
+records available for review, and retain the separate requests for precompiled
+artifact generation/build records and customized dependency distribution.
 
 The detailed evidence exports contain each path, blob, reference path,
 introduction commit, copy/rename chain, candidate blob and outstanding question.
@@ -78,5 +103,9 @@ fixed: two later source edits in `flash_fwd_mla_kernel_fp8.h` and `asm/build.sh`
 replace constructed target strings with equivalent literals and are tracked
 separately from the original source-matching statistics.
 
-This inventory is not a formal compliance rescan, HCU build validation, or a
-claim that all source ownership has been confirmed.
+The maintainer-decision export records the declaration and per-file treatment
+alongside the original automated evidence. The original baseline inventory
+remains fixed; subsequent copyright-only edits are a separate remediation.
+
+This inventory and the maintainer declaration are not a formal compliance
+rescan or HCU build validation.
