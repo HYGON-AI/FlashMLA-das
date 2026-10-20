@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Hygon Information Technology Co., Ltd.
+// SPDX-License-Identifier: MIT
+
 #define print_kq(block_id_m, bidb, bidh) {                                                                                                \
     __builtin_amdgcn_sched_barrier(0);\
     __builtin_amdgcn_s_waitcnt(0);\

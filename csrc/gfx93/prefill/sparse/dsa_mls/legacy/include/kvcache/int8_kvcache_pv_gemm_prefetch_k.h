@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Hygon Information Technology Co., Ltd.
+// SPDX-License-Identifier: MIT
+
 #include "int8_kvcache_pv_gemm_prefetch_k_3stage.h"
 
 

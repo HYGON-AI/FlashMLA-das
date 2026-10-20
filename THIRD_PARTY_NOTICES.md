@@ -1,7 +1,7 @@
 # Third-Party Notices
 
 This inventory records the sources that can be established from the repository.
-Items explicitly marked as pending still require maintainer confirmation; this
+Items explicitly marked as pending still require supporting records or review; this
 document does not certify that the complete source provenance review has passed.
 The root MIT license and the Hygon contribution statement do not replace the
 copyright notices or license terms of third-party components.
@@ -22,6 +22,9 @@ The [baseline source comparison](docs/source-provenance.md) records the
 path-level inventory, copy/rename history, historical-source candidates, and
 remaining questions from the original source-review queue. It uses the
 application's fixed DeepSeek commit before requesting maintainer confirmation.
+The comparison also records the maintainer's 2026-10-20 confirmation that
+post-baseline original additions were written locally, and the resulting
+Hygon/MIT notices. Existing third-party attribution is retained.
 
 ## Customized CUTLASS dependency
 
@@ -88,12 +91,16 @@ Copyright (c) 2023, Tri Dao. Those notices identify existing attribution;
 they do not identify the repository or revision from which the local files
 were obtained. The directory name `legacy` is not a source designation.
 
-Pending: reconcile the individual legacy files with the maintainer's stated
-DeepSeek source and record the relevant revisions, license texts, and local
-modifications. The historical evidence for the three extension files above
-does not establish the origin of every legacy file. Existing notices remain
-intact; the directory is not classified wholesale as either a separate
-FlashAttention import or entirely new Hygon code.
+The maintainer has confirmed local authorship of additions absent from the
+DeepSeek baseline. The source comparison records this declaration and the
+Hygon/MIT notice treatment for original additions in this directory. The
+directory is not treated as a separate FlashAttention import.
+
+Existing attribution and source references remain intact. In addition to the
+Tri Dao notices, `philox.cuh` references a PyTorch Philox implementation,
+and `static_switch.h` cites NVIDIA DALI and PyTorch inspiration. These records
+are retained for source/license review; the local-authorship declaration does
+not assert exclusive Hygon ownership of pre-existing third-party contributions.
 
 ## Precompiled gfx938 assembly
 
