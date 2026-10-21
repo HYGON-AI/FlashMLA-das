@@ -6,9 +6,9 @@ Common data types and macros that are used across the kerutils library.
 // #include <cuda_bf16.h>
 // #include <cuda_fp8.h>
 
-#include <cutlass/bfloat16.h>
+#include <hytlass/bfloat16.h>
 // #include <cutlass/arch/barrier.h>
-#include <cute/config.hpp>  // For CUTE_DEVICE
+#include <hute/config.hpp>  // For CUTE_DEVICE
 
 namespace kerutils {
 
@@ -34,7 +34,7 @@ namespace kerutils {
 // using nve4m3x2 = __nv_fp8x2_e4m3;
 // using nve4m3x4 = __nv_fp8x4_e4m3;
 
-using bf16 = cutlass::bfloat16_t;
+using bf16 = hytlass::bfloat16_t;
 // using transac_bar_t = cutlass::arch::ClusterTransactionBarrier;
 
 }

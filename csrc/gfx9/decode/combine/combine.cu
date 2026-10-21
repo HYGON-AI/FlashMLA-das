@@ -1,10 +1,10 @@
 #include "combine.h"
 
 // #include <math_constants.h>
-#include <cute/tensor.hpp>
-#include <cutlass/cutlass.h>
-#include <cutlass/array.h>
-#include <cutlass/numeric_types.h>
+#include <hute/tensor.hpp>
+#include <hytlass/hytlass.h>
+#include <hytlass/array.h>
+#include <hytlass/numeric_types.h>
 
 #include <kerutils/kerutils.cuh>
 
@@ -12,7 +12,7 @@
 #include "utils.h"
 #define CUDART_L2E_F            1.442695041F
 
-using namespace cute;
+using namespace hute;
 
 namespace gfx9::decode {
 
@@ -43,7 +43,7 @@ flash_fwd_mla_combine_kernel(const CombineParams params) {
         if (params.seqlens_k_ptr != nullptr && params.partition_block_nums > 0) {
             int seqlen_k = __ldg(params.seqlens_k_ptr + batch_idx);
             end_split_idx = std::min(
-                cute::ceil_div(cute::ceil_div(seqlen_k, 64), params.partition_block_nums),
+                hute::ceil_div(hute::ceil_div(seqlen_k, 64), params.partition_block_nums),
                 params.num_splits) + start_split_idx;
         }
         // if (lane_idx == 0 && batch_idx == 61)
@@ -86,28 +86,28 @@ flash_fwd_mla_combine_kernel(const CombineParams params) {
     
     // Warp #i gathers LseAccum for seq #i
     {
-        constexpr int NUM_LSE_PER_THREAD = cute::ceil_div(MAX_SPLITS, 64);
+        constexpr int NUM_LSE_PER_THREAD = hute::ceil_div(MAX_SPLITS, 64);
         float local_lse[NUM_LSE_PER_THREAD];
-        CUTLASS_PRAGMA_UNROLL
+        HYTLASS_PRAGMA_UNROLL
         for (int i = 0; i < NUM_LSE_PER_THREAD; ++i) {
             const int split_idx = i*64 + lane_idx;
             local_lse[i] = split_idx < my_num_splits ? gLseAccum(split_idx, warp_idx) : -INFINITY;
         }
 
         float max_lse = -INFINITY;
-        CUTLASS_PRAGMA_UNROLL
+        HYTLASS_PRAGMA_UNROLL
         for (int i = 0; i < NUM_LSE_PER_THREAD; ++i)
             max_lse = max(max_lse, local_lse[i]);
-        CUTLASS_PRAGMA_UNROLL
+        HYTLASS_PRAGMA_UNROLL
         for (int offset = 32; offset >= 1; offset /= 2)
             max_lse = max(max_lse, __shfl_xor(max_lse, offset));
         max_lse = max_lse == -INFINITY ? 0.0f : max_lse;  // In case all local LSEs are -inf
 
         float sum_lse = 0;
-        CUTLASS_PRAGMA_UNROLL
+        HYTLASS_PRAGMA_UNROLL
         for (int i = 0; i < NUM_LSE_PER_THREAD; ++i)
             sum_lse = sum_lse + __builtin_amdgcn_exp2f((local_lse[i] - max_lse) * CUDART_L2E_F);
-        CUTLASS_PRAGMA_UNROLL
+        HYTLASS_PRAGMA_UNROLL
         for (int offset = 32; offset >= 1; offset /= 2)
             sum_lse = sum_lse + __shfl_xor(sum_lse, offset);
 
@@ -144,7 +144,7 @@ flash_fwd_mla_combine_kernel(const CombineParams params) {
             //     global_lse = attn_sink == -INFINITY ? +INFINITY : attn_sink*CUDART_L2E_F;
             // }
         }
-        CUTLASS_PRAGMA_UNROLL
+        HYTLASS_PRAGMA_UNROLL
         for (int i = 0; i < NUM_LSE_PER_THREAD; ++i) {
             const int split_idx = i*64 + lane_idx;
             if (split_idx < my_num_splits) {
@@ -160,14 +160,14 @@ flash_fwd_mla_combine_kernel(const CombineParams params) {
     static_assert(ELEMS_PER_THREAD == 2);
     float* oaccum_ptr = params.o_accum + start_split_idx*params.stride_o_accum_split + s_q_idx*params.stride_o_accum_s_q + (h_block_idx*BLOCK_SIZE_M + warp_idx)*params.stride_o_accum_h_q;
     float4 datas[ELEMS_PER_THREAD];
-    CUTLASS_PRAGMA_UNROLL
+    HYTLASS_PRAGMA_UNROLL
     for (int i = 0; i < ELEMS_PER_THREAD; ++i) {
         datas[i] = *(float4*)(oaccum_ptr + lane_idx*8 + i*4); // NOTE We don't use __ldg here since it is incompatible with PDL
     }
     // Warp #i accumulates activation for seq #i
     {
         float4 result[ELEMS_PER_THREAD];
-        CUTLASS_PRAGMA_UNROLL
+        HYTLASS_PRAGMA_UNROLL
         for (int i = 0; i < ELEMS_PER_THREAD; ++i)
             result[i] = {0.0f, 0.0f, 0.0f, 0.0f};
 
@@ -179,7 +179,7 @@ flash_fwd_mla_combine_kernel(const CombineParams params) {
             //     printf("threadIdx.x = %d %.3f %.3f lse_scale = %.2f \n",threadIdx.x, datas[0].x, datas[1].x, lse_scale);
             // }
             // if (lse_scale != 0.f) {
-            CUTLASS_PRAGMA_UNROLL
+            HYTLASS_PRAGMA_UNROLL
             for (int i = 0; i < ELEMS_PER_THREAD; ++i) {
                 result[i].x += lse_scale * datas[i].x;
                 result[i].y += lse_scale * datas[i].y;
@@ -209,9 +209,9 @@ flash_fwd_mla_combine_kernel(const CombineParams params) {
         const int h_q_idx = h_block_idx*BLOCK_SIZE_M + warp_idx;
         ElementT* o_ptr = (ElementT*)params.out + batch_idx*params.stride_o_b + s_q_idx*params.stride_o_s_q + h_q_idx*params.stride_o_h_q + lane_idx * 8;
         ElementT data_converted[8];
-        using result_type = cutlass::Array<ElementT, 2>;
+        using result_type = hytlass::Array<ElementT, 2>;
         for (int i = 0; i < ELEMS_PER_THREAD; ++i) {
-            if constexpr(std::is_same_v<cutlass::bfloat16_t, ElementT>) {
+            if constexpr(std::is_same_v<hytlass::bfloat16_t, ElementT>) {
                 #if defined(__gfx938__)
                 auto d0 =  __builtin_hcu_cvt_pk_bf16_f32(0, result[i].x, 0, result[i].y, 0);
                 auto d1 =  __builtin_hcu_cvt_pk_bf16_f32(0, result[i].z, 0, result[i].w, 0);
@@ -318,10 +318,10 @@ void run_flash_mla_combine_kernel(CombineParams &params) {
     CHECK_CUDA_KERNEL_LAUNCH();
 }
 
-template void run_flash_mla_combine_kernel<cutlass::bfloat16_t>(CombineParams &params);
+template void run_flash_mla_combine_kernel<hytlass::bfloat16_t>(CombineParams &params);
 
 #ifndef FLASH_MLA_DISABLE_FP16
-template void run_flash_mla_combine_kernel<cutlass::half_t>(CombineParams &params);
+template void run_flash_mla_combine_kernel<hytlass::half_t>(CombineParams &params);
 #endif
 
 }

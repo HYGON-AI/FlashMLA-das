@@ -26,27 +26,33 @@ The comparison also records the maintainer's 2026-10-20 confirmation that
 post-baseline original additions were written locally, and the resulting
 Hygon/MIT notices. Existing third-party attribution is retained.
 
-## Customized CUTLASS dependency
+## HYTLASS dependency and local register layouts
 
-- Local path: `csrc/cutlass/cutlass_3.2.1` (Git submodule).
-- Pinned commit: `33e45645599f371c2382e67920085498f5905955`.
-- Configured branch: `feature/16x64-mmac-aicc`.
-- Fork source: the repository configured in `.gitmodules`.
-- Original upstream project: https://github.com/NVIDIA/cutlass
-- The pinned fork's root `LICENSE.txt` declares BSD-3-Clause and
-  Copyright (c) 2017 - 2023 NVIDIA CORPORATION & AFFILIATES.
-  Its complete text is reproduced in [LICENSES/CUTLASS.txt](LICENSES/CUTLASS.txt).
-  This identifies the root license; it does not establish the provenance or
-  license of every file added to the customized fork.
-- Integration: CUTLASS/CuTe headers are included by the HCU kernels. The pinned
-  fork consumes the assembly feature macro set by `asm_define` in `setup.py`,
-  including in `cutlass/detail/helper_macros.hpp` and `cute/arch/mma_gfx928.hpp`.
-  The build definition must migrate together with
-  those consumers; changing only the flag in this repository is insufficient.
-- Pending: the dependency maintainers must provide the approved distribution
-  URL, the corresponding fixed commit, and any additional fork notices. The
-  original upstream CUTLASS release is not an equivalent substitute for this
-  customized commit.
+- Source: https://github.com/HYGON-AI/hytlass
+- Local path: `csrc/hytlass` (Git submodule), branch `release`.
+- Pinned commit: `fa662ebf2d8aba6a8881603a448102d1ed8d9950`.
+- The complete pinned root `LICENSE.txt` is reproduced without changes in
+  [LICENSES/HYTLASS.txt](LICENSES/HYTLASS.txt). It includes Hygon and NVIDIA
+  BSD-3-Clause texts and the Google license for googletest. File-level notices
+  in the dependency are retained. The dependency itself is unmodified.
+- The release README identifies NVIDIA CUTLASS 3.5.0 as its upstream basis:
+  https://github.com/NVIDIA/cutlass
+- `csrc/hytlass_ext.h` preserves FlashMLA-specific register layouts and selected
+  operation definitions from the previous customized CUTLASS commit
+  `33e45645599f371c2382e67920085498f5905955`. Sources are the `mma_gfx928.hpp`,
+  `mma_gfx938.hpp`, and `copy_gfx928.hpp` headers under `include/cute/arch/`
+  and their traits headers under `include/cute/atom/`. The original NVIDIA
+  notices and BSD-3-Clause text are retained in the extension header.
+  The previous fork's root license remains in
+  [LICENSES/CUTLASS.txt](LICENSES/CUTLASS.txt).
+- These application-specific extensions are separately licensed under
+  BSD-3-Clause; the root MIT license does not replace their license.
+- The extension delegates compatible operations to HYTLASS and keeps its
+  application-specific register ABI and traits separate from HYTLASS's global
+  traits. HIP compiler conditions replace the former fork feature flag.
+- Source mapping, migration scope, and required HCU validation are recorded in
+  [HYTLASS migration](docs/hytlass-migration.md). Source-level checks do not
+  certify correct compilation, numerical results, or complete license review.
 
 ## DeepSeek historical sources and retained attribution
 

@@ -87,7 +87,7 @@ It achieves up to 640 TFlops in forward computation on H800 SXM5 with CUDA 12.8,
 - PyTorch 2.0 and above
 
 For the Hygon HCU gfx93 path in this branch, build with the local AICC/ROCm
-toolchain and the pinned CUTLASS submodule described below.
+toolchain and the pinned HYTLASS submodule described below.
 
 Support matrix:
 
@@ -112,12 +112,13 @@ git submodule update --init --recursive
 pip install -v .
 ```
 
-The customized CUTLASS dependency is pinned at commit
-`33e45645599f371c2382e67920085498f5905955` in
-`csrc/cutlass/cutlass_3.2.1`, with branch `feature/16x64-mmac-aicc` configured
-in `.gitmodules`. Building requires access to that repository and the pinned
-commit. If the submodule is missing, `setup.py` will try to initialize it
-before compiling.
+The [HYTLASS dependency](https://github.com/HYGON-AI/hytlass) is pinned at commit
+`fa662ebf2d8aba6a8881603a448102d1ed8d9950` in `csrc/hytlass`, with branch
+`release` configured in `.gitmodules`. If the submodule is missing, `setup.py`
+will try to initialize it before compiling. Existing checkouts should run
+`git submodule sync --recursive` followed by `git submodule update --init --recursive`.
+FlashMLA-specific register layouts and operation tags are in `csrc/hytlass_ext.h`;
+the HYTLASS submodule itself is used without local modifications.
 
 When running tests directly from the source tree, prefer an in-place build so
 the local `flash_mla` package can find the compiled `flash_mla.cuda` extension:

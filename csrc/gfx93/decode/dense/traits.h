@@ -1,11 +1,13 @@
 #pragma once
 
-#include <cute/tensor.hpp>
-#include <cutlass/cutlass.h>
-#include <cutlass/numeric_types.h>
-#include <cutlass/barrier.h>
+#include "hytlass_ext.h"
 
-using namespace cute;
+#include <hute/tensor.hpp>
+#include <hytlass/hytlass.h>
+#include <hytlass/numeric_types.h>
+#include <hytlass/barrier.h>
+
+using namespace hute;
 
 template<typename InputT_, bool Is_causal_, int HeadDimK, int HeadDimV>
 struct Traits {
@@ -39,7 +41,7 @@ struct Traits {
 
     static constexpr int NUM_THREADS = 256;
 
-    static_assert(std::is_same_v<InputT, cutlass::bfloat16_t> || std::is_same_v<InputT, cutlass::half_t>);
+    static_assert(std::is_same_v<InputT, hytlass::bfloat16_t> || std::is_same_v<InputT, hytlass::half_t>);
 
     static constexpr int kBlockM = BLOCK_SIZE_M;
     static constexpr int kBlockN = PAGE_BLOCK_SIZE;
@@ -84,14 +86,13 @@ struct Traits {
     using ValLayoutMNK = Layout<Shape<_1, _1, _1>>;     
 // #if defined(__gfx936__) ||  defined(__gfx938__)
     using MMA_Atom_Arch = std::conditional_t<
-        std::is_same_v<elem_type, cutlass::half_t>,
-        MMA_Atom<GFX928_16x16x32_F32F16F16F32_NT>,
-        MMA_Atom<GFX928_16x16x32_F32BF16BF16F32_NT>
+        std::is_same_v<elem_type, hytlass::half_t>,
+        MMA_Atom<flash_mla::hytlass_ext::GFX928_16x16x32_F32F16F16F32_NT>,
+        MMA_Atom<flash_mla::hytlass_ext::GFX928_16x16x32_F32BF16BF16F32_NT>
     >;
     using TiledMma = TiledMMA<
         MMA_Atom_Arch,
-        Layout<Shape<_1, Int<kNWarps>, _1>>,  // 1x4x1 or 1x8x1 thread group
-        ValLayoutMNK>;
+        Layout<Shape<_1, Int<kNWarps>, _1>>>;
 // #elif defined(__gfx928__)
 //     using MMA_Atom_Arch = std::conditional_t<
 //         std::is_same_v<elem_type, cutlass::half_t>,
@@ -105,15 +106,14 @@ struct Traits {
 // #endif
 
     using MMA_Atom_Arch_16x32 = std::conditional_t<
-        std::is_same_v<elem_type, cutlass::half_t>,
-        MMA_Atom<GFX928_16x32x16_F32F16F16F32_NT>,
-        MMA_Atom<GFX928_16x32x16_F32BF16BF16F32_NT>
+        std::is_same_v<elem_type, hytlass::half_t>,
+        MMA_Atom<flash_mla::hytlass_ext::GFX928_16x32x16_F32F16F16F32_NT>,
+        MMA_Atom<flash_mla::hytlass_ext::GFX928_16x32x16_F32BF16BF16F32_NT>
     >;
 
     using TiledMma_O = TiledMMA<
         MMA_Atom_Arch_16x32,
-        Layout<Shape<_1, Int<kNWarps>, _1>>,  // 1x4x1 or 1x8x1 thread group
-        ValLayoutMNK>;
+        Layout<Shape<_1, Int<kNWarps>, _1>>>;
     using GmemLayoutAtomQ = Layout<Shape <_32, _8>,  
                 Stride< _8, _1>>;
     using GmemTiledCopyQ = decltype(
@@ -132,17 +132,17 @@ struct Traits {
     struct SharedMemoryPlan {
         union {
             struct {
-                cute::array_aligned<Element, cute::cosize_v<SmemLayoutV>> smem_v;  // Double buffer
+                hute::array_aligned<Element, hute::cosize_v<SmemLayoutV>> smem_v;  // Double buffer
 
             };
             struct {
-                cute::array_aligned<Element, cute::cosize_v<SmemLayoutK_place_holder>> smem_temp;  // Double buffer
-                cute::array_aligned<Element, cute::cosize_v<SmemLayoutP>> smem_p;
-                cute::array_aligned<ElementAccum, cute::cosize_v<SmemLayoutRow>> smem_row_sum;
-                cute::array_aligned<ElementAccum, cute::cosize_v<SmemLayoutRow>> smem_row_max;
+                hute::array_aligned<Element, hute::cosize_v<SmemLayoutK_place_holder>> smem_temp;  // Double buffer
+                hute::array_aligned<Element, hute::cosize_v<SmemLayoutP>> smem_p;
+                hute::array_aligned<ElementAccum, hute::cosize_v<SmemLayoutRow>> smem_row_sum;
+                hute::array_aligned<ElementAccum, hute::cosize_v<SmemLayoutRow>> smem_row_max;
             };
             struct {
-                cute::array_aligned<Element, cute::cosize_v<SmemLayoutQ>> smem_q;
+                hute::array_aligned<Element, hute::cosize_v<SmemLayoutQ>> smem_q;
             };
 
         };
@@ -163,7 +163,7 @@ struct Traits_Block_M_64 {
 
     static constexpr int NUM_THREADS = 256;
 
-    static_assert(std::is_same_v<InputT, cutlass::bfloat16_t> || std::is_same_v<InputT, cutlass::half_t>);
+    static_assert(std::is_same_v<InputT, hytlass::bfloat16_t> || std::is_same_v<InputT, hytlass::half_t>);
 
     static constexpr int kBlockM = BLOCK_SIZE_M;
     static constexpr int kBlockN = PAGE_BLOCK_SIZE;

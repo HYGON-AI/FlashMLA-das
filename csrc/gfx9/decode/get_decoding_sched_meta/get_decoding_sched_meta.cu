@@ -2,7 +2,7 @@
 
 #include <algorithm>
 #include <cuda_runtime_api.h>
-#include <cutlass/fast_math.h>
+#include <hytlass/fast_math.h>
 #include <kerutils/kerutils.cuh>
 
 #include "utils.h"
@@ -59,7 +59,7 @@ get_mla_metadata_kernel(const GetDecodeSchedMetaParams params) {
     }
     __syncthreads();
     if (threadIdx.x == 0) {
-        int payload = cutlass::ceil_div(total_num_blocks, num_sm_parts) + fixed_overhead_num_blocks;
+        int payload = hytlass::ceil_div(total_num_blocks, num_sm_parts) + fixed_overhead_num_blocks;
 
         int now_req_idx = 0, now_block = 0, now_n_split_idx = 0, cum_num_splits = 0;
         num_splits_shared[0] = 0;
@@ -142,7 +142,7 @@ get_mla_metadata_no_split_kernel(const GetDecodeSchedMetaParams params) {
                 }
             }
         }
-        cur_meta.end_block_idx = cutlass::ceil_div(cur_s_k, block_size_n);
+        cur_meta.end_block_idx = hytlass::ceil_div(cur_s_k, block_size_n);
         tile_scheduler_metadata_ptr[part_idx] = cur_meta;
     }
 
@@ -160,7 +160,7 @@ void run_get_decoding_sched_meta_kernel(GetDecodeSchedMetaParams &params) {
 }
 
 void run_get_decoding_sched_meta_no_split_kernel(GetDecodeSchedMetaParams &params) {
-    int grid = cutlass::ceil_div(std::max(params.num_sm_parts, params.b + 1), 256);
+    int grid = hytlass::ceil_div(std::max(params.num_sm_parts, params.b + 1), 256);
     grid = std::min(grid, 1024);
     get_mla_metadata_no_split_kernel<<<grid, 256, 0, params.stream>>>(params);
     CHECK_CUDA_KERNEL_LAUNCH();
