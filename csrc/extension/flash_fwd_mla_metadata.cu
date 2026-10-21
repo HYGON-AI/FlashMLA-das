@@ -17,7 +17,7 @@ get_mla_metadata_kernel(const Mla_metadata_params params) {
 
     int total_num_blocks = 0;
     for (int i = threadIdx.x; i < batch_size; i += 64) {
-        int num_blocks = cutlass::ceil_div(seqlens_k_ptr[i], block_size_n);
+        int num_blocks = hytlass::ceil_div(seqlens_k_ptr[i], block_size_n);
         total_num_blocks += num_blocks + fixed_overhead_num_blocks;
         num_blocks_shared[i] = num_blocks;
     }
@@ -28,7 +28,7 @@ get_mla_metadata_kernel(const Mla_metadata_params params) {
     __syncthreads();
 
     if (threadIdx.x == 0) {
-        int payload = cutlass::ceil_div(total_num_blocks, num_sm_parts) + fixed_overhead_num_blocks;
+        int payload = hytlass::ceil_div(total_num_blocks, num_sm_parts) + fixed_overhead_num_blocks;
 
         int now_idx = 0, now_block = 0, now_n_split_idx = 0, cum_num_splits = 0;
         num_splits_shared[0] = 0;
@@ -120,7 +120,7 @@ get_mla_decoding_metadata_kernel(const GetDecodingMetadataParams params) {
     __syncthreads();
 
     if (threadIdx.x == 0) {
-        int payload = cutlass::ceil_div(total_num_blocks, num_sm_parts) + fixed_overhead_num_blocks;
+        int payload = hytlass::ceil_div(total_num_blocks, num_sm_parts) + fixed_overhead_num_blocks;
 
         int now_idx = 0, now_block = 0, now_n_split_idx = 0, cum_num_splits = 0;
         num_splits_shared[0] = 0;

@@ -4,14 +4,14 @@
 
 #include <cmath>
 
-#include <cute/tensor.hpp>
-#include <cutlass/numeric_types.h>
+#include <hute/tensor.hpp>
+#include <hytlass/numeric_types.h>
 
 #include "utils.h"
 
 namespace flash {
 
-using namespace cute;
+using namespace hute;
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -19,7 +19,7 @@ template<bool zero_init=true, typename Engine0, typename Layout0, typename Engin
 __device__ __forceinline__ void thread_reduce_(Tensor<Engine0, Layout0> const &tensor, Tensor<Engine1, Layout1> &summary, Operator &op) {
     static_assert(Layout0::rank == 2, "Only support 2D Tensor");
     static_assert(Layout1::rank == 1, "Only support 1D Tensor");
-    CUTE_STATIC_ASSERT_V(size<0>(summary) == size<0>(tensor));
+    HUTE_STATIC_ASSERT_V(size<0>(summary) == size<0>(tensor));
     #pragma unroll
     for (int mi = 0; mi < size<0>(tensor); mi++) {
         summary(mi) = zero_init ? tensor(mi, 0) : op(summary(mi), tensor(mi, 0));
@@ -32,7 +32,7 @@ __device__ __forceinline__ void thread_reduce_(Tensor<Engine0, Layout0> const &t
 
 template<typename Engine0, typename Layout0, typename Engine1, typename Layout1, typename Operator>
 __device__ __forceinline__ void quad_allreduce_(Tensor<Engine0, Layout0> &dst, Tensor<Engine1, Layout1> &src, Operator &op) {
-    CUTE_STATIC_ASSERT_V(size(dst) == size(src));
+    HUTE_STATIC_ASSERT_V(size(dst) == size(src));
     #pragma unroll
     for (int i = 0; i < size(dst); i++){
         dst(i) = Allreduce<64>::run(src(i), op);
@@ -128,7 +128,7 @@ template <bool Scale_max=true, typename Engine0, typename Layout0, typename Engi
 __forceinline__ __device__ void scale_apply_exp2(Tensor<Engine0, Layout0> &tensor, Tensor<Engine1, Layout1> const &max, const float scale) {
     static_assert(Layout0::rank == 2, "Only support 2D Tensor");
     static_assert(Layout1::rank == 1, "Only support 1D Tensor");
-    CUTE_STATIC_ASSERT_V(size<0>(max) == size<0>(tensor));
+    HUTE_STATIC_ASSERT_V(size<0>(max) == size<0>(tensor));
     #pragma unroll
     for (int mi = 0; mi < size<0>(tensor); ++mi) {
         // If max is -inf, then all elements must have been -inf (possibly due to masking).
@@ -184,7 +184,7 @@ struct Softmax {
             flash::reduce_sum</*zero_init=*/true>(scores, row_sum);
         } else {
             Tensor scores_max_prev = make_fragment_like(row_max);
-            cute::copy(row_max, scores_max_prev);
+            hute::copy(row_max, scores_max_prev);
             flash::template reduce_max</*zero_init=*/false>(scores, row_max);
             if constexpr (is_tp1)
             {
@@ -242,7 +242,7 @@ struct Softmax {
             flash::reduce_sum</*zero_init=*/true>(scores, row_sum);
         } else {
             Tensor scores_max_prev = make_fragment_like(row_max);
-            cute::copy(row_max, scores_max_prev);
+            hute::copy(row_max, scores_max_prev);
             flash::template reduce_max</*zero_init=*/false>(scores, row_max);
             flash::warp_allreduce_(row_max, sRow_max_reduce_buffer, max_op);
             // Reshape acc_o from (MMA=4, MMA_M, MMA_K) to (nrow=(2, MMA_M), ncol=(2, MMA_K))
@@ -326,7 +326,7 @@ struct Softmax {
             flash::reduce_sum</*zero_init=*/true>(scores, row_sum);
         } else {
             Tensor scores_max_prev = make_fragment_like(row_max);
-            cute::copy(row_max, scores_max_prev);
+            hute::copy(row_max, scores_max_prev);
             flash::template reduce_max</*zero_init=*/false>(scores, row_max);
             flash::warp_allreduce_(row_max, sRow_max_reduce_buffer, max_op);
             // Reshape acc_o from (MMA=4, MMA_M, MMA_K) to (nrow=(2, MMA_M), ncol=(2, MMA_K))
@@ -429,7 +429,7 @@ struct Softmax {
             flash::reduce_sum</*zero_init=*/true>(scores, row_sum);
         } else {
             Tensor scores_max_prev = make_fragment_like(row_max);
-            cute::copy(row_max, scores_max_prev);
+            hute::copy(row_max, scores_max_prev);
             flash::template reduce_max</*zero_init=*/false>(scores, row_max);
             if constexpr (is_tp1)
             {
@@ -496,7 +496,7 @@ struct Softmax {
             flash::reduce_sum</*zero_init=*/true>(scores, row_sum);
         } else {
             Tensor scores_max_prev = make_fragment_like(row_max);
-            cute::copy(row_max, scores_max_prev);
+            hute::copy(row_max, scores_max_prev);
             flash::template reduce_max</*zero_init=*/false>(scores, row_max);
             flash::warp_allreduce_tp4(row_max, sRow_max_reduce_buffer, max_op);
             // Tensor acc_o_rowcol = make_tensor(acc_o.data(), flash::convert_layout_acc_rowcol(acc_o.layout()));
@@ -615,7 +615,7 @@ struct Softmax {
             flash::reduce_sum</*zero_init=*/true>(scores, row_sum);
         } else {
             Tensor scores_max_prev = make_fragment_like(row_max);
-            cute::copy(row_max, scores_max_prev);
+            hute::copy(row_max, scores_max_prev);
             flash::template reduce_max</*zero_init=*/false>(scores, row_max);
             // Reshape acc_o from (MMA=4, MMA_M, MMA_K) to (nrow=(2, MMA_M), ncol=(2, MMA_K))
             // static_assert(decltype(size<0>(acc_o_rowcol))::value == kNRows);

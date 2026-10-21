@@ -1,7 +1,9 @@
 #pragma once
 
-#include <cute/tensor.hpp>
-#include <cutlass/arch/arch.h>
+#include "hytlass_ext.h"
+
+#include <hute/tensor.hpp>
+#include <hytlass/arch/arch.h>
 #include <kerutils/kerutils.cuh>
 
 #include "defines.h"
@@ -9,7 +11,7 @@
 
 namespace gfx93::fwd {
 
-using namespace cute;
+using namespace hute;
 
 template<int D_QK, bool HAVE_TOPK_LENGTH>
 class KernelTemplate {
@@ -25,7 +27,7 @@ static constexpr int B_TOPK = 64;    // TopK block size
 static constexpr int NUM_THREADS = kNWarps * 64;
 static constexpr float MAX_INIT_VAL = -1e30;    // We use this number as the initial value for mi (max logits)
 
-using Element = cutlass::bfloat16_t;
+using Element = hytlass::bfloat16_t;
 using elem_type = Element;
 using ElementAccum = float;
 using index_t = int64_t;
@@ -43,26 +45,24 @@ using ValLayoutMNK = Layout<Shape<_1, _1, _1>>;
     //     MMA_Atom<GFX928_16x16x32_F32BF16BF16F32_NT>
     // >;
 using MMA_Atom_Arch = std::conditional_t<
-    std::is_same_v<elem_type, cutlass::half_t>,
-    MMA_Atom<GFX928_16x16x32_F32F16F16F32_NN>,
-    MMA_Atom<GFX928_16x16x32_F32BF16BF16F32_NN>
+    std::is_same_v<elem_type, hytlass::half_t>,
+    MMA_Atom<flash_mla::hytlass_ext::GFX928_16x16x32_F32F16F16F32_NN>,
+    MMA_Atom<flash_mla::hytlass_ext::GFX928_16x16x32_F32BF16BF16F32_NN>
 >;
 using TiledMma = TiledMMA<
     MMA_Atom_Arch,
-    Layout<Shape<_1, Int<kNWarps>, _1>>,  // 1x4x1 or 1x8x1 thread group
-    ValLayoutMNK>;
+    Layout<Shape<_1, Int<kNWarps>, _1>>>;
 // #endif
 
 using MMA_Atom_Arch_16x32 = std::conditional_t<
-    std::is_same_v<elem_type, cutlass::half_t>,
-    MMA_Atom<GFX928_16x32x16_F32F16F16F32_NT>,
-    MMA_Atom<GFX928_16x32x16_F32BF16BF16F32_NT>
+    std::is_same_v<elem_type, hytlass::half_t>,
+    MMA_Atom<flash_mla::hytlass_ext::GFX928_16x32x16_F32F16F16F32_NT>,
+    MMA_Atom<flash_mla::hytlass_ext::GFX928_16x32x16_F32BF16BF16F32_NT>
 >;
 
 using TiledMma_O = TiledMMA<
     MMA_Atom_Arch_16x32,
-    Layout<Shape<_1, Int<kNWarps>, _1>>,  // 1x4x1 or 1x8x1 thread group
-    ValLayoutMNK>;
+    Layout<Shape<_1, Int<kNWarps>, _1>>>;
 
 using SmemLayoutAtomQ = 
         Layout<Shape<Int<16>, Int<32>>, Stride<Int<32>, _1>>;
@@ -98,16 +98,16 @@ using SmemLayoutK_place_holder = decltype(tile_to_shape(
 struct SharedMemoryPlan {
     union {
         struct {
-            cute::array_aligned<Element, cute::cosize_v<SmemLayoutV>> smem_v;  // Double buffer
+            hute::array_aligned<Element, hute::cosize_v<SmemLayoutV>> smem_v;  // Double buffer
         };
         struct {
-            cute::array_aligned<Element, cute::cosize_v<SmemLayoutK_place_holder>> smem_place_holder;  // Double buffer
-            cute::array_aligned<Element, cute::cosize_v<SmemLayoutP>> smem_p;
-            cute::array_aligned<ElementAccum, cute::cosize_v<SmemLayoutRow>> smem_row_sum;
-            cute::array_aligned<ElementAccum, cute::cosize_v<SmemLayoutRow>> smem_row_max;
+            hute::array_aligned<Element, hute::cosize_v<SmemLayoutK_place_holder>> smem_place_holder;  // Double buffer
+            hute::array_aligned<Element, hute::cosize_v<SmemLayoutP>> smem_p;
+            hute::array_aligned<ElementAccum, hute::cosize_v<SmemLayoutRow>> smem_row_sum;
+            hute::array_aligned<ElementAccum, hute::cosize_v<SmemLayoutRow>> smem_row_max;
         };
         struct {
-            cute::array_aligned<Element, cute::cosize_v<SmemLayoutQ>> smem_q;
+            hute::array_aligned<Element, hute::cosize_v<SmemLayoutQ>> smem_q;
         };
     };
     // transac_bar_t bar_q, bar_k0_free[2], bar_k0_ready[2], bar_k1_free[2], bar_k1_ready[2], bar_is_kv_valid_ready;
@@ -139,7 +139,7 @@ static constexpr int B_TOPK = 64;    // TopK block size
 static constexpr int NUM_THREADS = kNWarps * 64;
 static constexpr float MAX_INIT_VAL = -1e30;    // We use this number as the initial value for mi (max logits)
 
-using Element = cutlass::bfloat16_t;
+using Element = hytlass::bfloat16_t;
 using elem_type = Element;
 using ElementAccum = float;
 using index_t = int64_t;

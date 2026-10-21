@@ -1,6 +1,7 @@
+#include "hytlass_ext.h"
 #include "flash_fwd_mla_kernel.h"
 
-template<int kHeadDim_, int kBlockM_, int kBlockN_, int kNWarps_, typename elem_type=cutlass::bfloat16_t,typename elem_type_o = cutlass::bfloat16_t, int kHeadDimV_ = 0, bool is_with_cat=false, typename elem_type_q = elem_type>
+template<int kHeadDim_, int kBlockM_, int kBlockN_, int kNWarps_, typename elem_type=hytlass::bfloat16_t,typename elem_type_o = hytlass::bfloat16_t, int kHeadDimV_ = 0, bool is_with_cat=false, typename elem_type_q = elem_type>
 struct Flash_fwd_kernel_traits_mla_qkvfp8 {
     using Element = elem_type;
     using ElementO = elem_type_o;
@@ -27,21 +28,19 @@ struct Flash_fwd_kernel_traits_mla_qkvfp8 {
     //using MMA_Atom_Arch = MMA_Atom<GFX938_16x16x64_F32F8F8F32E4M3E4M3_NT_LIT>;
 
     //bufferload
-    using MMA_Atom_Arch = MMA_Atom<GFX938_16x16x64_F32F8F8F32E4M3E4M3_NN_LIT>;
+    using MMA_Atom_Arch = MMA_Atom<flash_mla::hytlass_ext::GFX938_16x16x64_F32F8F8F32E4M3E4M3_NN_LIT>;
 
 
-    using MMA_Atom_Arch_16x32 = MMA_Atom<GFX938_16x32x32_F32F8F8F32E4M3E4M3_NT_LIT>;
+    using MMA_Atom_Arch_16x32 = MMA_Atom<flash_mla::hytlass_ext::GFX938_16x32x32_F32F8F8F32E4M3E4M3_NT_LIT>;
 
     using ValLayoutMNK = Layout<Shape<_1, _1, _1>>;
     using TiledMma = TiledMMA<
         MMA_Atom_Arch,
-        Layout<Shape<_1, Int<kNWarps>, _1>>,  // 1x4x1 or 1x8x1 thread group
-        ValLayoutMNK>;//
+        Layout<Shape<_1, Int<kNWarps>, _1>>>;//
 
     using TiledMma_O = TiledMMA<
         MMA_Atom_Arch_16x32,
-        Layout<Shape<_1, Int<kNWarps>, _1>>,  // 1x4x1 or 1x8x1 thread group
-        ValLayoutMNK>;
+        Layout<Shape<_1, Int<kNWarps>, _1>>>;
 
 
     // using SmemLayoutRow = Layout<Shape<_16, Int<4>>, Stride<_4, _1>>; 
@@ -126,7 +125,7 @@ struct Flash_fwd_kernel_traits_mla_qkvfp8 {
    
 };
 
-template<int kHeadDim_, int kBlockM_, int kBlockN_, int kNWarps_, typename elem_type=cutlass::bfloat16_t,typename elem_type_o = cutlass::bfloat16_t, int kHeadDimV_ = 0>
+template<int kHeadDim_, int kBlockM_, int kBlockN_, int kNWarps_, typename elem_type=hytlass::bfloat16_t,typename elem_type_o = hytlass::bfloat16_t, int kHeadDimV_ = 0>
 struct Flash_fwd_kernel_traits_mla_qkvfp8_TP1 {
     using Element = elem_type;
     using ElementO = elem_type_o;
@@ -149,24 +148,22 @@ struct Flash_fwd_kernel_traits_mla_qkvfp8_TP1 {
     static constexpr int kSwizzle = 3;
 
     //gloalload
-    using MMA_Atom_Arch = MMA_Atom<GFX938_16x16x64_F32F8F8F32E4M3E4M3_NT_LIT>;
+    using MMA_Atom_Arch = MMA_Atom<flash_mla::hytlass_ext::GFX938_16x16x64_F32F8F8F32E4M3E4M3_NT_LIT>;
 
     //bufferload
     // using MMA_Atom_Arch = MMA_Atom<GFX938_16x16x64_F32F8F8F32E4M3E4M3_NN_LIT>;
 
 
-    using MMA_Atom_Arch_16x32 = MMA_Atom<GFX938_16x64x16_F32F8F8F32E4M3E4M3_NT>;
+    using MMA_Atom_Arch_16x32 = MMA_Atom<flash_mla::hytlass_ext::GFX938_16x64x16_F32F8F8F32E4M3E4M3_NT>;
 
     using ValLayoutMNK = Layout<Shape<_1, _1, _1>>;
     using TiledMma = TiledMMA<
         MMA_Atom_Arch,
-        Layout<Shape<_4, Int<2>, _1>>,  // 1x4x1 or 1x8x1 thread group
-        ValLayoutMNK>;//
+        Layout<Shape<_4, Int<2>, _1>>>;//
 
     using TiledMma_O = TiledMMA<
         MMA_Atom_Arch_16x32,
-        Layout<Shape<_4, Int<2>, _1>>,  // 1x4x1 or 1x8x1 thread group
-        ValLayoutMNK>;
+        Layout<Shape<_4, Int<2>, _1>>>;
 
 
     // using SmemLayoutRow = Layout<Shape<_16, Int<4>>, Stride<_4, _1>>; 
@@ -249,7 +246,7 @@ struct Flash_fwd_kernel_traits_mla_qkvfp8_TP1 {
             Layout<Shape<_1, _4>>{})); 
    
 };
-template<int kHeadDim_, int kBlockM_, int kBlockN_, int kNWarps_, typename elem_type=cutlass::bfloat16_t,typename elem_type_o = cutlass::bfloat16_t, int kHeadDimV_ = 0>
+template<int kHeadDim_, int kBlockM_, int kBlockN_, int kNWarps_, typename elem_type=hytlass::bfloat16_t,typename elem_type_o = hytlass::bfloat16_t, int kHeadDimV_ = 0>
 struct Flash_fwd_kernel_traits_mla_qkvfp8_TP4 {
     using Element = elem_type;
     using ElementO = elem_type_o;
@@ -272,24 +269,22 @@ struct Flash_fwd_kernel_traits_mla_qkvfp8_TP4 {
     static constexpr int kSwizzle = 3;
 
     //gloalload
-    using MMA_Atom_Arch = MMA_Atom<GFX938_16x16x64_F32F8F8F32E4M3E4M3_NT_LIT>;
+    using MMA_Atom_Arch = MMA_Atom<flash_mla::hytlass_ext::GFX938_16x16x64_F32F8F8F32E4M3E4M3_NT_LIT>;
 
     //bufferload
     // using MMA_Atom_Arch = MMA_Atom<GFX938_16x16x64_F32F8F8F32E4M3E4M3_NN_LIT>;
 
 
-    using MMA_Atom_Arch_16x32 = MMA_Atom<GFX938_16x64x16_F32F8F8F32E4M3E4M3_NT>;
+    using MMA_Atom_Arch_16x32 = MMA_Atom<flash_mla::hytlass_ext::GFX938_16x64x16_F32F8F8F32E4M3E4M3_NT>;
 
     using ValLayoutMNK = Layout<Shape<_1, _1, _1>>;
     using TiledMma = TiledMMA<
         MMA_Atom_Arch,
-        Layout<Shape<_2, Int<2>, _1>>,  // 1x4x1 or 1x8x1 thread group
-        ValLayoutMNK>;//
+        Layout<Shape<_2, Int<2>, _1>>>;//
 
     using TiledMma_O = TiledMMA<
         MMA_Atom_Arch_16x32,
-        Layout<Shape<_2, Int<2>, _1>>,  // 1x4x1 or 1x8x1 thread group
-        ValLayoutMNK>;
+        Layout<Shape<_2, Int<2>, _1>>>;
 
 
     // using SmemLayoutRow = Layout<Shape<_16, Int<4>>, Stride<_4, _1>>; 
@@ -375,27 +370,27 @@ struct Flash_fwd_kernel_traits_mla_qkvfp8_TP4 {
 
 namespace flash {
 
-using namespace cute;
+using namespace hute;
 
 template<typename Kernel_traits>
 struct SharedStorageMLAFloat8 {
     union {
         struct {
-            cute::array_aligned<typename Kernel_traits::Element, cute::cosize_v<typename Kernel_traits::SmemLayoutV>> smem_v;  // Double buffer
+            hute::array_aligned<typename Kernel_traits::Element, hute::cosize_v<typename Kernel_traits::SmemLayoutV>> smem_v;  // Double buffer
 
         };
         struct {
-            cute::array_aligned<typename Kernel_traits::Element, cute::cosize_v<typename Kernel_traits::SmemLayoutK_temp>> smem_temp;  // Double buffer
-            cute::array_aligned<typename Kernel_traits::Element, cute::cosize_v<typename Kernel_traits::SmemLayoutP>> smem_p;
-            cute::array_aligned<typename Kernel_traits::ElementAccum, cute::cosize_v<typename Kernel_traits::SmemLayoutRow>> smem_row_sum;
-            cute::array_aligned<typename Kernel_traits::ElementAccum, cute::cosize_v<typename Kernel_traits::SmemLayoutRow>> smem_row_max;
+            hute::array_aligned<typename Kernel_traits::Element, hute::cosize_v<typename Kernel_traits::SmemLayoutK_temp>> smem_temp;  // Double buffer
+            hute::array_aligned<typename Kernel_traits::Element, hute::cosize_v<typename Kernel_traits::SmemLayoutP>> smem_p;
+            hute::array_aligned<typename Kernel_traits::ElementAccum, hute::cosize_v<typename Kernel_traits::SmemLayoutRow>> smem_row_sum;
+            hute::array_aligned<typename Kernel_traits::ElementAccum, hute::cosize_v<typename Kernel_traits::SmemLayoutRow>> smem_row_max;
         };
         struct {
-            cute::array_aligned<typename Kernel_traits::ElementAccum, cute::cosize_v<typename Kernel_traits::SmemLayoutO>> smem_o;
+            hute::array_aligned<typename Kernel_traits::ElementAccum, hute::cosize_v<typename Kernel_traits::SmemLayoutO>> smem_o;
     
         };
         struct {
-            cute::array_aligned<typename Kernel_traits::Element, cute::cosize_v<typename Kernel_traits::SmemLayoutQ>> smem_q;
+            hute::array_aligned<typename Kernel_traits::Element, hute::cosize_v<typename Kernel_traits::SmemLayoutQ>> smem_q;
         };
        
     };
@@ -405,21 +400,21 @@ template<typename Kernel_traits>
 struct SharedStorageMLAFloat8_TP1 {
     union {
         struct {
-            cute::array_aligned<typename Kernel_traits::Element, cute::cosize_v<typename Kernel_traits::SmemLayoutV>> smem_v;  // Double buffer
+            hute::array_aligned<typename Kernel_traits::Element, hute::cosize_v<typename Kernel_traits::SmemLayoutV>> smem_v;  // Double buffer
 
         };
         struct {
-            cute::array_aligned<typename Kernel_traits::Element, cute::cosize_v<typename Kernel_traits::SmemLayoutK_temp>> smem_temp;  // Double buffer
-            cute::array_aligned<typename Kernel_traits::Element, cute::cosize_v<typename Kernel_traits::SmemLayoutP>> smem_p;
-            cute::array_aligned<typename Kernel_traits::ElementAccum, cute::cosize_v<typename Kernel_traits::SmemLayoutRow>> smem_row_sum;
-            cute::array_aligned<typename Kernel_traits::ElementAccum, cute::cosize_v<typename Kernel_traits::SmemLayoutRow>> smem_row_max;
+            hute::array_aligned<typename Kernel_traits::Element, hute::cosize_v<typename Kernel_traits::SmemLayoutK_temp>> smem_temp;  // Double buffer
+            hute::array_aligned<typename Kernel_traits::Element, hute::cosize_v<typename Kernel_traits::SmemLayoutP>> smem_p;
+            hute::array_aligned<typename Kernel_traits::ElementAccum, hute::cosize_v<typename Kernel_traits::SmemLayoutRow>> smem_row_sum;
+            hute::array_aligned<typename Kernel_traits::ElementAccum, hute::cosize_v<typename Kernel_traits::SmemLayoutRow>> smem_row_max;
         };
         struct {
-            cute::array_aligned<typename Kernel_traits::ElementAccum, cute::cosize_v<typename Kernel_traits::SmemLayoutO>> smem_o;
+            hute::array_aligned<typename Kernel_traits::ElementAccum, hute::cosize_v<typename Kernel_traits::SmemLayoutO>> smem_o;
     
         };
         struct {
-            cute::array_aligned<typename Kernel_traits::Element, cute::cosize_v<typename Kernel_traits::SmemLayoutQ>> smem_q;
+            hute::array_aligned<typename Kernel_traits::Element, hute::cosize_v<typename Kernel_traits::SmemLayoutQ>> smem_q;
         };
        
     };
@@ -428,21 +423,21 @@ template<typename Kernel_traits>
 struct SharedStorageMLAFloat8_TP4 {
     union {
         struct {
-            cute::array_aligned<typename Kernel_traits::Element, cute::cosize_v<typename Kernel_traits::SmemLayoutV>> smem_v;  // Double buffer
+            hute::array_aligned<typename Kernel_traits::Element, hute::cosize_v<typename Kernel_traits::SmemLayoutV>> smem_v;  // Double buffer
 
         };
         struct {
-            cute::array_aligned<typename Kernel_traits::Element, cute::cosize_v<typename Kernel_traits::SmemLayoutK_temp>> smem_temp;  // Double buffer
-            cute::array_aligned<typename Kernel_traits::Element, cute::cosize_v<typename Kernel_traits::SmemLayoutP>> smem_p;
-            cute::array_aligned<typename Kernel_traits::ElementAccum, cute::cosize_v<typename Kernel_traits::SmemLayoutRow>> smem_row_sum;
-            cute::array_aligned<typename Kernel_traits::ElementAccum, cute::cosize_v<typename Kernel_traits::SmemLayoutRow>> smem_row_max;
+            hute::array_aligned<typename Kernel_traits::Element, hute::cosize_v<typename Kernel_traits::SmemLayoutK_temp>> smem_temp;  // Double buffer
+            hute::array_aligned<typename Kernel_traits::Element, hute::cosize_v<typename Kernel_traits::SmemLayoutP>> smem_p;
+            hute::array_aligned<typename Kernel_traits::ElementAccum, hute::cosize_v<typename Kernel_traits::SmemLayoutRow>> smem_row_sum;
+            hute::array_aligned<typename Kernel_traits::ElementAccum, hute::cosize_v<typename Kernel_traits::SmemLayoutRow>> smem_row_max;
         };
         struct {
-            cute::array_aligned<typename Kernel_traits::ElementAccum, cute::cosize_v<typename Kernel_traits::SmemLayoutO>> smem_o;
+            hute::array_aligned<typename Kernel_traits::ElementAccum, hute::cosize_v<typename Kernel_traits::SmemLayoutO>> smem_o;
     
         };
         struct {
-            cute::array_aligned<typename Kernel_traits::Element, cute::cosize_v<typename Kernel_traits::SmemLayoutQ>> smem_q;
+            hute::array_aligned<typename Kernel_traits::Element, hute::cosize_v<typename Kernel_traits::SmemLayoutQ>> smem_q;
         };
        
     };
@@ -661,21 +656,21 @@ __forceinline__ __device__ void compute_attn_1rowblock_splitkv_mla_fp8_gfx938(co
         __builtin_amdgcn_sched_barrier(0);
         asm volatile("s_waitcnt vmcnt(2) \n\t s_barrier\n\t");
         __builtin_amdgcn_sched_barrier(0);
-        cute::copy(smem_tiled_copy_Q, tSsQ(_, _, 0), tSrQ_copy_view(_, _, 0));
-        cute::copy(smem_tiled_copy_Q, tSsQ(_, _, 1), tSrQ_copy_view(_, _, 1));
-        cute::copy(smem_tiled_copy_Q, tSsQ(_, _, 2), tSrQ_copy_view(_, _, 2));
-        cute::copy(smem_tiled_copy_Q, tSsQ(_, _, 3), tSrQ_copy_view(_, _, 3));
+        hute::copy(smem_tiled_copy_Q, tSsQ(_, _, 0), tSrQ_copy_view(_, _, 0));
+        hute::copy(smem_tiled_copy_Q, tSsQ(_, _, 1), tSrQ_copy_view(_, _, 1));
+        hute::copy(smem_tiled_copy_Q, tSsQ(_, _, 2), tSrQ_copy_view(_, _, 2));
+        hute::copy(smem_tiled_copy_Q, tSsQ(_, _, 3), tSrQ_copy_view(_, _, 3));
         __builtin_amdgcn_sched_barrier(0);
         asm volatile("s_waitcnt vmcnt(1) \n\t s_barrier\n\t");
         __builtin_amdgcn_sched_barrier(0);
-        cute::copy(smem_tiled_copy_Q, tSsQ(_, _, 4), tSrQ_copy_view(_, _, 4));
-        cute::copy(smem_tiled_copy_Q, tSsQ(_, _, 5), tSrQ_copy_view(_, _, 5));
-        cute::copy(smem_tiled_copy_Q, tSsQ(_, _, 6), tSrQ_copy_view(_, _, 6));
-        cute::copy(smem_tiled_copy_Q, tSsQ(_, _, 7), tSrQ_copy_view(_, _, 7));                                                                
+        hute::copy(smem_tiled_copy_Q, tSsQ(_, _, 4), tSrQ_copy_view(_, _, 4));
+        hute::copy(smem_tiled_copy_Q, tSsQ(_, _, 5), tSrQ_copy_view(_, _, 5));
+        hute::copy(smem_tiled_copy_Q, tSsQ(_, _, 6), tSrQ_copy_view(_, _, 6));
+        hute::copy(smem_tiled_copy_Q, tSsQ(_, _, 7), tSrQ_copy_view(_, _, 7));
         __builtin_amdgcn_sched_barrier(0);
         asm volatile("s_waitcnt vmcnt(0) \n\t s_barrier\n\t");
         __builtin_amdgcn_sched_barrier(0);
-        cute::copy(smem_tiled_copy_Q, tSsQ(_, _, 8), tSrQ_copy_view(_, _, 8));
+        hute::copy(smem_tiled_copy_Q, tSsQ(_, _, 8), tSrQ_copy_view(_, _, 8));
         __syncthreads(); 
     }
     else
@@ -688,7 +683,7 @@ __forceinline__ __device__ void compute_attn_1rowblock_splitkv_mla_fp8_gfx938(co
         Tensor gQ_pe = make_tensor(make_gmem_ptr(reinterpret_cast<ElementQ *>(params.q_pe_ptr) + row_offset_q_pe),
                                     Shape<Int<kBlockM>, Int<64>>{},
                                     make_stride(params.q_pe_row_stride, _1{}));
-        if constexpr (std::is_same_v<cutlass::bfloat16_t, ElementQ>) {
+        if constexpr (std::is_same_v<hytlass::bfloat16_t, ElementQ>) {
             ElementQ* s_q = reinterpret_cast<ElementQ *>(shared_memory);
             auto lds_direct_copy_q = [&](const int k_idx, const int offset_k) {
                 struct PtrWrapper {
@@ -885,21 +880,21 @@ __forceinline__ __device__ void compute_attn_1rowblock_splitkv_mla_fp8_gfx938(co
             __builtin_amdgcn_sched_barrier(0);
             asm volatile("s_waitcnt vmcnt(2) \n\t s_barrier\n\t");
             __builtin_amdgcn_sched_barrier(0);
-            cute::copy(smem_tiled_copy_Q, tSsQ(_, _, 0), tSrQ_copy_view(_, _, 0));
-            cute::copy(smem_tiled_copy_Q, tSsQ(_, _, 1), tSrQ_copy_view(_, _, 1));
-            cute::copy(smem_tiled_copy_Q, tSsQ(_, _, 2), tSrQ_copy_view(_, _, 2));
-            cute::copy(smem_tiled_copy_Q, tSsQ(_, _, 3), tSrQ_copy_view(_, _, 3));
+            hute::copy(smem_tiled_copy_Q, tSsQ(_, _, 0), tSrQ_copy_view(_, _, 0));
+            hute::copy(smem_tiled_copy_Q, tSsQ(_, _, 1), tSrQ_copy_view(_, _, 1));
+            hute::copy(smem_tiled_copy_Q, tSsQ(_, _, 2), tSrQ_copy_view(_, _, 2));
+            hute::copy(smem_tiled_copy_Q, tSsQ(_, _, 3), tSrQ_copy_view(_, _, 3));
             __builtin_amdgcn_sched_barrier(0);
             asm volatile("s_waitcnt vmcnt(1) \n\t s_barrier\n\t");
             __builtin_amdgcn_sched_barrier(0);
-            cute::copy(smem_tiled_copy_Q, tSsQ(_, _, 4), tSrQ_copy_view(_, _, 4));
-            cute::copy(smem_tiled_copy_Q, tSsQ(_, _, 5), tSrQ_copy_view(_, _, 5));
-            cute::copy(smem_tiled_copy_Q, tSsQ(_, _, 6), tSrQ_copy_view(_, _, 6));
-            cute::copy(smem_tiled_copy_Q, tSsQ(_, _, 7), tSrQ_copy_view(_, _, 7));                                                                
+            hute::copy(smem_tiled_copy_Q, tSsQ(_, _, 4), tSrQ_copy_view(_, _, 4));
+            hute::copy(smem_tiled_copy_Q, tSsQ(_, _, 5), tSrQ_copy_view(_, _, 5));
+            hute::copy(smem_tiled_copy_Q, tSsQ(_, _, 6), tSrQ_copy_view(_, _, 6));
+            hute::copy(smem_tiled_copy_Q, tSsQ(_, _, 7), tSrQ_copy_view(_, _, 7));
             __builtin_amdgcn_sched_barrier(0);
             asm volatile("s_waitcnt vmcnt(0) \n\t s_barrier\n\t");
             __builtin_amdgcn_sched_barrier(0);
-            cute::copy(smem_tiled_copy_Q, tSsQ(_, _, 8), tSrQ_copy_view(_, _, 8));
+            hute::copy(smem_tiled_copy_Q, tSsQ(_, _, 8), tSrQ_copy_view(_, _, 8));
             __syncthreads(); 
         }
  
@@ -917,7 +912,7 @@ __forceinline__ __device__ void compute_attn_1rowblock_splitkv_mla_fp8_gfx938(co
     // Tensor tSrK_smem  = thr_mma.partition_fragment_B(gK); //128,64 gk->rk
 
 
-    auto smem_tiled_copy_V = make_tiled_copy_B(Copy_Atom<GFX928_DS_READ_DS_M32x32_B8, Element>{}, tiled_mma_o);
+    auto smem_tiled_copy_V = make_tiled_copy_B(Copy_Atom<flash_mla::hytlass_ext::GFX928_DS_READ_DS_M32x32_B8, Element>{}, tiled_mma_o);
     auto smem_thr_copy_V = smem_tiled_copy_V.get_thread_slice(tidx);
     Tensor tOsVt = smem_thr_copy_V.partition_S(sVt);
     Tensor tOrVt  = thr_mma_o.partition_fragment_B(sVtNoSwizzle);  
@@ -995,7 +990,7 @@ __forceinline__ __device__ void compute_attn_1rowblock_splitkv_mla_fp8_gfx938(co
         Tensor tSrK_copy_view = smem_thr_copy_K.retile_D(tSrK);
         __syncthreads();
         for (int i = 0; i < 8; i++) {
-            cute::copy(smem_tiled_copy_K, tSsK(_, _, i), tSrK_copy_view(_, _, i));
+            hute::copy(smem_tiled_copy_K, tSsK(_, _, i), tSrK_copy_view(_, _, i));
         }        
         Fp8_storage v3_0, v3_1;
         __ds_read_m32x32_row_col_rrow<3, 0, 3>(tOsVt, v3_0.data);
@@ -1004,9 +999,9 @@ __forceinline__ __device__ void compute_attn_1rowblock_splitkv_mla_fp8_gfx938(co
             intx4_t* d = reinterpret_cast<intx4_t*>(&tSrK(0, 0, 8));
             *d = kv_data[8].data;
         }
-        cute::gemm(tiled_mma, tSrQ(_, _, 8), tSrK(_, _, 8), acc_s);
+        hute::gemm(tiled_mma, tSrQ(_, _, 8), tSrK(_, _, 8), acc_s);
         for (int i = 0; i < 8; i++) {
-            cute::gemm(tiled_mma, tSrQ(_, _, i), tSrK(_, _, i), acc_s);
+            hute::gemm(tiled_mma, tSrQ(_, _, i), tSrK(_, _, i), acc_s);
         }
         __builtin_amdgcn_sched_barrier(0);
         asm volatile("s_waitcnt lgkmcnt(0) \n\t s_barrier\n\t");
@@ -1334,7 +1329,7 @@ __forceinline__ __device__ void compute_attn_1rowblock_splitkv_mla_fp8_gfx938_TP
     // Tensor tSrK_smem  = thr_mma.partition_fragment_B(gK); //128,64 gk->rk
 
 
-    auto smem_tiled_copy_V = make_tiled_copy_B(Copy_Atom<GFX928_DS_READ_DS_M64x16_B8, Element>{}, tiled_mma_o);
+    auto smem_tiled_copy_V = make_tiled_copy_B(Copy_Atom<flash_mla::hytlass_ext::GFX928_DS_READ_DS_M64x16_B8, Element>{}, tiled_mma_o);
     auto smem_thr_copy_V = smem_tiled_copy_V.get_thread_slice(tidx);
     Tensor tOsVt = smem_thr_copy_V.partition_S(sVt);
     Tensor tOrVt  = thr_mma_o.partition_fragment_B(sVtNoSwizzle);  
@@ -1779,7 +1774,7 @@ __forceinline__ __device__ void compute_attn_1rowblock_splitkv_mla_fp8_gfx938_TP
             }
         }
         {
-            using result_type = cutlass::Array<bfloat16_t, 2>;
+            using result_type = hytlass::Array<bfloat16_t, 2>;
             int tidx = threadIdx.x;
             int col = 0;
             int warpid = tidx / 64;
@@ -2113,13 +2108,13 @@ __forceinline__ __device__ void compute_attn_1rowblock_splitkv_mla_fp8_gfx938_TP
     // Tensor tSrK_smem  = thr_mma.partition_fragment_B(gK); //128,64 gk->rk
 
 
-    auto smem_tiled_copy_V = make_tiled_copy_B(Copy_Atom<GFX928_DS_READ_DS_M64x16_B8, Element>{}, tiled_mma_o);
+    auto smem_tiled_copy_V = make_tiled_copy_B(Copy_Atom<flash_mla::hytlass_ext::GFX928_DS_READ_DS_M64x16_B8, Element>{}, tiled_mma_o);
     auto smem_thr_copy_V = smem_tiled_copy_V.get_thread_slice(tidx);
     Tensor tOsVt = smem_thr_copy_V.partition_S(sVt);
     Tensor tOrVt  = thr_mma_o.partition_fragment_B(sVtNoSwizzle);  
     
 
-    constexpr int n_masking_steps = !Is_causal ? 1 : cute::ceil_div(kBlockM, kBlockN) + 1;    
+    constexpr int n_masking_steps = !Is_causal ? 1 : hute::ceil_div(kBlockM, kBlockN) + 1;
     const int *block_table = params.block_table + bidb * params.block_table_batch_stride;
 
     int n_block = n_block_max - 1;
@@ -2170,48 +2165,48 @@ __forceinline__ __device__ void compute_attn_1rowblock_splitkv_mla_fp8_gfx938_TP
         __builtin_amdgcn_sched_barrier(0);
         asm volatile("s_waitcnt vmcnt(8) \n\t s_barrier\n\t");
         __builtin_amdgcn_sched_barrier(0);
-        cute::copy(smem_tiled_copy_K, tSsK(_, _, 0), tSrK_copy_view(_, _, 0));
-        cute::gemm(tiled_mma, tSrQ(_, _, 0), tSrK(_, _, 0), acc_s);
+        hute::copy(smem_tiled_copy_K, tSsK(_, _, 0), tSrK_copy_view(_, _, 0));
+        hute::gemm(tiled_mma, tSrQ(_, _, 0), tSrK(_, _, 0), acc_s);
         __builtin_amdgcn_sched_barrier(0);
         asm volatile("s_waitcnt vmcnt(7) \n\t s_barrier\n\t");
         __builtin_amdgcn_sched_barrier(0);
-        cute::copy(smem_tiled_copy_K, tSsK(_, _, 1), tSrK_copy_view(_, _, 1));
-        cute::gemm(tiled_mma, tSrQ(_, _, 1), tSrK(_, _, 1), acc_s);
+        hute::copy(smem_tiled_copy_K, tSsK(_, _, 1), tSrK_copy_view(_, _, 1));
+        hute::gemm(tiled_mma, tSrQ(_, _, 1), tSrK(_, _, 1), acc_s);
         __builtin_amdgcn_sched_barrier(0);
         asm volatile("s_waitcnt vmcnt(6) \n\t s_barrier\n\t");
         __builtin_amdgcn_sched_barrier(0);
-        cute::copy(smem_tiled_copy_K, tSsK(_, _, 2), tSrK_copy_view(_, _, 2));
-        cute::gemm(tiled_mma, tSrQ(_, _, 2), tSrK(_, _, 2), acc_s);
+        hute::copy(smem_tiled_copy_K, tSsK(_, _, 2), tSrK_copy_view(_, _, 2));
+        hute::gemm(tiled_mma, tSrQ(_, _, 2), tSrK(_, _, 2), acc_s);
         __builtin_amdgcn_sched_barrier(0);
         asm volatile("s_waitcnt vmcnt(5) \n\t s_barrier\n\t");
         __builtin_amdgcn_sched_barrier(0);
-        cute::copy(smem_tiled_copy_K, tSsK(_, _, 3), tSrK_copy_view(_, _, 3));
-        cute::gemm(tiled_mma, tSrQ(_, _, 3), tSrK(_, _, 3), acc_s);
+        hute::copy(smem_tiled_copy_K, tSsK(_, _, 3), tSrK_copy_view(_, _, 3));
+        hute::gemm(tiled_mma, tSrQ(_, _, 3), tSrK(_, _, 3), acc_s);
         __builtin_amdgcn_sched_barrier(0);
         asm volatile("s_waitcnt vmcnt(4) \n\t s_barrier\n\t");
         __builtin_amdgcn_sched_barrier(0);
-        cute::copy(smem_tiled_copy_K, tSsK(_, _, 4), tSrK_copy_view(_, _, 4));
-        cute::gemm(tiled_mma, tSrQ(_, _, 4), tSrK(_, _, 4), acc_s);
+        hute::copy(smem_tiled_copy_K, tSsK(_, _, 4), tSrK_copy_view(_, _, 4));
+        hute::gemm(tiled_mma, tSrQ(_, _, 4), tSrK(_, _, 4), acc_s);
         __builtin_amdgcn_sched_barrier(0);
         asm volatile("s_waitcnt vmcnt(3) \n\t s_barrier\n\t");
         __builtin_amdgcn_sched_barrier(0);
-        cute::copy(smem_tiled_copy_K, tSsK(_, _, 5), tSrK_copy_view(_, _, 5));
-        cute::gemm(tiled_mma, tSrQ(_, _, 5), tSrK(_, _, 5), acc_s);
+        hute::copy(smem_tiled_copy_K, tSsK(_, _, 5), tSrK_copy_view(_, _, 5));
+        hute::gemm(tiled_mma, tSrQ(_, _, 5), tSrK(_, _, 5), acc_s);
         __builtin_amdgcn_sched_barrier(0);
         asm volatile("s_waitcnt vmcnt(2) \n\t s_barrier\n\t");
         __builtin_amdgcn_sched_barrier(0);
-        cute::copy(smem_tiled_copy_K, tSsK(_, _, 6), tSrK_copy_view(_, _, 6));
-        cute::gemm(tiled_mma, tSrQ(_, _, 6), tSrK(_, _, 6), acc_s);
+        hute::copy(smem_tiled_copy_K, tSsK(_, _, 6), tSrK_copy_view(_, _, 6));
+        hute::gemm(tiled_mma, tSrQ(_, _, 6), tSrK(_, _, 6), acc_s);
         __builtin_amdgcn_sched_barrier(0);
         asm volatile("s_waitcnt vmcnt(1) \n\t s_barrier\n\t");
         __builtin_amdgcn_sched_barrier(0);
-        cute::copy(smem_tiled_copy_K, tSsK(_, _, 7), tSrK_copy_view(_, _, 7));
-        cute::gemm(tiled_mma, tSrQ(_, _, 7), tSrK(_, _, 7), acc_s);
+        hute::copy(smem_tiled_copy_K, tSsK(_, _, 7), tSrK_copy_view(_, _, 7));
+        hute::gemm(tiled_mma, tSrQ(_, _, 7), tSrK(_, _, 7), acc_s);
         __builtin_amdgcn_sched_barrier(0);
         asm volatile("s_waitcnt vmcnt(0) \n\t s_barrier\n\t");
         __builtin_amdgcn_sched_barrier(0);
-        cute::copy(smem_tiled_copy_K, tSsK(_, _, 8), tSrK_copy_view(_, _, 8));
-        cute::gemm(tiled_mma, tSrQ(_, _, 8), tSrK(_, _, 8), acc_s);
+        hute::copy(smem_tiled_copy_K, tSsK(_, _, 8), tSrK_copy_view(_, _, 8));
+        hute::gemm(tiled_mma, tSrQ(_, _, 8), tSrK(_, _, 8), acc_s);
         gK.data() = gK.data() + (-offset_k);
         // asm volatile("s_barrier \n\t");
         Tensor cS = make_identity_tensor(Shape<Int<kBlockM>, Int<kBlockN>>{});
@@ -2394,7 +2389,7 @@ __forceinline__ __device__ void compute_attn_1rowblock_splitkv_mla_fp8_gfx938_TP
     // }
 
         {
-            using result_type = cutlass::Array<bfloat16_t, 2>;
+            using result_type = hytlass::Array<bfloat16_t, 2>;
             int tidx = threadIdx.x;
             int col = 0;
             int warpid = tidx / 64;
@@ -2638,8 +2633,8 @@ flash_fwd_splitkv_mla_kernel_fp8(const Flash_fwd_mla_params params) {
         const int n_split_idx = batch_id == begin_idx ? begin_n_split_idx : 0;
         const int seqlen_k = *(params.cu_seqlens_k + batch_id);
         const int n_block_min = batch_id == begin_idx ? begin_seqlen / kBlockN : 0;
-        const int n_block_max = batch_id == end_idx ? cute::ceil_div(end_seqlen, kBlockN) : cute::ceil_div(seqlen_k, kBlockN);
-        const bool NoSplit = n_block_min == 0 && n_block_max == cute::ceil_div(seqlen_k, kBlockN);
+        const int n_block_max = batch_id == end_idx ? hute::ceil_div(end_seqlen, kBlockN) : hute::ceil_div(seqlen_k, kBlockN);
+        const bool NoSplit = n_block_min == 0 && n_block_max == hute::ceil_div(seqlen_k, kBlockN);
         if (batch_id > begin_idx) {
             __syncthreads();  // Barrier between two tiles.
         }
@@ -2687,8 +2682,8 @@ flash_fwd_splitkv_mla_kernel_fp8_tp1(const Flash_fwd_mla_params params) {
         const int n_split_idx = batch_id == begin_idx ? begin_n_split_idx : 0;
         const int seqlen_k = *(params.cu_seqlens_k + batch_id);
         const int n_block_min = batch_id == begin_idx ? begin_seqlen / kBlockN : 0;
-        const int n_block_max = batch_id == end_idx ? cute::ceil_div(end_seqlen, kBlockN) : cute::ceil_div(seqlen_k, kBlockN);
-        const bool NoSplit = n_block_min == 0 && n_block_max == cute::ceil_div(seqlen_k, kBlockN);
+        const int n_block_max = batch_id == end_idx ? hute::ceil_div(end_seqlen, kBlockN) : hute::ceil_div(seqlen_k, kBlockN);
+        const bool NoSplit = n_block_min == 0 && n_block_max == hute::ceil_div(seqlen_k, kBlockN);
         if (batch_id > begin_idx) {
             __syncthreads();  // Barrier between two tiles.
         }
@@ -2736,8 +2731,8 @@ flash_fwd_splitkv_mla_kernel_fp8_tp4(const Flash_fwd_mla_params params) {
         const int n_split_idx = batch_id == begin_idx ? begin_n_split_idx : 0;
         const int seqlen_k = *(params.cu_seqlens_k + batch_id);
         const int n_block_min = batch_id == begin_idx ? begin_seqlen / kBlockN : 0;
-        const int n_block_max = batch_id == end_idx ? cute::ceil_div(end_seqlen, kBlockN) : cute::ceil_div(seqlen_k, kBlockN);
-        const bool NoSplit = n_block_min == 0 && n_block_max == cute::ceil_div(seqlen_k, kBlockN);
+        const int n_block_max = batch_id == end_idx ? hute::ceil_div(end_seqlen, kBlockN) : hute::ceil_div(seqlen_k, kBlockN);
+        const bool NoSplit = n_block_min == 0 && n_block_max == hute::ceil_div(seqlen_k, kBlockN);
         if (batch_id > begin_idx) {
             __syncthreads();  // Barrier between two tiles.
         }
@@ -2758,7 +2753,7 @@ flash_fwd_splitkv_mla_kernel_fp8_tp4(const Flash_fwd_mla_params params) {
 template<typename Kernel_traits, typename SharedStorage>
 void run_flash_splitkv_fwd_mla_fp8_tp1(Flash_fwd_mla_params &params, cudaStream_t stream) {
     FLASH_ASSERT(params.page_block_size == Kernel_traits::kBlockN);
-    const int num_m_block = cute::ceil_div(params.seqlen_q, Kernel_traits::kBlockM);
+    const int num_m_block = hute::ceil_div(params.seqlen_q, Kernel_traits::kBlockM);
     // const static bool enable_asm = get_env_("FLASH_MLA_ENABLE_ASM");
 
     if (1) {
@@ -2832,7 +2827,7 @@ void run_flash_splitkv_fwd_mla_fp8_tp1(Flash_fwd_mla_params &params, cudaStream_
 template<typename Kernel_traits, typename SharedStorage>
 void run_flash_splitkv_fwd_mla_fp8_tp4(Flash_fwd_mla_params &params, cudaStream_t stream) {
     FLASH_ASSERT(params.page_block_size == Kernel_traits::kBlockN);
-    const int num_m_block = cute::ceil_div(params.seqlen_q, Kernel_traits::kBlockM);
+    const int num_m_block = hute::ceil_div(params.seqlen_q, Kernel_traits::kBlockM);
     BOOL_SWITCH(params.is_causal, Is_causal, [&] {
         auto kernel = &flash::flash_fwd_splitkv_mla_kernel_fp8_tp4<Kernel_traits, Is_causal, SharedStorage>;
         constexpr size_t smem_size = 65536;
@@ -2853,7 +2848,7 @@ void run_flash_splitkv_fwd_mla_fp8_tp4(Flash_fwd_mla_params &params, cudaStream_
 template<typename Kernel_traits, typename SharedStorage>
 void run_flash_splitkv_fwd_mla_fp8(Flash_fwd_mla_params &params, cudaStream_t stream) {
     FLASH_ASSERT(params.page_block_size == Kernel_traits::kBlockN);
-    const int num_m_block = cute::ceil_div(params.seqlen_q, Kernel_traits::kBlockM);
+    const int num_m_block = hute::ceil_div(params.seqlen_q, Kernel_traits::kBlockM);
     const static bool enable_asm = get_env_("FLASH_MLA_ENABLE_ASM");
     if (Kernel_traits::IS_WITH_CAT || !enable_asm) {
         BOOL_SWITCH(params.is_causal, Is_causal, [&] {
@@ -2930,17 +2925,17 @@ void run_mha_fwd_splitkv_mla_fp8(Flash_fwd_mla_params &params,  cudaStream_t str
     FLASH_ASSERT(params.k_ptr == params.v_ptr);  // Shared_KV
     // printf(" params.ngroups = %d \n", params.ngroups);
     if (is_with_cat) {
-        if constexpr (std::is_same_v<T, cutlass::float_e4m3_t>) {
+        if constexpr (std::is_same_v<T, hytlass::float_e4m3_t>) {
             using Kernel_traits = Flash_fwd_kernel_traits_mla_qkvfp8<576, 16, 64, 4, T, To, 512, true>;
             run_flash_splitkv_fwd_mla_fp8<Kernel_traits, flash::SharedStorageMLAFloat8<Kernel_traits>>(params, stream);
         } else {
             // q为bf16
-            using Kernel_traits = Flash_fwd_kernel_traits_mla_qkvfp8<576, 16, 64, 4, cutlass::float_e4m3_t, To, 512, true, T>;
+            using Kernel_traits = Flash_fwd_kernel_traits_mla_qkvfp8<576, 16, 64, 4, hytlass::float_e4m3_t, To, 512, true, T>;
             run_flash_splitkv_fwd_mla_fp8<Kernel_traits, flash::SharedStorageMLAFloat8<Kernel_traits>>(params, stream);
         }
         return;
     }
-    if constexpr (std::is_same_v<T, cutlass::float_e4m3_t>) {
+    if constexpr (std::is_same_v<T, hytlass::float_e4m3_t>) {
         if (params.seqlen_q >= 32) {
             using Kernel_traits = Flash_fwd_kernel_traits_mla_qkvfp8_TP1<576, 64, 64, 8, T, To, 512>;
             run_flash_splitkv_fwd_mla_fp8_tp1<Kernel_traits, flash::SharedStorageMLAFloat8_TP1<Kernel_traits>>(params, stream);

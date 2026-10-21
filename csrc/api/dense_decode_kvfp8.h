@@ -1,7 +1,7 @@
 #pragma once
 
-#include <cutlass/half.h>
-#include <cutlass/fast_math.h>
+#include <hytlass/half.h>
+#include <hytlass/fast_math.h>
 
 #include "common.h"
 #include "params.h"
@@ -88,7 +88,7 @@ dense_attn_decode_kvfp8_interface(
     const int num_heads = num_heads_k;
     q = q.view({batch_size, seqlen_q_ori, num_heads_k, num_q_heads_per_hk, head_size_k}).transpose(2, 3)
         .reshape({batch_size, q_seq_per_hk, num_heads, head_size_k});
-    int num_sm_parts = std::max(arch.num_sms / num_heads_k / cutlass::ceil_div(seqlen_q_ori*num_heads_q/num_heads_k, 16) * 2, 1);
+    int num_sm_parts = std::max(arch.num_sms / num_heads_k / hytlass::ceil_div(seqlen_q_ori*num_heads_q/num_heads_k, 16) * 2, 1);
 
     KU_CHECK_SHAPE(q, batch_size, q_seq_per_hk, num_heads, head_size_k);
     KU_CHECK_SHAPE(kcache, num_blocks, page_block_size, num_heads_k, head_size_k);
@@ -188,7 +188,7 @@ dense_attn_decode_kvfp8_interface(
     params.stream = at::cuda::getCurrentCUDAStream().stream();
 
     if (q_dtype == torch::kBFloat16) {
-        gfx93::run_flash_splitkv_mla_kvfp8_kernel<cutlass::bfloat16_t>(params);
+        gfx93::run_flash_splitkv_mla_kvfp8_kernel<hytlass::bfloat16_t>(params);
     } else {
         TORCH_CHECK(false, "Unsupported dtype for dense MLA on SM90");
     }
@@ -215,7 +215,7 @@ dense_attn_decode_kvfp8_interface(
         at::cuda::getCurrentCUDAStream().stream()
     };
 
-    gfx9::decode::run_flash_mla_combine_kernel<cutlass::bfloat16_t>(combine_params);
+    gfx9::decode::run_flash_mla_combine_kernel<hytlass::bfloat16_t>(combine_params);
 
 
     out = out.view({batch_size, num_heads_k, seqlen_q_ori, num_q_heads_per_hk, head_size_v}).transpose(1, 2)

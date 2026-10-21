@@ -1,6 +1,6 @@
 #pragma once
 
-#include <cute/tensor.hpp>
+#include <hute/tensor.hpp>
 
 #include "kerutils/device/common.h"
 

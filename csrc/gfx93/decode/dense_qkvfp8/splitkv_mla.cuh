@@ -1,7 +1,8 @@
+#include "hytlass_ext.h"
 // Copyright (c) 2026 Hygon Information Technology Co., Ltd.
 // SPDX-License-Identifier: MIT
 
-#include <cutlass/cutlass.h>
+#include <hytlass/hytlass.h>
 
 #include "utils.h"
 
@@ -9,7 +10,7 @@
 #include "config.h"
 #include "traits.h"
 #include "softmax.h"
-using namespace cute;
+using namespace hute;
 
 namespace gfx93 {
 
@@ -71,17 +72,17 @@ compute_attn_1rowblock_splitkv_mla_qkvfp8_gfx938(const DenseAttnDecodeParams_fp8
 
     // asm volatile("s_waitcnt vmcnt(0) \n\t s_barrier\n\t");
     asm volatile("s_waitcnt vmcnt(2) \n\t s_barrier\n\t");
-    cute::copy(smem_tiled_copy_Q, tSsQ(_, _, 0), tSrQ_copy_view(_, _, 0));
-    cute::copy(smem_tiled_copy_Q, tSsQ(_, _, 1), tSrQ_copy_view(_, _, 1));
-    cute::copy(smem_tiled_copy_Q, tSsQ(_, _, 2), tSrQ_copy_view(_, _, 2));
-    cute::copy(smem_tiled_copy_Q, tSsQ(_, _, 3), tSrQ_copy_view(_, _, 3));
+    hute::copy(smem_tiled_copy_Q, tSsQ(_, _, 0), tSrQ_copy_view(_, _, 0));
+    hute::copy(smem_tiled_copy_Q, tSsQ(_, _, 1), tSrQ_copy_view(_, _, 1));
+    hute::copy(smem_tiled_copy_Q, tSsQ(_, _, 2), tSrQ_copy_view(_, _, 2));
+    hute::copy(smem_tiled_copy_Q, tSsQ(_, _, 3), tSrQ_copy_view(_, _, 3));
     asm volatile("s_waitcnt vmcnt(1) \n\t s_barrier\n\t");
-    cute::copy(smem_tiled_copy_Q, tSsQ(_, _, 4), tSrQ_copy_view(_, _, 4));
-    cute::copy(smem_tiled_copy_Q, tSsQ(_, _, 5), tSrQ_copy_view(_, _, 5));
-    cute::copy(smem_tiled_copy_Q, tSsQ(_, _, 6), tSrQ_copy_view(_, _, 6));
-    cute::copy(smem_tiled_copy_Q, tSsQ(_, _, 7), tSrQ_copy_view(_, _, 7));                                                                
+    hute::copy(smem_tiled_copy_Q, tSsQ(_, _, 4), tSrQ_copy_view(_, _, 4));
+    hute::copy(smem_tiled_copy_Q, tSsQ(_, _, 5), tSrQ_copy_view(_, _, 5));
+    hute::copy(smem_tiled_copy_Q, tSsQ(_, _, 6), tSrQ_copy_view(_, _, 6));
+    hute::copy(smem_tiled_copy_Q, tSsQ(_, _, 7), tSrQ_copy_view(_, _, 7));
     asm volatile("s_waitcnt vmcnt(0) \n\t s_barrier\n\t");
-    cute::copy(smem_tiled_copy_Q, tSsQ(_, _, 8), tSrQ_copy_view(_, _, 8));
+    hute::copy(smem_tiled_copy_Q, tSsQ(_, _, 8), tSrQ_copy_view(_, _, 8));
     __syncthreads();
 
     auto smem_tiled_copy_K = make_tiled_copy_B(Copy_Atom<DefaultCopy, Element>{}, tiled_mma);
@@ -89,11 +90,11 @@ compute_attn_1rowblock_splitkv_mla_qkvfp8_gfx938(const DenseAttnDecodeParams_fp8
     Tensor tSsK = smem_thr_copy_K.partition_S(sK);
     Tensor tSrK  = thr_mma.partition_fragment_B(gK);
 
-    auto smem_tiled_copy_V = make_tiled_copy_B(Copy_Atom<GFX928_DS_READ_DS_M32x32_B8, Element>{}, tiled_mma_o);
+    auto smem_tiled_copy_V = make_tiled_copy_B(Copy_Atom<flash_mla::hytlass_ext::GFX928_DS_READ_DS_M32x32_B8, Element>{}, tiled_mma_o);
     auto smem_thr_copy_V = smem_tiled_copy_V.get_thread_slice(tidx);
     Tensor tOsVt = smem_thr_copy_V.partition_S(sVt);
     Tensor tOrVt  = thr_mma_o.partition_fragment_B(sVtNoSwizzle);  
-    constexpr int n_masking_steps = !T::Is_causal ? 1 : cute::ceil_div(kBlockM, kBlockN) + 1;    
+    constexpr int n_masking_steps = !T::Is_causal ? 1 : hute::ceil_div(kBlockM, kBlockN) + 1;
     const int *block_table = params.block_table + bidb * params.block_table_batch_stride;
     int n_block = n_block_max - 1;
     constexpr static int k1_loops = size<2>(tOrVt);
@@ -146,37 +147,37 @@ compute_attn_1rowblock_splitkv_mla_qkvfp8_gfx938(const DenseAttnDecodeParams_fp8
         flash::buffer_load_copy_qkvfp8<false, true, true, true>(gK, buffer[0], 8, params.k_row_stride, offset_k, seqlen_k - n_block * kBlockN);
         
         asm volatile("s_waitcnt vmcnt(8) \n\t s_barrier\n\t");
-        cute::copy(smem_tiled_copy_K, tSsK(_, _, 0), tSrK_copy_view(_, _, 0));
-        cute::gemm(tiled_mma, tSrQ(_, _, 0), tSrK(_, _, 0), acc_s);
+        hute::copy(smem_tiled_copy_K, tSsK(_, _, 0), tSrK_copy_view(_, _, 0));
+        hute::gemm(tiled_mma, tSrQ(_, _, 0), tSrK(_, _, 0), acc_s);
         asm volatile("s_waitcnt vmcnt(7) \n\t s_barrier\n\t");
-        cute::copy(smem_tiled_copy_K, tSsK(_, _, 1), tSrK_copy_view(_, _, 1));
-        cute::gemm(tiled_mma, tSrQ(_, _, 1), tSrK(_, _, 1), acc_s);
+        hute::copy(smem_tiled_copy_K, tSsK(_, _, 1), tSrK_copy_view(_, _, 1));
+        hute::gemm(tiled_mma, tSrQ(_, _, 1), tSrK(_, _, 1), acc_s);
         asm volatile("s_waitcnt vmcnt(6) \n\t s_barrier\n\t");
-        cute::copy(smem_tiled_copy_K, tSsK(_, _, 2), tSrK_copy_view(_, _, 2));
-        cute::gemm(tiled_mma, tSrQ(_, _, 2), tSrK(_, _, 2), acc_s);
+        hute::copy(smem_tiled_copy_K, tSsK(_, _, 2), tSrK_copy_view(_, _, 2));
+        hute::gemm(tiled_mma, tSrQ(_, _, 2), tSrK(_, _, 2), acc_s);
         asm volatile("s_waitcnt vmcnt(5) \n\t s_barrier\n\t");
-        cute::copy(smem_tiled_copy_K, tSsK(_, _, 3), tSrK_copy_view(_, _, 3));
-        cute::gemm(tiled_mma, tSrQ(_, _, 3), tSrK(_, _, 3), acc_s);
+        hute::copy(smem_tiled_copy_K, tSsK(_, _, 3), tSrK_copy_view(_, _, 3));
+        hute::gemm(tiled_mma, tSrQ(_, _, 3), tSrK(_, _, 3), acc_s);
         asm volatile("s_waitcnt vmcnt(4) \n\t s_barrier\n\t");
-        cute::copy(smem_tiled_copy_K, tSsK(_, _, 4), tSrK_copy_view(_, _, 4));
-        cute::gemm(tiled_mma, tSrQ(_, _, 4), tSrK(_, _, 4), acc_s);
+        hute::copy(smem_tiled_copy_K, tSsK(_, _, 4), tSrK_copy_view(_, _, 4));
+        hute::gemm(tiled_mma, tSrQ(_, _, 4), tSrK(_, _, 4), acc_s);
         asm volatile("s_waitcnt vmcnt(3) \n\t s_barrier\n\t");
-        cute::copy(smem_tiled_copy_K, tSsK(_, _, 5), tSrK_copy_view(_, _, 5));
-        cute::gemm(tiled_mma, tSrQ(_, _, 5), tSrK(_, _, 5), acc_s);
+        hute::copy(smem_tiled_copy_K, tSsK(_, _, 5), tSrK_copy_view(_, _, 5));
+        hute::gemm(tiled_mma, tSrQ(_, _, 5), tSrK(_, _, 5), acc_s);
         asm volatile("s_waitcnt vmcnt(2) \n\t s_barrier\n\t");
-        cute::copy(smem_tiled_copy_K, tSsK(_, _, 6), tSrK_copy_view(_, _, 6));
-        cute::gemm(tiled_mma, tSrQ(_, _, 6), tSrK(_, _, 6), acc_s);
+        hute::copy(smem_tiled_copy_K, tSsK(_, _, 6), tSrK_copy_view(_, _, 6));
+        hute::gemm(tiled_mma, tSrQ(_, _, 6), tSrK(_, _, 6), acc_s);
         asm volatile("s_waitcnt vmcnt(1) \n\t s_barrier\n\t");
-        cute::copy(smem_tiled_copy_K, tSsK(_, _, 7), tSrK_copy_view(_, _, 7));
+        hute::copy(smem_tiled_copy_K, tSsK(_, _, 7), tSrK_copy_view(_, _, 7));
         Fp8_storage v3_0, v3_1;
         flash::__ds_read_m32x32_row_col_rrow<3, 0, 3>(tOsVt, v3_0.data);
         flash::__ds_read_m32x32_row_col_rrow<3, 1, 3>(tOsVt, v3_1.data);
 
-        cute::gemm(tiled_mma, tSrQ(_, _, 7), tSrK(_, _, 7), acc_s);
+        hute::gemm(tiled_mma, tSrQ(_, _, 7), tSrK(_, _, 7), acc_s);
         asm volatile("s_waitcnt vmcnt(0) \n\t");
         flash::buffer_to_tensor(buffer[0], tSrK, 8);
         
-        cute::gemm(tiled_mma, tSrQ(_, _, 8), tSrK(_, _, 8), acc_s);
+        hute::gemm(tiled_mma, tSrQ(_, _, 8), tSrK(_, _, 8), acc_s);
         asm volatile("s_waitcnt lgkmcnt(0) \n\t s_barrier\n\t");
         #else
         #endif
@@ -274,7 +275,7 @@ compute_attn_1rowblock_splitkv_mla_qkvfp8_gfx938(const DenseAttnDecodeParams_fp8
 
     if (NoSplit)
     {
-        using ElementO = cutlass::bfloat16_t;
+        using ElementO = hytlass::bfloat16_t;
         const index_t row_offset_o = bidb * params.o_batch_stride + m_block * kBlockM * params.o_row_stride + bidh * params.o_head_stride;
         const index_t row_offset_lse = (bidb * params.h_k + bidh) * params.q_seq_per_hk  + m_block * kBlockM;
 
@@ -394,7 +395,7 @@ flash_fwd_splitkv_mla_qkvfp8_kernel(const DenseAttnDecodeParams_fp8 params) {
         const int n_split_idx = batch_idx == sched_meta.begin_req_idx ? sched_meta.begin_split_idx : 0;
         int seqlen_k = __ldg(params.seqlens_k_ptr + batch_idx);
         const int start_block_idx = batch_idx == sched_meta.begin_req_idx ? sched_meta.begin_block_idx : 0;
-        int end_block_idx = batch_idx == sched_meta.end_req_idx ? sched_meta.end_block_idx : cute::ceil_div(seqlen_k, kBlockN);
+        int end_block_idx = batch_idx == sched_meta.end_req_idx ? sched_meta.end_block_idx : hute::ceil_div(seqlen_k, kBlockN);
         const bool is_no_split = batch_idx == sched_meta.begin_req_idx ? !sched_meta.is_first_req_splitted : (batch_idx == sched_meta.end_req_idx ? !sched_meta.is_last_req_splitted : true);
         
         if (batch_idx > sched_meta.begin_req_idx) {
@@ -423,7 +424,7 @@ void run_flash_splitkv_mla_qkvfp8_kernel(DenseAttnDecodeParams_fp8 &params) {
 // #if defined(__gfx938__)
     BOOL_SWITCH(params.is_causal, Is_causal, [&] {
         using T = Traits<InputT, Is_causal>;
-        const int num_m_block = cute::ceil_div(params.q_seq_per_hk, T::BLOCK_SIZE_M);
+        const int num_m_block = hute::ceil_div(params.q_seq_per_hk, T::BLOCK_SIZE_M);
         auto mla_kernel = &flash_fwd_splitkv_mla_qkvfp8_kernel<T>;
         mla_kernel<<<dim3(num_m_block, params.h_k, params.num_sm_parts), T::NUM_THREADS, smem_size, params.stream>>>(params);
     });

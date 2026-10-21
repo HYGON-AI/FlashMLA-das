@@ -9,7 +9,7 @@
 #include <type_traits>
 #include <utility>
 #include <vector>
-#include <cutlass/bfloat16.h>
+#include <hytlass/bfloat16.h>
 #include <torch/extension.h>
 #include <ATen/cuda/CUDAContext.h>
 #include <c10/cuda/CUDAGuard.h>
@@ -19,8 +19,8 @@ static constexpr float LOG_2_E = 1.44269504f;
 
 // Instantiation for tensor.data_ptr<cutlass::bfloat16_t>()
 template<>
-inline cutlass::bfloat16_t* at::TensorBase::data_ptr<cutlass::bfloat16_t>() const {
-    return reinterpret_cast<cutlass::bfloat16_t*>(this->data_ptr());
+inline hytlass::bfloat16_t* at::TensorBase::data_ptr<hytlass::bfloat16_t>() const {
+    return reinterpret_cast<hytlass::bfloat16_t*>(this->data_ptr());
 }
 
 // A struct that holds the architecture information of the current GPU.

@@ -3,11 +3,11 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <cstdint>
-#include <cutlass/array.h>
-#include <cutlass/cutlass.h>
-#include <cutlass/numeric_conversion.h>
-#include <cutlass/numeric_types.h>
-#include <cute/tensor.hpp>
+#include <hytlass/array.h>
+#include <hytlass/hytlass.h>
+#include <hytlass/numeric_conversion.h>
+#include <hytlass/numeric_types.h>
+#include <hute/tensor.hpp>
 #include "defines.h"
 #include "params.h"
 #define CHECK_CUDA(call)                                                                                  \
@@ -103,7 +103,7 @@ struct RingBufferState {
 
 namespace flash {
 
-using namespace cute;
+using namespace hute;
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 
@@ -165,11 +165,11 @@ template <bool Is_even_MN=true, bool Is_even_K=true, bool Clear_OOB_MN=false, bo
 __forceinline__ __device__ void copy(TiledCopy tiled_copy, Tensor<Engine0, Layout0> const &S,
                             Tensor<Engine1, Layout1> &D, Tensor<Engine2, Layout2> const &identity_MN,
                             Tensor<Engine3, Layout3> const &predicate_K, const int max_MN=0, int begin_k=0) {
-    CUTE_STATIC_ASSERT_V(rank(S) == Int<3>{});
-    CUTE_STATIC_ASSERT_V(rank(D) == Int<3>{});
-    CUTE_STATIC_ASSERT_V(size<0>(S) == size<0>(D));                     // MMA
-    CUTE_STATIC_ASSERT_V(size<1>(S) == size<1>(D));                     // MMA_M
-    CUTE_STATIC_ASSERT_V(size<2>(S) == size<2>(D));                     // MMA_K
+    HUTE_STATIC_ASSERT_V(rank(S) == Int<3>{});
+    HUTE_STATIC_ASSERT_V(rank(D) == Int<3>{});
+    HUTE_STATIC_ASSERT_V(size<0>(S) == size<0>(D));                     // MMA
+    HUTE_STATIC_ASSERT_V(size<1>(S) == size<1>(D));                     // MMA_M
+    HUTE_STATIC_ASSERT_V(size<2>(S) == size<2>(D));                     // MMA_K
     // There's no case where !Clear_OOB_K && Clear_OOB_MN
     static_assert(!(Clear_OOB_MN && !Clear_OOB_K));
     #pragma unroll
@@ -178,13 +178,13 @@ __forceinline__ __device__ void copy(TiledCopy tiled_copy, Tensor<Engine0, Layou
             #pragma unroll
             for (int k = 0; k < size<2>(S); ++k) {
                 if (Is_even_K || predicate_K(k)) {
-                    cute::copy(tiled_copy, S(_, m, k), D(_, m, k));
+                    hute::copy(tiled_copy, S(_, m, k), D(_, m, k));
                 } else if (Clear_OOB_K) {
-                    cute::clear(D(_, m, k));
+                    hute::clear(D(_, m, k));
                 }
             }
         } else if (Clear_OOB_MN) {
-            cute::clear(D(_, m, _));
+            hute::clear(D(_, m, _));
         }
     }
 }
@@ -314,38 +314,38 @@ __forceinline__ __device__ auto convert_type(Tensor<Engine, Layout> const &tenso
     
     constexpr int numel = decltype(size(tensor))::value;
     Tensor tensor_To_type = make_tensor<To_type>(layout(tensor));
-    cutlass::Array<To_type, numel> *result_ptr = reinterpret_cast<cutlass::Array<To_type, numel> *>(tensor_To_type.data());
+    hytlass::Array<To_type, numel> *result_ptr = reinterpret_cast<hytlass::Array<To_type, numel> *>(tensor_To_type.data());
     #if defined(__gfx938__)
         {
-            if constexpr (std::is_same_v<To_type, cutlass::bfloat16_t>) {
-                cutlass::NumericArrayConverter<To_type, From_type, numel, cutlass::FloatRoundStyle::round_to_nearest> convert_op;
-                *result_ptr = convert_op(*reinterpret_cast<const cutlass::Array<From_type, numel> *>(tensor.data()));
+            if constexpr (std::is_same_v<To_type, hytlass::bfloat16_t>) {
+                hytlass::NumericArrayConverter<To_type, From_type, numel, hytlass::FloatRoundStyle::round_to_nearest> convert_op;
+                *result_ptr = convert_op(*reinterpret_cast<const hytlass::Array<From_type, numel> *>(tensor.data()));
             } 
-            else if constexpr (std::is_same_v<To_type, cutlass::float_e4m3_t>) {
-                cutlass::NumericArrayConverter<To_type, From_type, numel,cutlass::FloatRoundStyle::round_to_nearest> convert_op;
-                *result_ptr = convert_op(*reinterpret_cast<const cutlass::Array<From_type, numel> *>(tensor.data()));
+            else if constexpr (std::is_same_v<To_type, hytlass::float_e4m3_t>) {
+                hytlass::NumericArrayConverter<To_type, From_type, numel,hytlass::FloatRoundStyle::round_to_nearest> convert_op;
+                *result_ptr = convert_op(*reinterpret_cast<const hytlass::Array<From_type, numel> *>(tensor.data()));
             }
             else {
-                cutlass::NumericArrayConverter<To_type, From_type, numel> convert_op;
-                *result_ptr = convert_op(*reinterpret_cast<const cutlass::Array<From_type, numel> *>(tensor.data()));
+                hytlass::NumericArrayConverter<To_type, From_type, numel> convert_op;
+                *result_ptr = convert_op(*reinterpret_cast<const hytlass::Array<From_type, numel> *>(tensor.data()));
             }
             return tensor_To_type;
         }
     #else
         {
-            if constexpr (std::is_same_v<To_type, cutlass::bfloat16_t>) {
+            if constexpr (std::is_same_v<To_type, hytlass::bfloat16_t>) {
                 #ifndef FLASH_MLA_BF16_TYPE
                 #define FLASH_MLA_BF16_TYPE 0
                 #endif
                 #if FLASH_MLA_BF16_TYPE == 0
-                cutlass::NumericArrayConverter<To_type, From_type, numel, cutlass::FloatRoundStyle::round_toward_zero> convert_op;
+                hytlass::NumericArrayConverter<To_type, From_type, numel, hytlass::FloatRoundStyle::round_toward_zero> convert_op;
                 #else
-                cutlass::NumericArrayConverter<To_type, From_type, numel, cutlass::FloatRoundStyle::round_half_ulp_truncate> convert_op;
+                hytlass::NumericArrayConverter<To_type, From_type, numel, hytlass::FloatRoundStyle::round_half_ulp_truncate> convert_op;
                 #endif
-                *result_ptr = convert_op(*reinterpret_cast<const cutlass::Array<From_type, numel> *>(tensor.data()));
+                *result_ptr = convert_op(*reinterpret_cast<const hytlass::Array<From_type, numel> *>(tensor.data()));
             } else {
-                cutlass::NumericArrayConverter<To_type, From_type, numel> convert_op;
-                *result_ptr = convert_op(*reinterpret_cast<const cutlass::Array<From_type, numel> *>(tensor.data()));
+                hytlass::NumericArrayConverter<To_type, From_type, numel> convert_op;
+                *result_ptr = convert_op(*reinterpret_cast<const hytlass::Array<From_type, numel> *>(tensor.data()));
             }
             return tensor_To_type;
         }
@@ -428,7 +428,7 @@ template <
         bool Is_load_Q=false,
         class SrcEngine, class SrcLayout,
         class DstEngine, class DstLayout>
-CUTE_HOST_DEVICE
+HUTE_HOST_DEVICE
 void
 lds_direct_copy(
      Tensor<SrcEngine, SrcLayout> const& src,
@@ -562,7 +562,7 @@ template <bool Is_even_K=true,
           class DstEngine, class DstLayout
         //   class IdxEngine, class IdxLayout
           >
-CUTE_HOST_DEVICE
+HUTE_HOST_DEVICE
 void
 lds_direct_copy_for_prefill_sparse_mla(
      Tensor<SrcEngine, SrcLayout> const& src,
@@ -626,7 +626,7 @@ lds_direct_copy_for_prefill_sparse_mla(
 }
 template<
 class SrcEngine, class SrcLayout>
-CUTE_HOST_DEVICE
+HUTE_HOST_DEVICE
 void
 asm_ds_write(const uint128_t & src,  Tensor<SrcEngine, SrcLayout> & dst, int k_idx)
 {
@@ -642,7 +642,7 @@ template <
         bool use_asm = false,
         class SrcEngine, class SrcLayout
           >
-CUTE_HOST_DEVICE
+HUTE_HOST_DEVICE
 void
 buffer_load_copy(
      Tensor<SrcEngine, SrcLayout> const& src,
@@ -738,7 +738,7 @@ buffer_load_copy(
 
 template<
 class SrcEngine, class SrcLayout>
-CUTE_HOST_DEVICE
+HUTE_HOST_DEVICE
 void
 buffer_to_tensor(const uint128_t & src,  Tensor<SrcEngine, SrcLayout> & dst, int k_idx)
 {
@@ -809,7 +809,7 @@ template <
         bool Is_load_Q=false,
         class SrcEngine, class SrcLayout,
         class DstEngine, class DstLayout>
-CUTE_HOST_DEVICE
+HUTE_HOST_DEVICE
 void
 lds_direct_copy_qkvfp8(
      Tensor<SrcEngine, SrcLayout> const& src,
@@ -945,7 +945,7 @@ template <
         bool use_asm = false,
         class SrcEngine, class SrcLayout
           >
-CUTE_HOST_DEVICE
+HUTE_HOST_DEVICE
 void
 buffer_load_copy_qkvfp8(
      Tensor<SrcEngine, SrcLayout> const& src,
@@ -1023,7 +1023,7 @@ template <
         bool Is_load_Q=false,
         class SrcEngine, class SrcLayout,
         class DstEngine, class DstLayout>
-CUTE_HOST_DEVICE
+HUTE_HOST_DEVICE
 void
 lds_direct_copy_fp8(
      Tensor<SrcEngine, SrcLayout> const& src,
@@ -1097,7 +1097,7 @@ lds_direct_copy_fp8(
         #endif 
     }
 }
-__forceinline__ __device__ cutlass::bfloat16_t fp8e4m3_to_bf16(const fp8& input) {
+__forceinline__ __device__ hytlass::bfloat16_t fp8e4m3_to_bf16(const fp8& input) {
     const uint16_t w = (uint16_t)input << 8;
     const uint16_t sign = w & UINT16_C(0x8000);
     const uint16_t nonsign = w & UINT16_C(0x7FFF);
@@ -1109,7 +1109,7 @@ __forceinline__ __device__ cutlass::bfloat16_t fp8e4m3_to_bf16(const fp8& input)
     // {
     //     printf(" input = %x  result = %x\n", input, result);
     // }
-    return cutlass::bfloat16_t::bitcast(result);
+    return hytlass::bfloat16_t::bitcast(result);
 }
 __forceinline__ __device__ float fp8e5m2_to_fp32(const fp8& input) {
   union uf16{
@@ -1127,7 +1127,7 @@ __forceinline__ __device__ float fp8e5m2_to_fp32(const fp8& input) {
 //   return u32.as_bits>>16;
   return  u32.as_value;
 }
-__forceinline__ __device__ cutlass::half_t fp8e5m2_to_fp16(const fp8& input) {
+__forceinline__ __device__ hytlass::half_t fp8e5m2_to_fp16(const fp8& input) {
   union uf16{
     uint16_t as_bits;
     __fp16 as_value;
@@ -1143,11 +1143,11 @@ __forceinline__ __device__ cutlass::half_t fp8e5m2_to_fp16(const fp8& input) {
 //   return u32.as_bits>>16;
 
   uint16_t output = (uint16_t)(input << 8);
-  return cutlass::half_t::bitcast(output);
+  return hytlass::half_t::bitcast(output);
 }
 
 template <int N>
-CUTE_HOST_DEVICE
+HUTE_HOST_DEVICE
 void wait_vmcnt() {
     __builtin_amdgcn_sched_barrier(0);
     asm volatile("s_waitcnt vmcnt(%0) ;\n\t"
@@ -1196,7 +1196,7 @@ __forceinline__ __device__ void gemm_rs_fp8(Tensor0 &acc, Tensor1 &tCrA, Tensor2
             auto fp8x2_low = *reinterpret_cast<__hip_fp8x2_storage_t*>(&data[k_idx].fp8_array[j / 4]);
             auto fp8x2_high = *(reinterpret_cast<__hip_fp8x2_storage_t*>(&(data[k_idx].fp8_array[j / 4])) + 1);
 
-            if constexpr (KV_DTYPE == Fp8KVCacheDataType::kFp8E4M3 && std::is_same_v<Element, cutlass::bfloat16_t>) {
+            if constexpr (KV_DTYPE == Fp8KVCacheDataType::kFp8E4M3 && std::is_same_v<Element, hytlass::bfloat16_t>) {
                 auto f1 = (static_cast<__hip_fp8_storage_t>((fp8x2_low << 8) >> 8));
                 auto f2 = (static_cast<__hip_fp8_storage_t>((fp8x2_low >> 8)));
                 auto f3 = (static_cast<__hip_fp8_storage_t>((fp8x2_high << 8) >> 8));
@@ -1209,7 +1209,7 @@ __forceinline__ __device__ void gemm_rs_fp8(Tensor0 &acc, Tensor1 &tCrA, Tensor2
                 tCrB(j + 1, 0, k_idx) = rst1;
                 tCrB(j + 2, 0, k_idx) = rst2;
                 tCrB(j + 3, 0, k_idx) = rst3;
-            } else if constexpr (KV_DTYPE == Fp8KVCacheDataType::kFp8E5M2 && std::is_same_v<Element, cutlass::bfloat16_t>) {
+            } else if constexpr (KV_DTYPE == Fp8KVCacheDataType::kFp8E5M2 && std::is_same_v<Element, hytlass::bfloat16_t>) {
                 auto f1 = fp8e5m2_to_fp32(static_cast<__hip_fp8_storage_t>((fp8x2_low << 8) >> 8));
                 auto f2 = fp8e5m2_to_fp32(static_cast<__hip_fp8_storage_t>((fp8x2_low >> 8)));
                 auto f3 = fp8e5m2_to_fp32(static_cast<__hip_fp8_storage_t>((fp8x2_high << 8) >> 8));
@@ -1224,7 +1224,7 @@ __forceinline__ __device__ void gemm_rs_fp8(Tensor0 &acc, Tensor1 &tCrA, Tensor2
                 // {
                 //     printf("threadIdx.x = %d %.2f %.2f %.2f %.2f \n", threadIdx.x, f1, f2, f3, f4);
                 // }
-                cutlass::NumericConverter<Element, float, cutlass::FloatRoundStyle::round_toward_zero> convert_;
+                hytlass::NumericConverter<Element, float, hytlass::FloatRoundStyle::round_toward_zero> convert_;
                 auto rst0 = convert_(f1);
                 auto rst1 = convert_(f2);
                 auto rst2 = convert_(f3);
@@ -1233,7 +1233,7 @@ __forceinline__ __device__ void gemm_rs_fp8(Tensor0 &acc, Tensor1 &tCrA, Tensor2
                 tCrB(j + 1, 0, k_idx) = rst1;
                 tCrB(j + 2, 0, k_idx) = rst2;
                 tCrB(j + 3, 0, k_idx) = rst3;
-            } else if constexpr (KV_DTYPE == Fp8KVCacheDataType::kFp8E5M2 && std::is_same_v<Element, cutlass::half_t>) {
+            } else if constexpr (KV_DTYPE == Fp8KVCacheDataType::kFp8E5M2 && std::is_same_v<Element, hytlass::half_t>) {
                 // auto f1 = fp8e5m2_to_fp16(static_cast<__hip_fp8_storage_t>((fp8x2_low << 8) >> 8));
                 // auto f2 = fp8e5m2_to_fp16(static_cast<__hip_fp8_storage_t>((fp8x2_low >> 8)));
                 // auto f3 = fp8e5m2_to_fp16(static_cast<__hip_fp8_storage_t>((fp8x2_high << 8) >> 8));
@@ -1252,13 +1252,13 @@ __forceinline__ __device__ void gemm_rs_fp8(Tensor0 &acc, Tensor1 &tCrA, Tensor2
                 Fp8_data_union first_fp8, last_fp8;
                 first_fp8.fp8x4 = ((fp8_data & 0xff00ff00));
                 last_fp8.fp8x4 = ((fp8_data & 0x00ff00ff) << 8);
-                tCrB(j, 0, k_idx) = cutlass::half_t::bitcast(last_fp8.fp16[0]);
-                tCrB(j + 1, 0, k_idx) = cutlass::half_t::bitcast(first_fp8.fp16[0]);;
-                tCrB(j + 2, 0, k_idx) = cutlass::half_t::bitcast(last_fp8.fp16[1]);;
-                tCrB(j + 3, 0, k_idx) = cutlass::half_t::bitcast(first_fp8.fp16[1]);;;
+                tCrB(j, 0, k_idx) = hytlass::half_t::bitcast(last_fp8.fp16[0]);
+                tCrB(j + 1, 0, k_idx) = hytlass::half_t::bitcast(first_fp8.fp16[0]);;
+                tCrB(j + 2, 0, k_idx) = hytlass::half_t::bitcast(last_fp8.fp16[1]);;
+                tCrB(j + 3, 0, k_idx) = hytlass::half_t::bitcast(first_fp8.fp16[1]);;;
 
             }
-            else if constexpr (KV_DTYPE == Fp8KVCacheDataType::kFp8E4M3 && std::is_same_v<Element, cutlass::half_t>) {
+            else if constexpr (KV_DTYPE == Fp8KVCacheDataType::kFp8E4M3 && std::is_same_v<Element, hytlass::half_t>) {
                 auto f1 = fp8e4m3_to_fp32(static_cast<__hip_fp8_storage_t>((fp8x2_low << 8) >> 8));
                 auto f2 = fp8e4m3_to_fp32(static_cast<__hip_fp8_storage_t>((fp8x2_low >> 8)));
                 auto f3 = fp8e4m3_to_fp32(static_cast<__hip_fp8_storage_t>((fp8x2_high << 8) >> 8));
@@ -1271,15 +1271,15 @@ __forceinline__ __device__ void gemm_rs_fp8(Tensor0 &acc, Tensor1 &tCrA, Tensor2
                 }
                 auto rst0 = __builtin_amdgcn_cvt_pkrtz(f1, f2);
                 auto rst1 = __builtin_amdgcn_cvt_pkrtz(f3, f4);
-                cutlass::Array<half_t, 2> result0 = reinterpret_cast<cutlass::Array<half_t, 2> &>(rst0);
-                cutlass::Array<half_t, 2> result1 = reinterpret_cast<cutlass::Array<half_t, 2> &>(rst1);
+                hytlass::Array<half_t, 2> result0 = reinterpret_cast<hytlass::Array<half_t, 2> &>(rst0);
+                hytlass::Array<half_t, 2> result1 = reinterpret_cast<hytlass::Array<half_t, 2> &>(rst1);
                 tCrB(j, 0, k_idx) = result0[0];
                 tCrB(j + 1, 0, k_idx) = result0[1];
                 tCrB(j + 2, 0, k_idx) = result1[0];
                 tCrB(j + 3, 0, k_idx) = result1[1];
             }
         }
-        cute::gemm(tiled_mma, tCrA(_, _, k_idx), tCrB(_, _, k_idx), acc);
+        hute::gemm(tiled_mma, tCrA(_, _, k_idx), tCrB(_, _, k_idx), acc);
     }
 }
 
@@ -1300,7 +1300,7 @@ __forceinline__ __device__ void gemm_k_rs_fp8(Tensor0 &acc, Tensor1 &tCrA,  Tens
         auto fp8x2_low = *reinterpret_cast<__hip_fp8x2_storage_t*>(&data.fp8_array[j / 4]);
         auto fp8x2_high = *(reinterpret_cast<__hip_fp8x2_storage_t*>(&(data.fp8_array[j / 4])) + 1);
 
-        if constexpr (KV_DTYPE == Fp8KVCacheDataType::kFp8E4M3 && std::is_same_v<Element, cutlass::bfloat16_t>) {
+        if constexpr (KV_DTYPE == Fp8KVCacheDataType::kFp8E4M3 && std::is_same_v<Element, hytlass::bfloat16_t>) {
             auto f1 = (static_cast<__hip_fp8_storage_t>((fp8x2_low << 8) >> 8));
             auto f2 = (static_cast<__hip_fp8_storage_t>((fp8x2_low >> 8)));
             auto f3 = (static_cast<__hip_fp8_storage_t>((fp8x2_high << 8) >> 8));
@@ -1313,7 +1313,7 @@ __forceinline__ __device__ void gemm_k_rs_fp8(Tensor0 &acc, Tensor1 &tCrA,  Tens
             tCrB(j + 1, 0, k_idx) = rst1;
             tCrB(j + 2, 0, k_idx) = rst2;
             tCrB(j + 3, 0, k_idx) = rst3;
-        } else if constexpr (KV_DTYPE == Fp8KVCacheDataType::kFp8E5M2 && std::is_same_v<Element, cutlass::bfloat16_t>) {
+        } else if constexpr (KV_DTYPE == Fp8KVCacheDataType::kFp8E5M2 && std::is_same_v<Element, hytlass::bfloat16_t>) {
             auto f1 = fp8e5m2_to_fp32(static_cast<__hip_fp8_storage_t>((fp8x2_low << 8) >> 8));
             auto f2 = fp8e5m2_to_fp32(static_cast<__hip_fp8_storage_t>((fp8x2_low >> 8)));
             auto f3 = fp8e5m2_to_fp32(static_cast<__hip_fp8_storage_t>((fp8x2_high << 8) >> 8));
@@ -1327,7 +1327,7 @@ __forceinline__ __device__ void gemm_k_rs_fp8(Tensor0 &acc, Tensor1 &tCrA,  Tens
             // if (thread0()) {
             //     printf(" static_cast<__hip_fp8_storage_t>((fp8x2_low << 8) >> 8) = %x f1 = %.2f\n", static_cast<__hip_fp8_storage_t>((fp8x2_low << 8) >> 8), f1);
             // }
-            cutlass::NumericConverter<Element, float, cutlass::FloatRoundStyle::round_toward_zero> convert_;
+            hytlass::NumericConverter<Element, float, hytlass::FloatRoundStyle::round_toward_zero> convert_;
             auto rst0 = convert_(f1);
             auto rst1 = convert_(f2);
             auto rst2 = convert_(f3);
@@ -1336,7 +1336,7 @@ __forceinline__ __device__ void gemm_k_rs_fp8(Tensor0 &acc, Tensor1 &tCrA,  Tens
             tCrB(j + 1, 0, k_idx) = rst1;
             tCrB(j + 2, 0, k_idx) = rst2;
             tCrB(j + 3, 0, k_idx) = rst3;
-        } else if constexpr (KV_DTYPE == Fp8KVCacheDataType::kFp8E5M2 && std::is_same_v<Element, cutlass::half_t>) {
+        } else if constexpr (KV_DTYPE == Fp8KVCacheDataType::kFp8E5M2 && std::is_same_v<Element, hytlass::half_t>) {
 
             __hip_fp8x4_storage_t fp8_data = data.fp8_array[j / 4];
 
@@ -1347,12 +1347,12 @@ __forceinline__ __device__ void gemm_k_rs_fp8(Tensor0 &acc, Tensor1 &tCrA,  Tens
             Fp8_data_union first_fp8, last_fp8;
             first_fp8.fp8x4 = ((fp8_data & 0xff00ff00));
             last_fp8.fp8x4 = ((fp8_data & 0x00ff00ff) << 8);
-            tCrB(j, 0, k_idx) = cutlass::half_t::bitcast(last_fp8.fp16[0]);
-            tCrB(j + 1, 0, k_idx) = cutlass::half_t::bitcast(first_fp8.fp16[0]);;
-            tCrB(j + 2, 0, k_idx) = cutlass::half_t::bitcast(last_fp8.fp16[1]);;
-            tCrB(j + 3, 0, k_idx) = cutlass::half_t::bitcast(first_fp8.fp16[1]);;;
+            tCrB(j, 0, k_idx) = hytlass::half_t::bitcast(last_fp8.fp16[0]);
+            tCrB(j + 1, 0, k_idx) = hytlass::half_t::bitcast(first_fp8.fp16[0]);;
+            tCrB(j + 2, 0, k_idx) = hytlass::half_t::bitcast(last_fp8.fp16[1]);;
+            tCrB(j + 3, 0, k_idx) = hytlass::half_t::bitcast(first_fp8.fp16[1]);;;
         }
-        else if constexpr (KV_DTYPE == Fp8KVCacheDataType::kFp8E4M3 && std::is_same_v<Element, cutlass::half_t>) {
+        else if constexpr (KV_DTYPE == Fp8KVCacheDataType::kFp8E4M3 && std::is_same_v<Element, hytlass::half_t>) {
             auto f1 = fp8e4m3_to_fp32(static_cast<__hip_fp8_storage_t>((fp8x2_low << 8) >> 8));
             auto f2 = fp8e4m3_to_fp32(static_cast<__hip_fp8_storage_t>((fp8x2_low >> 8)));
             auto f3 = fp8e4m3_to_fp32(static_cast<__hip_fp8_storage_t>((fp8x2_high << 8) >> 8));
@@ -1366,15 +1366,15 @@ __forceinline__ __device__ void gemm_k_rs_fp8(Tensor0 &acc, Tensor1 &tCrA,  Tens
             }
             auto rst0 = __builtin_amdgcn_cvt_pkrtz(f1, f2);
             auto rst1 = __builtin_amdgcn_cvt_pkrtz(f3, f4);
-            cutlass::Array<half_t, 2> result0 = reinterpret_cast<cutlass::Array<half_t, 2> &>(rst0);
-            cutlass::Array<half_t, 2> result1 = reinterpret_cast<cutlass::Array<half_t, 2> &>(rst1);
+            hytlass::Array<half_t, 2> result0 = reinterpret_cast<hytlass::Array<half_t, 2> &>(rst0);
+            hytlass::Array<half_t, 2> result1 = reinterpret_cast<hytlass::Array<half_t, 2> &>(rst1);
             tCrB(j, 0, k_idx) = result0[0];
             tCrB(j + 1, 0, k_idx) = result0[1];
             tCrB(j + 2, 0, k_idx) = result1[0];
             tCrB(j + 3, 0, k_idx) = result1[1];
         }
     }
-    cute::gemm(tiled_mma, tCrA(_, _, k_idx), tCrB(_, _, k_idx), acc);
+    hute::gemm(tiled_mma, tCrA(_, _, k_idx), tCrB(_, _, k_idx), acc);
 }
 #endif
 template <
@@ -1384,7 +1384,7 @@ template <
         bool use_asm = false,
         class SrcEngine, class SrcLayout
           >
-CUTE_HOST_DEVICE
+HUTE_HOST_DEVICE
 void
 buffer_load_copy_fp8(
      Tensor<SrcEngine, SrcLayout> const& src,
@@ -1489,7 +1489,7 @@ __forceinline__ __device__ void gemm1_rs_fp8(Tensor0 &acc, Tensor1 &tCrA, Tensor
                 auto fp8x2_high = *(reinterpret_cast<__hip_fp8x2_storage_t*>(&(data[k_idx * 2 + i].fp8_array[j / 4])) + 1);
 
 
-                if constexpr (KV_DTYPE == Fp8KVCacheDataType::kFp8E4M3 && std::is_same_v<Element, cutlass::bfloat16_t>) {
+                if constexpr (KV_DTYPE == Fp8KVCacheDataType::kFp8E4M3 && std::is_same_v<Element, hytlass::bfloat16_t>) {
                     // cutlass::NumericConverter<Element, float, cutlass::FloatRoundStyle::round_toward_zero> convert_;
                     auto f1 = (static_cast<__hip_fp8_storage_t>((fp8x2_low << 8) >> 8));
                     auto f2 = (static_cast<__hip_fp8_storage_t>((fp8x2_low >> 8)));
@@ -1503,7 +1503,7 @@ __forceinline__ __device__ void gemm1_rs_fp8(Tensor0 &acc, Tensor1 &tCrA, Tensor
                     tCrB(j + 1, i, k_idx) = rst1;
                     tCrB(j + 2, i, k_idx) = rst2;
                     tCrB(j + 3, i, k_idx) = rst3;
-                } else if constexpr (KV_DTYPE == Fp8KVCacheDataType::kFp8E5M2 && std::is_same_v<Element, cutlass::bfloat16_t>) {
+                } else if constexpr (KV_DTYPE == Fp8KVCacheDataType::kFp8E5M2 && std::is_same_v<Element, hytlass::bfloat16_t>) {
                     auto f1 = fp8e5m2_to_fp32(static_cast<__hip_fp8_storage_t>((fp8x2_low << 8) >> 8));
                     auto f2 = fp8e5m2_to_fp32(static_cast<__hip_fp8_storage_t>((fp8x2_low >> 8)));
                     auto f3 = fp8e5m2_to_fp32(static_cast<__hip_fp8_storage_t>((fp8x2_high << 8) >> 8));
@@ -1514,7 +1514,7 @@ __forceinline__ __device__ void gemm1_rs_fp8(Tensor0 &acc, Tensor1 &tCrA, Tensor
                         f3 *= k_scale;
                         f4 *= k_scale;
                     }
-                    cutlass::NumericConverter<Element, float, cutlass::FloatRoundStyle::round_toward_zero> convert_;
+                    hytlass::NumericConverter<Element, float, hytlass::FloatRoundStyle::round_toward_zero> convert_;
                     auto rst0 = convert_(f1);
                     auto rst1 = convert_(f2);
                     auto rst2 = convert_(f3);
@@ -1524,7 +1524,7 @@ __forceinline__ __device__ void gemm1_rs_fp8(Tensor0 &acc, Tensor1 &tCrA, Tensor
                     tCrB(j + 2, i, k_idx) = rst2;
                     tCrB(j + 3, i, k_idx) = rst3;
                 
-                } else if constexpr (KV_DTYPE == Fp8KVCacheDataType::kFp8E5M2 && std::is_same_v<Element, cutlass::half_t>) {
+                } else if constexpr (KV_DTYPE == Fp8KVCacheDataType::kFp8E5M2 && std::is_same_v<Element, hytlass::half_t>) {
                     // auto f1 = fp8e5m2_to_fp16(static_cast<__hip_fp8_storage_t>((fp8x2_low << 8) >> 8));
                     // auto f2 = fp8e5m2_to_fp16(static_cast<__hip_fp8_storage_t>((fp8x2_low >> 8)));
                     // auto f3 = fp8e5m2_to_fp16(static_cast<__hip_fp8_storage_t>((fp8x2_high << 8) >> 8));
@@ -1544,12 +1544,12 @@ __forceinline__ __device__ void gemm1_rs_fp8(Tensor0 &acc, Tensor1 &tCrA, Tensor
                     Fp8_data_union first_fp8, last_fp8;
                     first_fp8.fp8x4 = ((fp8_data & 0xff00ff00));
                     last_fp8.fp8x4 = ((fp8_data & 0x00ff00ff) << 8);
-                    tCrB(j, i, k_idx) = cutlass::half_t::bitcast(last_fp8.fp16[0]);
-                    tCrB(j + 1, i, k_idx) = cutlass::half_t::bitcast(first_fp8.fp16[0]);;
-                    tCrB(j + 2, i, k_idx) = cutlass::half_t::bitcast(last_fp8.fp16[1]);;
-                    tCrB(j + 3, i, k_idx) = cutlass::half_t::bitcast(first_fp8.fp16[1]);;;
+                    tCrB(j, i, k_idx) = hytlass::half_t::bitcast(last_fp8.fp16[0]);
+                    tCrB(j + 1, i, k_idx) = hytlass::half_t::bitcast(first_fp8.fp16[0]);;
+                    tCrB(j + 2, i, k_idx) = hytlass::half_t::bitcast(last_fp8.fp16[1]);;
+                    tCrB(j + 3, i, k_idx) = hytlass::half_t::bitcast(first_fp8.fp16[1]);;;
                 
-                } else if constexpr (KV_DTYPE == Fp8KVCacheDataType::kFp8E4M3 && std::is_same_v<Element, cutlass::half_t>){
+                } else if constexpr (KV_DTYPE == Fp8KVCacheDataType::kFp8E4M3 && std::is_same_v<Element, hytlass::half_t>){
                     auto f1 = fp8e4m3_to_fp32(static_cast<__hip_fp8_storage_t>((fp8x2_low << 8) >> 8));
                     auto f2 = fp8e4m3_to_fp32(static_cast<__hip_fp8_storage_t>((fp8x2_low >> 8)));
                     auto f3 = fp8e4m3_to_fp32(static_cast<__hip_fp8_storage_t>((fp8x2_high << 8) >> 8));
@@ -1562,8 +1562,8 @@ __forceinline__ __device__ void gemm1_rs_fp8(Tensor0 &acc, Tensor1 &tCrA, Tensor
                     }
                     auto rst0 = __builtin_amdgcn_cvt_pkrtz(f1, f3);
                     auto rst1 = __builtin_amdgcn_cvt_pkrtz(f2, f4);
-                    cutlass::Array<half_t, 2> result0 = reinterpret_cast<cutlass::Array<half_t, 2> &>(rst0);
-                    cutlass::Array<half_t, 2> result1 = reinterpret_cast<cutlass::Array<half_t, 2> &>(rst1);
+                    hytlass::Array<half_t, 2> result0 = reinterpret_cast<hytlass::Array<half_t, 2> &>(rst0);
+                    hytlass::Array<half_t, 2> result1 = reinterpret_cast<hytlass::Array<half_t, 2> &>(rst1);
                     tCrB(j, i, k_idx) = result0[0];
                     tCrB(j + 1, i, k_idx) = result1[0];
                     tCrB(j + 2, i, k_idx) = result0[1];
@@ -1572,7 +1572,7 @@ __forceinline__ __device__ void gemm1_rs_fp8(Tensor0 &acc, Tensor1 &tCrA, Tensor
             
             }
         }
-        cute::gemm(tiled_mma, tCrA(_, _, k_idx), tCrB(_, _, k_idx), acc);
+        hute::gemm(tiled_mma, tCrA(_, _, k_idx), tCrB(_, _, k_idx), acc);
     }
 
 }

@@ -1,7 +1,7 @@
 #pragma once
 
 #include "common.h"
-#include <cutlass/fast_math.h>
+#include <hytlass/fast_math.h>
 
 #include "params.h"
 
@@ -62,13 +62,13 @@ public:
         Arch arch = Arch();
         if (h_q <= 16) {
             return {
-                std::max(arch.num_sms * 2 / s_q / cutlass::ceil_div(h_q, 16), 1),
+                std::max(arch.num_sms * 2 / s_q / hytlass::ceil_div(h_q, 16), 1),
                 5,
                 64
             };
         }
         return {
-            std::max(arch.num_sms / s_q / cutlass::ceil_div(h_q, 64), 1),
+            std::max(arch.num_sms / s_q / hytlass::ceil_div(h_q, 64), 1),
             5,
             64
         };
@@ -99,7 +99,7 @@ sparse_attn_decode_interface(
     int d_v,
     float sm_scale
 ) {
-    using bf16 = cutlass::bfloat16_t;
+    using bf16 = hytlass::bfloat16_t;
 
     // Check the architecture
     Arch arch = Arch();
@@ -361,14 +361,14 @@ sparse_attn_decode_interface(
         if (const char* value = std::getenv("FLASH_MLA_FP8_FIXED_SPLITS")) {
             fixed_num_splits = std::atoi(value);
         } else {
-            const int head_groups = std::max(cutlass::ceil_div(h_q, 64), 1);
+            const int head_groups = std::max(hytlass::ceil_div(h_q, 64), 1);
             const int target_ctas = h_q <= 16 ? 128 : 32;
             fixed_num_splits = std::max(
                 target_ctas / std::max(b * s_q * head_groups, 1), 1);
         }
         fixed_num_splits = std::max(1, std::min(fixed_num_splits, total_blocks));
         const int fixed_partition_blocks =
-            cutlass::ceil_div(total_blocks, fixed_num_splits);
+            hytlass::ceil_div(total_blocks, fixed_num_splits);
 
         params.use_fixed_split = 1;
         params.fixed_num_splits = fixed_num_splits;

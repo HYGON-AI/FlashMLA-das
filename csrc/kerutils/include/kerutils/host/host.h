@@ -46,8 +46,8 @@ do {                                                                            
 
 #define KU_CUTLASS_CHECK(call) \
 do {                                                                                                  \
-    cutlass::Status status_ = call;                                                                   \
-    if (status_ != cutlass::Status::kSuccess) {                                                      \
+    hytlass::Status status_ = call;                                                                   \
+    if (status_ != hytlass::Status::kSuccess) {                                                      \
         fprintf(stderr, "CUTLASS error (%s:%d): %d\n", __FILE__, __LINE__, static_cast<int>(status_)); \
         THROW_KU_EXCEPTION("CUTLASS", "CUTLASS error: ", static_cast<int>(status_));                 \
     }                                                                                                 \
