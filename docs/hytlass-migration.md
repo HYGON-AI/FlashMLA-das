@@ -1,8 +1,12 @@
 # HYTLASS Release Migration
 
 FlashMLA uses the unmodified HYTLASS `release` commit
-`fa662ebf2d8aba6a8881603a448102d1ed8d9950` in `csrc/hytlass`.
+`4fad709bb75d1854daca5c3343886b4e2cc2da74` in `csrc/hytlass`.
 The previous customized CUTLASS submodule is no longer used by the build.
+The dependency is pinned to the maintainer-confirmed release containing the
+open-source notice and naming updates. Its operation and trait headers used by
+the local register-layout extension are unchanged from the initial migration
+baseline, `fa662ebf2d8aba6a8881603a448102d1ed8d9950`.
 The migration follows the integration pattern supplied by the dependency
 maintainer in FlashAttention MR 196 (source commit `b59b7dee`): use release
 headers and keep application-specific register layouts in application code.

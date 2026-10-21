@@ -30,7 +30,7 @@ Hygon/MIT notices. Existing third-party attribution is retained.
 
 - Source: https://github.com/HYGON-AI/hytlass
 - Local path: `csrc/hytlass` (Git submodule), branch `release`.
-- Pinned commit: `fa662ebf2d8aba6a8881603a448102d1ed8d9950`.
+- Pinned commit: `4fad709bb75d1854daca5c3343886b4e2cc2da74`.
 - The complete pinned root `LICENSE.txt` is reproduced without changes in
   [LICENSES/HYTLASS.txt](LICENSES/HYTLASS.txt). It includes Hygon and NVIDIA
   BSD-3-Clause texts and the Google license for googletest. File-level notices
