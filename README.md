@@ -113,7 +113,7 @@ pip install -v .
 ```
 
 The [HYTLASS dependency](https://github.com/HYGON-AI/hytlass) is pinned at commit
-`fa662ebf2d8aba6a8881603a448102d1ed8d9950` in `csrc/hytlass`, with branch
+`4fad709bb75d1854daca5c3343886b4e2cc2da74` in `csrc/hytlass`, with branch
 `release` configured in `.gitmodules`. If the submodule is missing, `setup.py`
 will try to initialize it before compiling. Existing checkouts should run
 `git submodule sync --recursive` followed by `git submodule update --init --recursive`.

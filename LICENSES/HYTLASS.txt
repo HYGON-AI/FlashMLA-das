@@ -27,15 +27,8 @@ OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 -------------------------------------------------------------------------
-
-The following copyright statements and licenses apply to various open source software/model
-packages (or portions thereof) that are distributed with this MUTLASS. MUTLASS that
-includes this file does not necessarily use all the open source software packages referred
-to below and may also only use portions of a given package. Some open source software
-packages referred to below may have been modified by Moore Threads Technology Co., Ltd
--------------------------------------------------------------------------
 cutlass
-Copyright (c) 2017 - 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+Copyright (c) 2017 - 2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 SPDX-License-Identifier: BSD-3-Clause
 
 Redistribution and use in source and binary forms, with or without
