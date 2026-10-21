@@ -59,8 +59,9 @@ The comparison build uses FlashMLA `4529ac467f0989a4d73fe8e373fea15bb43a33b9`
 and customized CUTLASS `33e45645599f371c2382e67920085498f5905955`, in a separate
 directory with the same toolchain and offload targets. The last readable
 progress was 20/29 compilation units, without a reported compilation error.
-Remote command execution subsequently stopped responding; completed comparison
-results have not been collected.
+Remote command execution subsequently stopped responding, and the operator
+reported a scheduled one-hour shutdown. Completed comparison results have not
+been collected; resume the baseline build and comparison after service returns.
 
 The migration build completed ten preliminary timing scenarios covering dense
 decode, sparse FP8/BF16 decode, and sparse prefill. They are not a baseline
