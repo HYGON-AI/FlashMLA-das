@@ -50,6 +50,11 @@ in place. See [Third-Party Notices](../THIRD_PARTY_NOTICES.md).
 
 ## Validation
 
+The [2026-10-21 HCU validation snapshot](hytlass-validation-20261021.md)
+records the successful build, selected correctness results, and incomplete
+baseline comparison. It includes numerical failures and a GPU VMFault;
+the migration has not passed the release gate.
+
 Source checks cover the pinned submodule, header resolution, original register
 layouts, release inheritance ABI, template argument changes, and unchanged
 assembly artifacts. Hardware validation additionally requires an HCU toolchain
