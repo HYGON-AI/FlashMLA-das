@@ -50,10 +50,10 @@ in place. See [Third-Party Notices](../THIRD_PARTY_NOTICES.md).
 
 ## Validation
 
-The migration was prepared on Windows without an HCU compiler or device.
 Source checks cover the pinned submodule, header resolution, original register
 layouts, release inheritance ABI, template argument changes, and unchanged
-assembly artifacts. They do not replace the following HCU checks.
+assembly artifacts. Hardware validation additionally requires an HCU toolchain
+and device; successful source checks alone do not establish numerical correctness.
 
 Compile the register ABI checks with the same compiler used for the extension:
 
@@ -73,8 +73,11 @@ Then build and run the existing correctness tests on supported HCU hardware:
 ```bash
 git submodule sync --recursive
 git submodule update --init --recursive
+export FLASH_MLA_OPT=1
+export PYTHONPATH="$PWD:$PWD/tests${PYTHONPATH:+:$PYTHONPATH}"
 python setup.py build_ext --inplace
 python tests/test_flash_mla_dense_decoding.py
+python tests/test_flash_mla_dense_decoding.py --dtype fp16
 python tests/test_flash_mla_sparse_decoding.py
 FLASH_MLA_DECODE_BF16=1 python tests/test_flash_mla_sparse_decoding.py
 python tests/test_flash_mla_sparse_prefill.py
