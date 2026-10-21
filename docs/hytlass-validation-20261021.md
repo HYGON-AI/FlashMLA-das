@@ -1,9 +1,9 @@
 # HCU Validation Snapshot: 2026-10-21
 
-Status: incomplete. Compilation succeeded, but the numerical test selection
-contains failures and a GPU VMFault. The previous dependency build has not yet
-completed its comparison runs. This snapshot does not establish release readiness
-or attribute the failures to the dependency migration.
+Both dependency versions compile successfully. The selected correctness tests
+have the same pass/fail outcomes, including the dense failures and GPU VMFault
+reproduced by the previous dependency build. This does not establish release
+readiness: those failures remain unresolved and runtime coverage is gfx938 only.
 
 ## Builds
 
@@ -53,24 +53,61 @@ extra KV, and representative DSA paths. Different paths retain the assertions
 defined by their original tests; in particular, DSA MLS prefill and BF16 sparse
 decode do not assert LSE equivalence in those tests.
 
-## Pending Comparison
+## Baseline Comparison
 
 The comparison build uses FlashMLA `4529ac467f0989a4d73fe8e373fea15bb43a33b9`
 and customized CUTLASS `33e45645599f371c2382e67920085498f5905955`, in a separate
-directory with the same toolchain and offload targets. The last readable
-progress was 20/29 compilation units, without a reported compilation error.
-Remote command execution subsequently stopped responding, and the operator
-reported a scheduled one-hour shutdown. Completed comparison results have not
-been collected; resume the baseline build and comparison after service returns.
+directory with the same toolchain and offload targets. Scheduled server
+maintenance interrupted its initial build at 20/29 compilation units. The
+incremental build and shared-library link succeeded after service returned.
 
-The migration build completed ten preliminary timing scenarios covering dense
-decode, sparse FP8/BF16 decode, and sparse prefill. They are not a baseline
-comparison. The comparison harness uses 25 warmups, seven GPU-event samples of
-100 calls, and the median time. Final runs must use the same device sequentially
-after both builds finish. Output hashes are included in the prepared harness
-for the final comparison; equivalence has not yet been verified.
+The baseline reproduced all 18 failures in the 258-case selection, the separate
+FP16 smoke failure, and the dimension-512 VMFault after eight completed cases.
+The failures therefore also occur before this dependency migration; they remain
+known limitations of the tested code and environment. Passing selections retain
+their original assertions and tolerances.
 
-Keep the PR in Draft until the baseline reproductions and timing comparisons
-are complete and failures are resolved or their support limits are agreed.
+Across the main selection, eight completed dimension-512 cases, and ten smoke
+cases, all 276 completed cases have matching pass/fail outcomes between builds.
+The last started case before the VMFault also matches. No additional failing
+case was observed in this selection; this is not proof of correctness for
+unselected shapes or other architectures.
+
+## Performance and Output Comparison
+
+Ten scenarios were measured in two sequential rounds on the same device:
+baseline then migration, followed by migration then baseline. Each measurement
+uses 25 warmups and the median of seven GPU-event samples of 100 calls. GPU
+clocks were not locked. The first output tensor's SHA-256 matched between builds
+in all ten scenarios in both rounds; this check does not cover auxiliary outputs.
+
+The second round is shown below. Positive time changes mean slower execution.
+Decode uses query length 4, 64 heads, KV length 43520, and Top-K 2048.
+Dense uses batch 16, query length 2, KV length 4096, and dimension 576.
+Prefill uses query length 4096; its other dimensions are listed in the table.
+
+| Scenario | Baseline us | Migration us | Change |
+| --- | ---: | ---: | ---: |
+| Dense BF16, 64 heads | 279.211 | 277.230 | -0.71% |
+| Dense BF16, 128 heads | 487.504 | 474.374 | -2.69% |
+| Sparse FP8 decode, batch 1 | 58.307 | 59.038 | +1.25% |
+| Sparse FP8 decode, batch 16 | 506.675 | 519.714 | +2.57% |
+| Sparse BF16 decode, batch 1 | 54.725 | 54.728 | +0.01% |
+| Sparse BF16 decode, batch 16 | 267.243 | 258.550 | -3.25% |
+| Prefill d512, h64, KV8192, Top-K512 | 2356.142 | 2349.444 | -0.28% |
+| Prefill d512, h128, KV8192, Top-K1024 | 8530.749 | 8531.990 | +0.01% |
+| Prefill d576, h64, KV32768, Top-K2048 | 10855.208 | 10864.633 | +0.09% |
+| Prefill d576, h128, KV8192, Top-K2048 | 17134.414 | 17134.636 | +0.00% |
+
+Sparse FP8 decode at batch 16 was slower by 2.55% and 2.57% in the two rounds.
+The initial 5.69% slowdown in BF16 decode at batch 1 did not reproduce in the
+second round. These end-to-end timings include launch overhead and are not
+evidence of unchanged performance in every supported configuration.
+
+The complete JSON report and compressed build/test logs, including the harness,
+are saved as `FlashMLA-HYTLASS-HCU-validation-20261021.json` and the matching
+`.tar.gz` in the operator's Downloads directory. The harness was identical
+between builds. Keep the PR in Draft until failures are resolved or their
+support limits are agreed, and the performance tradeoff is reviewed.
 Dependency access, assembly compiler provenance, and the separate review of
 historical author emails remain outside this runtime validation.
