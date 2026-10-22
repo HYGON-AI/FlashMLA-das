@@ -138,27 +138,26 @@ def get_host_cxx_standard_flag():
 this_dir = os.path.dirname(os.path.abspath(__file__))
 os.environ['PYTORCH_NVCC'] = 'aicc'
 
-cutlass_dir = Path(this_dir) / "csrc" / "cutlass" / "cutlass_3.2.1"
-if not (cutlass_dir / "include").exists():
+hytlass_dir = Path(this_dir) / "csrc" / "hytlass"
+hytlass_header = hytlass_dir / "include" / "hytlass" / "hytlass.h"
+if not hytlass_header.is_file():
     subprocess.run(
-        ["git", "submodule", "update", "--init", "--recursive", "csrc/cutlass/cutlass_3.2.1"],
+        ["git", "submodule", "update", "--init", "--recursive", "csrc/hytlass"],
         cwd=this_dir,
         check=True,
     )
-if not (cutlass_dir / "include").exists():
+if not hytlass_header.is_file():
     raise RuntimeError(
-        "CUTLASS dependency is missing. Run "
-        "`git submodule update --init --recursive csrc/cutlass/cutlass_3.2.1` first."
+        "HYTLASS dependency is missing. Run "
+        "`git submodule update --init --recursive csrc/hytlass` first."
     )
 
 if False:
     cxx_args = ["/O2", "/std:c++20", "/DNDEBUG", "/W0"]
 else:
-    # Required by the pinned CUTLASS fork; migrate this flag with its consumers.
-    asm_define = "-DDCU_ASM"
     host_cxx_standard_flag = get_host_cxx_standard_flag()
     print(f"Using host C++ standard flag: {host_cxx_standard_flag}")
-    cxx_args = ["-O3", host_cxx_standard_flag, "-DNDEBUG", "-Wno-deprecated-declarations", asm_define, "-Wno-return-type", ]
+    cxx_args = ["-O3", host_cxx_standard_flag, "-DNDEBUG", "-Wno-deprecated-declarations", "-Wno-return-type", ]
 
 code_object_version = get_code_object_version()
 print(f"Using code object version: {code_object_version}")
@@ -239,7 +238,6 @@ ext_modules.append(
                 "-ffast-math",
                 "-ftemplate-backtrace-limit=0",
                 "-Rpass-analysis=kernel-resource-usage",
-                asm_define,
                 # "--save-temps",
                 "-w",
                 # "-mllvm -enable-num-vgprs-512=true",
@@ -251,7 +249,7 @@ ext_modules.append(
             Path(this_dir) / "csrc",
             Path(this_dir) / "csrc" / "kerutils" / "include",   # TODO Remove me
             Path(this_dir) / "csrc" / "gfx93",
-            Path(this_dir) / "csrc" / "cutlass" / "cutlass_3.2.1" / "include",
+            hytlass_dir / "include",
             Path(this_dir) / "csrc" / "gfx93" / "prefill" / "sparse" / "dsa_mls" / "legacy" / "include",
         ],
     )

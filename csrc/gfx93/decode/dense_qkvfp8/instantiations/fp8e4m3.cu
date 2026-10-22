@@ -3,6 +3,6 @@
 
 namespace gfx93 {
 
-template void run_flash_splitkv_mla_qkvfp8_kernel<cutlass::float_e4m3_t>(DenseAttnDecodeParams_fp8 &params);
+template void run_flash_splitkv_mla_qkvfp8_kernel<hytlass::float_e4m3_t>(DenseAttnDecodeParams_fp8 &params);
 
 }

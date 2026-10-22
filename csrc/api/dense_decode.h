@@ -1,7 +1,7 @@
 #pragma once
 
-#include <cutlass/half.h>
-#include <cutlass/fast_math.h>
+#include <hytlass/half.h>
+#include <hytlass/fast_math.h>
 
 #include "common.h"
 #include "params.h"
@@ -75,7 +75,7 @@ dense_attn_decode_interface(
     const int num_heads = num_heads_k;
     q = q.view({batch_size, seqlen_q_ori, num_heads_k, num_q_heads_per_hk, head_size_k}).transpose(2, 3)
         .reshape({batch_size, q_seq_per_hk, num_heads, head_size_k});
-    int num_sm_parts = std::max(arch.num_sms / num_heads_k / cutlass::ceil_div(seqlen_q_ori*num_heads_q/num_heads_k, 16), 1);
+    int num_sm_parts = std::max(arch.num_sms / num_heads_k / hytlass::ceil_div(seqlen_q_ori*num_heads_q/num_heads_k, 16), 1);
 
     KU_CHECK_SHAPE(q, batch_size, q_seq_per_hk, num_heads, head_size_k);
     KU_CHECK_SHAPE(kcache, num_blocks, page_block_size, num_heads_k, head_size_k);
@@ -234,12 +234,12 @@ dense_attn_decode_interface(
     params.stream = at::cuda::getCurrentCUDAStream().stream();
 
     if (q_dtype == torch::kBFloat16) {
-        gfx93::run_flash_splitkv_mla_kernel<cutlass::bfloat16_t>(params);
+        gfx93::run_flash_splitkv_mla_kernel<hytlass::bfloat16_t>(params);
     } else if (q_dtype == torch::kHalf) {
 #ifdef FLASH_MLA_DISABLE_FP16
         TORCH_CHECK(false, "FlashMLA is compiled with -DFLASH_MLA_DISABLE_FP16. Please remove this flag from your environment and re-compile FlashMLA.");
 #else
-        gfx93::run_flash_splitkv_mla_kernel<cutlass::half_t>(params);
+        gfx93::run_flash_splitkv_mla_kernel<hytlass::half_t>(params);
 #endif
     } else {
         TORCH_CHECK(false, "Unsupported dtype for dense MLA on SM90");
@@ -273,10 +273,10 @@ dense_attn_decode_interface(
     
     if ((num_heads_q < 64 && num_heads_k == 1) || num_heads_k > 1 || params.use_split_kv || arch.is_gfx928()) {
         if (q_dtype == torch::kBFloat16) {
-            gfx9::decode::run_flash_mla_combine_kernel<cutlass::bfloat16_t>(combine_params);
+            gfx9::decode::run_flash_mla_combine_kernel<hytlass::bfloat16_t>(combine_params);
         } else if (q_dtype == torch::kHalf) {
     #ifndef FLASH_MLA_DISABLE_FP16
-            gfx9::decode::run_flash_mla_combine_kernel<cutlass::half_t>(combine_params);
+            gfx9::decode::run_flash_mla_combine_kernel<hytlass::half_t>(combine_params);
     #endif
         } else {
             TORCH_CHECK(false, "Unsupported tensor dtype for query");

@@ -1,15 +1,17 @@
 #pragma once
 
-#include <cutlass/numeric_types.h>
-#include <cutlass/arch/barrier.h>
-#include <cute/tensor.hpp>
+#include "hytlass_ext.h"
+
+#include <hytlass/numeric_types.h>
+#include <hytlass/arch/barrier.h>
+#include <hute/tensor.hpp>
 #include <kerutils/kerutils.cuh>
 #include <tuple>
 
 #include "defines.h"
 #include "params.h"
 
-using namespace cute;
+using namespace hute;
 
 namespace gfx93::decode::sparse_fp8 {
 
@@ -65,38 +67,35 @@ public:
         int topk_length, extra_topk_length, num_orig_kv_blocks;
     };
 
-    using elem_type = cutlass::bfloat16_t;
+    using elem_type = hytlass::bfloat16_t;
     using MMA_Atom_Arch = std::conditional_t<
-        std::is_same_v<elem_type, cutlass::half_t>,
-        MMA_Atom<GFX928_16x16x64_F32F16F16F32_NT>,
-        MMA_Atom<GFX928_16x16x64_F32BF16BF16F32_NT>
+        std::is_same_v<elem_type, hytlass::half_t>,
+        MMA_Atom<flash_mla::hytlass_ext::GFX928_16x16x64_F32F16F16F32_NT>,
+        MMA_Atom<flash_mla::hytlass_ext::GFX928_16x16x64_F32BF16BF16F32_NT>
     >;
     static constexpr int kNWarps = 4;
     using ValLayoutMNK = Layout<Shape<_1, _1, _1>>;
     using TiledMma = TiledMMA<
         MMA_Atom_Arch,
-        Layout<Shape<_1, Int<kNWarps>, _1>>,  // 1x4x1 or 1x8x1 thread group
-        ValLayoutMNK>;
+        Layout<Shape<_1, Int<kNWarps>, _1>>>;
 
     using MMA_Atom_Arch_16_16_32 = std::conditional_t<
-        std::is_same_v<elem_type, cutlass::half_t>,
-        MMA_Atom<GFX928_16x16x32_F32F16F16F32_NN>,
-        MMA_Atom<GFX928_16x16x32_F32BF16BF16F32_NN>
+        std::is_same_v<elem_type, hytlass::half_t>,
+        MMA_Atom<flash_mla::hytlass_ext::GFX928_16x16x32_F32F16F16F32_NN>,
+        MMA_Atom<flash_mla::hytlass_ext::GFX928_16x16x32_F32BF16BF16F32_NN>
     >;
     using TiledMma_16_16_32 = TiledMMA<
         MMA_Atom_Arch_16_16_32,
-        Layout<Shape<_1, Int<kNWarps>, _1>>,  // 1x4x1 or 1x8x1 thread group
-        ValLayoutMNK>;
+        Layout<Shape<_1, Int<kNWarps>, _1>>>;
 
     using MMA_Atom_Arch_16x32_NT = std::conditional_t<
-        std::is_same_v<elem_type, cutlass::half_t>,
-        MMA_Atom<GFX928_16x32x16_F32F16F16F32_NT>,
-        MMA_Atom<GFX928_16x32x16_F32BF16BF16F32_NT>
+        std::is_same_v<elem_type, hytlass::half_t>,
+        MMA_Atom<flash_mla::hytlass_ext::GFX928_16x32x16_F32F16F16F32_NT>,
+        MMA_Atom<flash_mla::hytlass_ext::GFX928_16x32x16_F32BF16BF16F32_NT>
     >;
     using TiledMma_O = TiledMMA<
         MMA_Atom_Arch_16x32_NT,
-        Layout<Shape<_1, Int<kNWarps>, _1>>,  // 1x4x1 or 1x8x1 thread group
-        ValLayoutMNK>;
+        Layout<Shape<_1, Int<kNWarps>, _1>>>;
 
     using SmemLayoutAtomK = decltype(composition(
         Swizzle<3, 3, 3>{},
@@ -119,18 +118,18 @@ public:
         Shape<Int<4*16*16>>{}));
     using SmemLayoutRow = Layout<Shape<_128>, Stride<_1>>; 
 
-    using Element = cutlass::bfloat16_t;
+    using Element = hytlass::bfloat16_t;
     using ElementAccum = float;
     struct SharedMemoryPlan {
         union {
             struct {
-                cute::array_aligned<Element, cute::cosize_v<SmemLayoutV>> smem_v;
+                hute::array_aligned<Element, hute::cosize_v<SmemLayoutV>> smem_v;
             };
             struct {
                 // cute::array_aligned<typename Kernel_traits::Element, cute::cosize_v<typename Kernel_traits::SmemLayoutV_tmp>> smem_v_tmp;  // Double buffer
-                cute::array_aligned<Element, cute::cosize_v<SmemLayoutP>> smem_p;
-                cute::array_aligned<ElementAccum, cute::cosize_v<SmemLayoutRow>> smem_row_sum;
-                cute::array_aligned<ElementAccum, cute::cosize_v<SmemLayoutRow>> smem_row_max;
+                hute::array_aligned<Element, hute::cosize_v<SmemLayoutP>> smem_p;
+                hute::array_aligned<ElementAccum, hute::cosize_v<SmemLayoutRow>> smem_row_sum;
+                hute::array_aligned<ElementAccum, hute::cosize_v<SmemLayoutRow>> smem_row_max;
 
             };
         };

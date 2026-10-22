@@ -1,11 +1,11 @@
 #pragma once
 
-#include <cutlass/numeric_types.h>
+#include <hytlass/numeric_types.h>
 // #include <cutlass/arch/barrier.h>
-#include <cute/tensor.hpp>
+#include <hute/tensor.hpp>
 #include "defines.h"
 
-using namespace cute;
+using namespace hute;
 
 namespace gfx93::decode::sparse_fp8 {
 

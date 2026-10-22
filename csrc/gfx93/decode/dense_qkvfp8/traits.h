@@ -1,16 +1,17 @@
+#include "hytlass_ext.h"
 // Copyright (c) 2026 Hygon Information Technology Co., Ltd.
 // SPDX-License-Identifier: MIT
 
 #pragma once
 
-#include <cute/tensor.hpp>
-#include <cutlass/cutlass.h>
-#include <cutlass/numeric_types.h>
-#include <cutlass/barrier.h>
+#include <hute/tensor.hpp>
+#include <hytlass/hytlass.h>
+#include <hytlass/numeric_types.h>
+#include <hytlass/barrier.h>
 
 #include "config.h"
 
-using namespace cute;
+using namespace hute;
 
 template<typename InputT_, bool Is_causal_>
 struct Traits {
@@ -21,7 +22,7 @@ struct Traits {
     static constexpr int HEAD_DIM_K = Config::HEAD_DIM_K;
     static constexpr int HEAD_DIM_V = Config::HEAD_DIM_V;    
     static constexpr int NUM_THREADS = 256;
-    static_assert(std::is_same_v<InputT, cutlass::float_e4m3_t>);
+    static_assert(std::is_same_v<InputT, hytlass::float_e4m3_t>);
     static constexpr int kBlockM = BLOCK_SIZE_M;
     static constexpr int kBlockN = PAGE_BLOCK_SIZE;
     static constexpr int kHeadDim = HEAD_DIM_K;
@@ -68,35 +69,33 @@ struct Traits {
         SmemLayoutAtomK_place_holder{},
         Shape<Int<kBlockN>, Int<7*64>>{}));
 
-    using MMA_Atom_Arch = MMA_Atom<GFX938_16x16x64_F32F8F8F32E4M3E4M3_NN_LIT>;
-    using MMA_Atom_Arch_16x32 = MMA_Atom<GFX938_16x32x32_F32F8F8F32E4M3E4M3_NT_LIT>;
+    using MMA_Atom_Arch = MMA_Atom<flash_mla::hytlass_ext::GFX938_16x16x64_F32F8F8F32E4M3E4M3_NN_LIT>;
+    using MMA_Atom_Arch_16x32 = MMA_Atom<flash_mla::hytlass_ext::GFX938_16x32x32_F32F8F8F32E4M3E4M3_NT_LIT>;
 
     using ValLayoutMNK = Layout<Shape<_1, _1, _1>>;
 
     using TiledMma = TiledMMA<
         MMA_Atom_Arch,
-        Layout<Shape<_1, Int<kNWarps>, _1>>,  // 1x4x1 or 1x8x1 thread group
-        ValLayoutMNK>;//
+        Layout<Shape<_1, Int<kNWarps>, _1>>>;//
     using TiledMma_O = TiledMMA<
         MMA_Atom_Arch_16x32,
-        Layout<Shape<_1, Int<kNWarps>, _1>>,  // 1x4x1 or 1x8x1 thread group
-        ValLayoutMNK>;
+        Layout<Shape<_1, Int<kNWarps>, _1>>>;
     
     
     struct SharedMemoryPlan {
         union {
             struct {
-                cute::array_aligned<Element, cute::cosize_v<SmemLayoutV>> smem_v;  // Double buffer
+                hute::array_aligned<Element, hute::cosize_v<SmemLayoutV>> smem_v;  // Double buffer
 
             };
             struct {
-                cute::array_aligned<Element, cute::cosize_v<SmemLayoutK_place_holder>> smem_temp;  // Double buffer
-                cute::array_aligned<Element, cute::cosize_v<SmemLayoutP>> smem_p;
-                cute::array_aligned<ElementAccum, cute::cosize_v<SmemLayoutRow>> smem_row_sum;
-                cute::array_aligned<ElementAccum, cute::cosize_v<SmemLayoutRow>> smem_row_max;
+                hute::array_aligned<Element, hute::cosize_v<SmemLayoutK_place_holder>> smem_temp;  // Double buffer
+                hute::array_aligned<Element, hute::cosize_v<SmemLayoutP>> smem_p;
+                hute::array_aligned<ElementAccum, hute::cosize_v<SmemLayoutRow>> smem_row_sum;
+                hute::array_aligned<ElementAccum, hute::cosize_v<SmemLayoutRow>> smem_row_max;
             };
             struct {
-                cute::array_aligned<Element, cute::cosize_v<SmemLayoutQ>> smem_q;
+                hute::array_aligned<Element, hute::cosize_v<SmemLayoutQ>> smem_q;
             };
        
         };

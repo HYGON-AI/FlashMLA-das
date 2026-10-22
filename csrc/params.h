@@ -1,6 +1,6 @@
 #pragma once
 
-#include "cutlass/bfloat16.h"
+#include "hytlass/bfloat16.h"
 
 enum class ModelType {
     V32,
@@ -77,17 +77,17 @@ struct SparseAttnDecodeParams {
     int num_blocks, page_block_size, topk;
     ModelType model_type;
 
-    cutlass::bfloat16_t* __restrict__ q;   // [b, s_q, h_q, d_qk]
-    cutlass::bfloat16_t* __restrict__ kv;  // [num_blocks, page_block_size, d_qk]
+    hytlass::bfloat16_t* __restrict__ q;   // [b, s_q, h_q, d_qk]
+    hytlass::bfloat16_t* __restrict__ kv;  // [num_blocks, page_block_size, d_qk]
     int* __restrict__ indices;   // [b, s_q, topk]
     int* __restrict__ topk_length;  // [b], may be nullptr
     float* __restrict__ attn_sink;  // [h_q], may be nullptr
 
     float* __restrict__ lse;    // [b, s_q, h_q]
-    cutlass::bfloat16_t* __restrict__ out;   // [b, s_q, h_q, d_v]
+    hytlass::bfloat16_t* __restrict__ out;   // [b, s_q, h_q, d_v]
     
     int extra_num_blocks, extra_page_block_size, extra_topk;
-    cutlass::bfloat16_t* __restrict__ extra_kv;  // [extra_num_blocks, extra_page_block_size, d_qk]
+    hytlass::bfloat16_t* __restrict__ extra_kv;  // [extra_num_blocks, extra_page_block_size, d_qk]
     int* __restrict__ extra_indices;   // [b, s_q, extra_topk]
     int* __restrict__ extra_topk_length;  // [b], may be nullptr
     
@@ -168,8 +168,8 @@ struct SparseAttnFwdParams {
     float sm_scale, sm_scale_div_log2;
 
     // Input tensors
-    cutlass::bfloat16_t* __restrict__ q;    // [s_q, h_q, d_qk]
-    cutlass::bfloat16_t* __restrict__ kv;   // [s_kv, h_kv, d_qk]
+    hytlass::bfloat16_t* __restrict__ q;    // [s_q, h_q, d_qk]
+    hytlass::bfloat16_t* __restrict__ kv;   // [s_kv, h_kv, d_qk]
     int* __restrict__ indices;   // [s_q, h_kv, topk]
     float* __restrict__ attn_sink;   // [h_q], may be nullptr
     int* __restrict__ topk_length;    // [s_q], may be nullptr
@@ -180,7 +180,7 @@ struct SparseAttnFwdParams {
     int stride_indices_s_q; int stride_indices_h_kv;
 
     // Output tensors
-    cutlass::bfloat16_t* __restrict__ out;   // [s_q, h_q, d_v]
+    hytlass::bfloat16_t* __restrict__ out;   // [s_q, h_q, d_v]
     float* __restrict__ max_logits; // [s_q, h_q]
     float* __restrict__ lse; // [s_q, h_q]
 

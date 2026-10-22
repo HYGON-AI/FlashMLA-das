@@ -1,9 +1,9 @@
 #pragma once
 
-#include <cutlass/bfloat16.h>
+#include <hytlass/bfloat16.h>
 // #include <cutlass/arch/barrier.h>
 
-using bf16 = cutlass::bfloat16_t;
+using bf16 = hytlass::bfloat16_t;
 using fp8 = unsigned char;
 // using transac_bar_t = cutlass::arch::ClusterTransactionBarrier;
 // using cutlass::arch::fence_view_async_shared;

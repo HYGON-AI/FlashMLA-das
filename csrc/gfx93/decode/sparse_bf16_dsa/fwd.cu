@@ -312,7 +312,7 @@ run_gfx936_prefill_kernel_decode(
                 "gfx936 BF16 DSA decode requires 1 <= num_splits <= num_sms");
     constexpr int64_t kGfx936BufferLoadAddressBytes = 1LL << 32;
     const int64_t padded_k_tokens = static_cast<int64_t>(kv.size(0)) * page_block_size;
-    const int64_t padded_k_bytes = padded_k_tokens * d_qk * static_cast<int64_t>(sizeof(cutlass::bfloat16_t));
+    const int64_t padded_k_bytes = padded_k_tokens * d_qk * static_cast<int64_t>(sizeof(hytlass::bfloat16_t));
     const bool decode_use_c_load = padded_k_bytes > kGfx936BufferLoadAddressBytes;
     TORCH_CHECK(!(flatten_h32_decode && decode_use_c_load),
                 "gfx936 BF16 DSA decode h_q == 32 does not support c-load path yet");
@@ -335,8 +335,8 @@ run_gfx936_prefill_kernel_decode(
         fwd_s_q, static_cast<int>(kv.size(0) * page_block_size), h_q, h_kv, d_qk, d_v, topk,
         sm_scale, sm_scale * LOG_2_E,
 
-        reinterpret_cast<cutlass::bfloat16_t*>(q_kernel.data_ptr()),
-        reinterpret_cast<cutlass::bfloat16_t*>(kv.data_ptr()),
+        reinterpret_cast<hytlass::bfloat16_t*>(q_kernel.data_ptr()),
+        reinterpret_cast<hytlass::bfloat16_t*>(kv.data_ptr()),
         reinterpret_cast<int*>(indices_kernel.data_ptr()),
         ku::get_optional_tensor_ptr<float>(attn_sink),
         topk_length_ptr,
@@ -345,7 +345,7 @@ run_gfx936_prefill_kernel_decode(
         int64_stride_to_int(kv.stride(1)), int64_stride_to_int(kv.stride(2)),
         int64_stride_to_int(indices_kernel.stride(1)), topk,
 
-        reinterpret_cast<cutlass::bfloat16_t*>(out.data_ptr()),
+        reinterpret_cast<hytlass::bfloat16_t*>(out.data_ptr()),
         max_logits.data_ptr<float>(),
         lse_tmp.data_ptr<float>(),
 
@@ -423,7 +423,7 @@ run_gfx936_prefill_kernel_decode(
             nullptr,
             0
         };
-        gfx9::decode::bf16_dsa::run_flash_mla_combine_kernel<cutlass::bfloat16_t>(combine_params);
+        gfx9::decode::bf16_dsa::run_flash_mla_combine_kernel<hytlass::bfloat16_t>(combine_params);
         lse = lse_tmp.permute({0, 2, 1}).contiguous();
     }
 
@@ -671,7 +671,7 @@ run(
             nullptr,
             0
         };
-        gfx9::decode::bf16_dsa::run_flash_mla_combine_kernel<cutlass::bfloat16_t>(combine_params);
+        gfx9::decode::bf16_dsa::run_flash_mla_combine_kernel<hytlass::bfloat16_t>(combine_params);
     }
 
     return {out, lse, tile_scheduler_metadata, num_splits};

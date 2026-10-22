@@ -78,7 +78,7 @@ static std::vector<at::Tensor> sparse_attn_prefill_interface(
     const std::optional<at::Tensor> &attn_sink,
     const std::optional<at::Tensor> &topk_length
 ) {
-    using bf16 = cutlass::bfloat16_t;
+    using bf16 = hytlass::bfloat16_t;
     
     Arch arch = Arch();
     if (!arch.is_gfx93x()) {
@@ -239,7 +239,7 @@ static std::vector<at::Tensor> sparse_attn_prefill_interface(
             nullptr,
             0
         };
-        gfx9::decode::bf16_dsa::run_flash_mla_combine_kernel<cutlass::bfloat16_t>(combine_params);
+        gfx9::decode::bf16_dsa::run_flash_mla_combine_kernel<hytlass::bfloat16_t>(combine_params);
         return {out, max_logits, lse};
     }
 

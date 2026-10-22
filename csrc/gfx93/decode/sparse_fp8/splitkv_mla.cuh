@@ -1,5 +1,7 @@
 #pragma once
 
+#include "hytlass_ext.h"
+
 #include "splitkv_mla.h"
 
 #include <kerutils/kerutils.cuh>
@@ -9,7 +11,7 @@
 #include "components/helpers.h"
 #include "config.h"
 #include "softmax.h"
-using namespace cute;
+using namespace hute;
 
 namespace gfx93::decode::sparse_fp8 {
 #define CUDART_L2E_F            1.442695041F
@@ -39,7 +41,7 @@ KernelTemplate<MODEL_TYPE, NUM_HEADS, HAVE_TOPK_LENGTH>::dequant_fp8_to_bf16(con
     f2 *= kv_scale;
     f3 *= kv_scale;
     f4 *= kv_scale;
-    cutlass::NumericConverter<Element, float, cutlass::FloatRoundStyle::round_toward_zero> convert_;
+    hytlass::NumericConverter<Element, float, hytlass::FloatRoundStyle::round_toward_zero> convert_;
     return {convert_(f1), convert_(f2), convert_(f3), convert_(f4)};
 }
 
@@ -222,7 +224,7 @@ KernelTemplate<MODEL_TYPE, NUM_HEADS, HAVE_TOPK_LENGTH>::float2bf16(float s) {
 
 template<ModelType MODEL_TYPE, int NUM_HEADS, bool HAVE_TOPK_LENGTH>
 __device__ void KernelTemplate<MODEL_TYPE, NUM_HEADS, HAVE_TOPK_LENGTH>::compute_attn_1rowblock_splitkv_sparse_mla_fp8(const SparseAttnDecodeParams &params, const DecodingSchedMeta& sched_meta, int batch_idx) {
-    using Element = cutlass::bfloat16_t;
+    using Element = hytlass::bfloat16_t;
     using index_t = int64_t;
     const int tidx = threadIdx.x;
     const int lane_idx = tidx % 64;
@@ -368,7 +370,7 @@ __device__ void KernelTemplate<MODEL_TYPE, NUM_HEADS, HAVE_TOPK_LENGTH>::compute
 
     TiledMMA tiled_mma_o = TiledMma_O{};
     auto thr_mma_o = tiled_mma_o.get_thread_slice(tidx);
-    auto smem_tiled_copy_V = make_tiled_copy_B(Copy_Atom<GFX928_DS_READ_DS_M32x16_B16, Element>{}, tiled_mma_o);
+    auto smem_tiled_copy_V = make_tiled_copy_B(Copy_Atom<flash_mla::hytlass_ext::GFX928_DS_READ_DS_M32x16_B16, Element>{}, tiled_mma_o);
     auto smem_thr_copy_V = smem_tiled_copy_V.get_thread_slice(tidx);
     Tensor sV = make_tensor(make_smem_ptr(plan.smem_v.data()), SmemLayoutV{});
     Tensor sVt = make_tensor(sV.data(), SmemLayoutVtransposed{});
@@ -437,17 +439,17 @@ __device__ void KernelTemplate<MODEL_TYPE, NUM_HEADS, HAVE_TOPK_LENGTH>::compute
             for (int j = 8; j < 16; j++) {
                 tOsV(j - 8, 0, (k_idx - 4) * 2 + 1) = tSrK(j, 0, k_idx);
             }
-            cute::gemm(tiled_mma, tSrQ(_, _, k_idx), tSrK(_, _, k_idx), acc_s);
+            hute::gemm(tiled_mma, tSrQ(_, _, k_idx), tSrK(_, _, k_idx), acc_s);
         }
         if constexpr (MODEL_TYPE == ModelType::MODEL1) {
             // MODEL1: k_idx 7 = rope (dims 448..511)，且属于 V（写入 tOsV slot 6/7）
             for (int j = 0; j < 8; j++) {
-                tSrK(j, 0, 7) = cutlass::bfloat16_t::bitcast(pf.rope0.data_array[j]);
+                tSrK(j, 0, 7) = hytlass::bfloat16_t::bitcast(pf.rope0.data_array[j]);
             }
             for (int j = 8; j < 16; j++) {
-                tSrK(j, 0, 7) = cutlass::bfloat16_t::bitcast(pf.rope1.data_array[j - 8]);
+                tSrK(j, 0, 7) = hytlass::bfloat16_t::bitcast(pf.rope1.data_array[j - 8]);
             }
-            cute::gemm(tiled_mma, tSrQ(_, _, 7), tSrK(_, _, 7), acc_s);
+            hute::gemm(tiled_mma, tSrQ(_, _, 7), tSrK(_, _, 7), acc_s);
             #pragma unroll
             for (int j = 0; j < 8; j++) {
                 tOsV(j, 0, 6) = tSrK(j, 0, 7);
@@ -488,7 +490,7 @@ __device__ void KernelTemplate<MODEL_TYPE, NUM_HEADS, HAVE_TOPK_LENGTH>::compute
             for (int j = 8; j < 16; j++) {
                 tOsV(j - 8, 0, k_idx * 2 + 1) = tSrK(j, 0, k_idx);
             }
-            cute::gemm(tiled_mma, tSrQ(_, _, k_idx), tSrK(_, _, k_idx), acc_s);
+            hute::gemm(tiled_mma, tSrQ(_, _, k_idx), tSrK(_, _, k_idx), acc_s);
         }
         __syncthreads();
         __builtin_amdgcn_sched_barrier(0);
@@ -500,12 +502,12 @@ __device__ void KernelTemplate<MODEL_TYPE, NUM_HEADS, HAVE_TOPK_LENGTH>::compute
         if constexpr (MODEL_TYPE == ModelType::V32) {
             // V32: k_idx 8 = rope (dims 512..575)，不属于 V
             for (int j = 0; j < 8; j++) {
-                tSrK(j, 0, 8) = cutlass::bfloat16_t::bitcast(pf.rope0.data_array[j]);
+                tSrK(j, 0, 8) = hytlass::bfloat16_t::bitcast(pf.rope0.data_array[j]);
             }
             for (int j = 8; j < 16; j++) {
-                tSrK(j, 0, 8) = cutlass::bfloat16_t::bitcast(pf.rope1.data_array[j - 8]);
+                tSrK(j, 0, 8) = hytlass::bfloat16_t::bitcast(pf.rope1.data_array[j - 8]);
             }
-            cute::gemm(tiled_mma, tSrQ(_, _, 8), tSrK(_, _, 8), acc_s);
+            hute::gemm(tiled_mma, tSrQ(_, _, 8), tSrK(_, _, 8), acc_s);
         }
         __builtin_amdgcn_sched_barrier(0);
         asm volatile("s_waitcnt lgkmcnt(0) \n\t s_barrier\n\t");
@@ -532,12 +534,12 @@ __device__ void KernelTemplate<MODEL_TYPE, NUM_HEADS, HAVE_TOPK_LENGTH>::compute
         {
             flash::__ds_read_m32x16_row_col_alt<1, 0>(tOsVt, tOrVt_copy_view);
             flash::__ds_read_m32x16_row_col_alt<1, 1>(tOsVt, tOrVt_copy_view);
-            cute::gemm(tiled_mma_o, tOrP(_, _, 0), tOrVt(_, _, 0), acc_o);
-            cute::gemm(tiled_mma_o, tOrP(_, _, 1), tOrVt(_, _, 1), acc_o);
+            hute::gemm(tiled_mma_o, tOrP(_, _, 0), tOrVt(_, _, 0), acc_o);
+            hute::gemm(tiled_mma_o, tOrP(_, _, 1), tOrVt(_, _, 1), acc_o);
             flash::__ds_read_m32x16_row_col_alt<1, 2>(tOsVt, tOrVt_copy_view);
             flash::__ds_read_m32x16_row_col_alt<1, 3>(tOsVt, tOrVt_copy_view);
-            cute::gemm(tiled_mma_o, tOrP(_, _, 2), tOrVt(_, _, 2), acc_o);
-            cute::gemm(tiled_mma_o, tOrP(_, _, 3), tOrVt(_, _, 3), acc_o);
+            hute::gemm(tiled_mma_o, tOrP(_, _, 2), tOrVt(_, _, 2), acc_o);
+            hute::gemm(tiled_mma_o, tOrP(_, _, 3), tOrVt(_, _, 3), acc_o);
         }
     };
 
@@ -591,7 +593,7 @@ __device__ void KernelTemplate<MODEL_TYPE, NUM_HEADS, HAVE_TOPK_LENGTH>::compute
         }
         float* gSoftmaxLse = (float*)params.lse + batch_idx * params.stride_lse_b + start_head_idx + s_q_idx * params.stride_lse_s_q;	// (BLOCK_M) : (1)
         {
-            using result_type = cutlass::Array<Element, 2>;
+            using result_type = hytlass::Array<Element, 2>;
             int row, col;
             const int warpId = tidx / 64;
             const int laneId = tidx % 64;
@@ -699,11 +701,11 @@ __device__ void KernelTemplate<MODEL_TYPE, NUM_HEADS, HAVE_TOPK_LENGTH>::devfunc
     int total_blocks;
     if constexpr (HAVE_TOPK_LENGTH) {
         const int req_topk = std::min((int)params.topk_length[batch_idx], params.topk);
-        total_blocks = std::max(cute::ceil_div(req_topk, TOPK_BLOCK_SIZE), 1);
+        total_blocks = std::max(hute::ceil_div(req_topk, TOPK_BLOCK_SIZE), 1);
     } else {
         total_blocks = params.topk / TOPK_BLOCK_SIZE;
     }
-    const int blocks_per_split = cute::ceil_div(total_blocks, params.fixed_num_splits);
+    const int blocks_per_split = hute::ceil_div(total_blocks, params.fixed_num_splits);
 
     DecodingSchedMeta fixed_meta{};
     fixed_meta.begin_req_idx = batch_idx;

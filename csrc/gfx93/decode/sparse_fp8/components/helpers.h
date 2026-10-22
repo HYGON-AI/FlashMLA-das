@@ -1,11 +1,11 @@
 #pragma once
 
 #include <cooperative_groups.h>
-#include <cute/tensor.hpp>
+#include <hute/tensor.hpp>
 
 #include "config.h"
 
-using namespace cute;
+using namespace hute;
 
 namespace gfx93::decode::sparse_fp8 {
 

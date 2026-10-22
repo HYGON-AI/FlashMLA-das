@@ -1,7 +1,8 @@
+#include "hytlass_ext.h"
 // Copyright (c) 2026 Hygon Information Technology Co., Ltd.
 // SPDX-License-Identifier: MIT
 
-#include <cutlass/cutlass.h>
+#include <hytlass/hytlass.h>
 
 #include "utils.h"
 
@@ -9,7 +10,7 @@
 #include "config.h"
 #include "traits.h"
 #include "softmax.h"
-using namespace cute;
+using namespace hute;
 
 namespace gfx93 {
 
@@ -89,7 +90,7 @@ compute_attn_1rowblock_splitkv_mla_kvfp8(const DenseAttnDecodeParams_fp8 &params
     Tensor tSrQ = thr_mma.partition_fragment_A(sQ);
 
     Tensor tSrQ_copy_view = smem_thr_copy_Q.retile_D(tSrQ);
-    cute::copy(smem_tiled_copy_Q, tSsQ, tSrQ_copy_view);
+    hute::copy(smem_tiled_copy_Q, tSsQ, tSrQ_copy_view);
 
 
     __syncthreads();
@@ -100,11 +101,11 @@ compute_attn_1rowblock_splitkv_mla_kvfp8(const DenseAttnDecodeParams_fp8 &params
     Tensor tSrK  = thr_mma.partition_fragment_B(gK); 
     Tensor tSrK_int8  = thr_mma_int8.partition_fragment_B(gK); 
 
-    auto smem_tiled_copy_V = make_tiled_copy_B(Copy_Atom<GFX928_DS_READ_DS_M32x16_B16, Element>{}, tiled_mma_o_16_32_16);
+    auto smem_tiled_copy_V = make_tiled_copy_B(Copy_Atom<flash_mla::hytlass_ext::GFX928_DS_READ_DS_M32x16_B16, Element>{}, tiled_mma_o_16_32_16);
     auto smem_thr_copy_V = smem_tiled_copy_V.get_thread_slice(tidx);
     Tensor tOsVt = smem_thr_copy_V.partition_S(sVt);
     Tensor tOrVt  = thr_mma_o.partition_fragment_B(sVtNoSwizzle_fp8);  
-    constexpr int n_masking_steps = !Is_causal ? 1 : cute::ceil_div(kBlockM, kBlockN) + 1;    
+    constexpr int n_masking_steps = !Is_causal ? 1 : hute::ceil_div(kBlockM, kBlockN) + 1;
     const int *block_table = params.block_table + bidb * params.block_table_batch_stride;
 
 
@@ -409,7 +410,7 @@ flash_fwd_splitkv_mla_kvfp8_kernel(const DenseAttnDecodeParams_fp8 params) {
         const int n_split_idx = batch_idx == sched_meta.begin_req_idx ? sched_meta.begin_split_idx : 0;
         int seqlen_k = __ldg(params.seqlens_k_ptr + batch_idx);
         const int start_block_idx = batch_idx == sched_meta.begin_req_idx ? sched_meta.begin_block_idx : 0;
-        int end_block_idx = batch_idx == sched_meta.end_req_idx ? sched_meta.end_block_idx : cute::ceil_div(seqlen_k, kBlockN);
+        int end_block_idx = batch_idx == sched_meta.end_req_idx ? sched_meta.end_block_idx : hute::ceil_div(seqlen_k, kBlockN);
         const bool is_no_split = batch_idx == sched_meta.begin_req_idx ? !sched_meta.is_first_req_splitted : (batch_idx == sched_meta.end_req_idx ? !sched_meta.is_last_req_splitted : true);
         
         if (batch_idx > sched_meta.begin_req_idx) {
@@ -434,7 +435,7 @@ void run_flash_splitkv_mla_kvfp8_kernel(DenseAttnDecodeParams_fp8 &params) {
 
     BOOL_SWITCH(params.is_causal, Is_causal, [&] {
         using T = Traits<InputT, Is_causal>;
-        const int num_m_block = cute::ceil_div(params.q_seq_per_hk, T::BLOCK_SIZE_M);
+        const int num_m_block = hute::ceil_div(params.q_seq_per_hk, T::BLOCK_SIZE_M);
         auto mla_kernel = &flash_fwd_splitkv_mla_kvfp8_kernel<T>;
         mla_kernel<<<dim3(num_m_block, params.h_k, params.num_sm_parts), T::NUM_THREADS, smem_size, params.stream>>>(params);
     });

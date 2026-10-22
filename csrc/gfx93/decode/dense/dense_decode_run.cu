@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 #include <torch/extension.h>
-#include <cutlass/half.h>
+#include <hytlass/half.h>
 
 #include "splitkv_mla.h"
 
@@ -22,9 +22,9 @@ void run_flash_splitkv_mla_kernel(DenseAttnDecodeParams &params) {
     }
 }
 
-template void run_flash_splitkv_mla_kernel<cutlass::bfloat16_t>(DenseAttnDecodeParams &params);
+template void run_flash_splitkv_mla_kernel<hytlass::bfloat16_t>(DenseAttnDecodeParams &params);
 #ifndef FLASH_MLA_DISABLE_FP16
-template void run_flash_splitkv_mla_kernel<cutlass::half_t>(DenseAttnDecodeParams &params);
+template void run_flash_splitkv_mla_kernel<hytlass::half_t>(DenseAttnDecodeParams &params);
 #endif
 
 }

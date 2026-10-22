@@ -8,7 +8,7 @@
 #include <ATen/cuda/CUDAContext.h>
 #include <c10/cuda/CUDAGuard.h>
 
-#include <cutlass/fast_math.h>
+#include <hytlass/fast_math.h>
 #include <cstdlib>
 #include "flash_mla.h"
 #include "static_switch.h"
@@ -188,11 +188,11 @@ mha_fwd_kvcache_quantization_mla(
             num_blocks, page_block_size, num_heads_k, head_size_k, is_causal, softmax_scale, kv_cache_dtype.c_str());
     }
     if (q_dtype == torch::kBFloat16) {
-        run_mha_fwd_splitkv_mla<cutlass::bfloat16_t, 576>(params, kv_cache_dtype, stream);
+        run_mha_fwd_splitkv_mla<hytlass::bfloat16_t, 576>(params, kv_cache_dtype, stream);
     }
     #ifndef FLASH_MLA_DISABLE_FP16
     else if (q_dtype == torch::kHalf) {
-        run_mha_fwd_splitkv_mla<cutlass::half_t, 576>(params, kv_cache_dtype, stream);
+        run_mha_fwd_splitkv_mla<hytlass::half_t, 576>(params, kv_cache_dtype, stream);
     }
     #endif
     else {
@@ -239,7 +239,7 @@ DecodingAttnImplMeta get_attn_impl_meta(
                 int s_q = num_q_tokens_per_head_k * h_k / h_q;
                 // FP8 + Sparse MLA
                 return {
-                    std::max((sm_count * 2) / h_k / (cutlass::ceil_div(h_q/h_k, 16) * s_q), 1),
+                    std::max((sm_count * 2) / h_k / (hytlass::ceil_div(h_q/h_k, 16) * s_q), 1),
                     5,
                     64
                 };
@@ -255,7 +255,7 @@ DecodingAttnImplMeta get_attn_impl_meta(
                 int h_q = h_q_.has_value() && h_q_.value() >= 64 ? 64 : 16;
                 // Dense BF16 MLA
                 return {
-                    std::max(sm_count / h_k / cutlass::ceil_div(num_q_tokens_per_head_k, h_q), 1),
+                    std::max(sm_count / h_k / hytlass::ceil_div(num_q_tokens_per_head_k, h_q), 1),
                     5,
                     64
                 };
@@ -292,7 +292,7 @@ get_mla_decoding_metadata_dense_fp8(
     int sm_count = dprops->multiProcessorCount*(block_size_m == 16 ? 2 : 1);
   
     
-    int num_sm_parts = std::max(sm_count / num_heads_k / cutlass::ceil_div(num_heads_per_head_k, block_size_m), 1);
+    int num_sm_parts = std::max(sm_count / num_heads_k / hytlass::ceil_div(num_heads_per_head_k, block_size_m), 1);
     if (print_param)
     {
         fprintf(stderr, "[flashmla] [get_mla_decoding_metadata_dense_fp8] block_size_m=%d sm_count=%d num_sm_parts=%d\n", 
@@ -469,11 +469,11 @@ mha_fwd_kvcache_mla_nope_pe(
             num_blocks, page_block_size, num_heads_k, head_size_k, is_causal, softmax_scale);
     }
     if (q_dtype == torch::kBFloat16) {
-        run_mha_fwd_splitkv_mla<cutlass::bfloat16_t, 576>(params, "auto", stream, true);
+        run_mha_fwd_splitkv_mla<hytlass::bfloat16_t, 576>(params, "auto", stream, true);
     }
     #ifndef FLASH_MLA_DISABLE_FP16
     else if (q_dtype == torch::kHalf) {
-        run_mha_fwd_splitkv_mla<cutlass::half_t, 576>(params, "auto", stream, true);
+        run_mha_fwd_splitkv_mla<hytlass::half_t, 576>(params, "auto", stream, true);
     }
     #endif
     else {
@@ -652,11 +652,11 @@ mha_fwd_kvcache_quantization_q_nope_pe_mla(
             num_blocks, page_block_size, num_heads_k, head_size_k, is_causal, softmax_scale, kv_cache_dtype.c_str());
     }
     if (q_dtype == torch::kBFloat16) {
-        run_mha_fwd_splitkv_mla<cutlass::bfloat16_t, 576>(params, kv_cache_dtype, stream, true);
+        run_mha_fwd_splitkv_mla<hytlass::bfloat16_t, 576>(params, kv_cache_dtype, stream, true);
     }
     #ifndef FLASH_MLA_DISABLE_FP16
     else if (q_dtype == torch::kHalf) {
-        run_mha_fwd_splitkv_mla<cutlass::half_t, 576>(params, kv_cache_dtype, stream, true);
+        run_mha_fwd_splitkv_mla<hytlass::half_t, 576>(params, kv_cache_dtype, stream, true);
     }
     #endif
     else {
@@ -831,12 +831,12 @@ mha_fwd_kvcache_mla_fp8(
         if (!arch.is_gfx938()) {
             TORCH_CHECK(false, "Dense decode MLA is only supported on gfx938 architecture");
         }
-        run_mha_fwd_splitkv_mla_fp8<cutlass::float_e4m3_t,cutlass::bfloat16_t, 576>(params,stream,false);
+        run_mha_fwd_splitkv_mla_fp8<hytlass::float_e4m3_t,hytlass::bfloat16_t, 576>(params,stream,false);
     } else if ((q_dtype == torch::kBFloat16 || q_dtype == torch::kHalf) && kcache.dtype() == torch::kFloat8_e5m2) {
         if (q_dtype == torch::kBFloat16) {
-            run_mha_fwd_splitkv_mla<cutlass::bfloat16_t, 576>(params, "fp8_e5m2", stream);
+            run_mha_fwd_splitkv_mla<hytlass::bfloat16_t, 576>(params, "fp8_e5m2", stream);
         } else if (q_dtype == torch::kHalf) {
-            run_mha_fwd_splitkv_mla<cutlass::half_t, 576>(params, "fp8_e5m2", stream);
+            run_mha_fwd_splitkv_mla<hytlass::half_t, 576>(params, "fp8_e5m2", stream);
         } else {
             TORCH_CHECK(false, "Unsupported tensor dtype, q dtype " + getDtypeString(q) + " kvcache " + getDtypeString(kcache));
         }
@@ -1026,14 +1026,14 @@ mha_fwd_kvcache_mla_fp8_with_cat(
         if (!arch.is_gfx938()) {
             TORCH_CHECK(false, "Dense decode MLA is only supported on gfx938 architecture");
         }
-        run_mha_fwd_splitkv_mla_fp8<cutlass::float_e4m3_t,cutlass::bfloat16_t, 576>(params,stream,true);
+        run_mha_fwd_splitkv_mla_fp8<hytlass::float_e4m3_t,hytlass::bfloat16_t, 576>(params,stream,true);
     } else if (q_dtype == torch::kBFloat16 && kcache.dtype() == torch::kFloat8_e4m3fn) {
-        run_mha_fwd_splitkv_mla_fp8<cutlass::bfloat16_t,cutlass::bfloat16_t, 576>(params,stream,true);
+        run_mha_fwd_splitkv_mla_fp8<hytlass::bfloat16_t,hytlass::bfloat16_t, 576>(params,stream,true);
     } else if (kcache.dtype() == torch::kFloat8_e5m2) {
         if (q_dtype == torch::kBFloat16) {
-            run_mha_fwd_splitkv_mla<cutlass::bfloat16_t, 576>(params, "fp8_e5m2", stream, true);
+            run_mha_fwd_splitkv_mla<hytlass::bfloat16_t, 576>(params, "fp8_e5m2", stream, true);
         } else if (q_dtype == torch::kHalf) {
-            run_mha_fwd_splitkv_mla<cutlass::half_t, 576>(params, "fp8_e5m2", stream, true);
+            run_mha_fwd_splitkv_mla<hytlass::half_t, 576>(params, "fp8_e5m2", stream, true);
         } else {
             TORCH_CHECK(false, "Unsupported tensor dtype, q dtype " + getDtypeString(q_nope) + " kvcache " + getDtypeString(kcache));
         }
