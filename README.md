@@ -1,5 +1,7 @@
 # FlashMLA-das
 
+FlashMLA-das 面向海光 HCU gfx936/gfx938 平台，提供 MLA 注意力计算、稀疏 prefill/decode、KV cache 及 Python 接口。
+
 ## 上游来源与修改说明
 
 本项目基于 DeepSeek FlashMLA，面向 Hygon HCU 平台进行适配与优化。
@@ -24,17 +26,13 @@ HYGON 的原创修改包括：
 
 HYGON 版权声明仅适用于其原创贡献，不替代或覆盖 DeepSeek 及其他上游作者的版权声明。原有版权声明及 MIT 许可文本完整保留。
 
-本项目的直接上游为 DeepSeek FlashMLA。部分文件保留的 FlashAttention 引用可在 DeepSeek FlashMLA 的早期源码中找到，不代表本项目另行从 FlashAttention 仓库导入了这些文件；相关来源注释和作者署名予以保留。
-
 第三方组件、固定版本及仍需补充的来源信息见 [Third-Party Notices](THIRD_PARTY_NOTICES.md)。
 
 ## Introduction
 
-FlashMLA is DeepSeek's library of optimized attention kernels, powering the [DeepSeek-V3](https://github.com/deepseek-ai/DeepSeek-V3) and [DeepSeek-V3.2-Exp](https://github.com/deepseek-ai/DeepSeek-V3.2-Exp) models. This repository contains the following implementations:
+FlashMLA-das provides attention kernels adapted and optimized for Hygon HCU gfx936/gfx938. This repository contains the following implementations:
 
 **Sparse Attention Kernels**
-
-*These kernels power DeepSeek Sparse Attention (DSA), as introduced in [this paper](https://github.com/deepseek-ai/DeepSeek-V3.2-Exp).*
 
 - Token-level sparse attention for the prefill stage
 - Token-level sparse attention for the decoding stage, with FP8 KV cache
@@ -42,17 +40,9 @@ FlashMLA is DeepSeek's library of optimized attention kernels, powering the [Dee
 
 **Dense Attention Kernels**
 
-- Dense attention for the prefill stage
 - Dense attention for the decoding stage
 
-## News
-
-- **2025.09.29 Release of Sparse Attention Kernels**: With the launch of [DeepSeek-V3.2](https://github.com/deepseek-ai/DeepSeek-V3.2-Exp), we are releasing the corresponding token-level sparse attention kernels. These kernels power the model's DeepSeek Sparse Attention (DSA) and achieve up to 640 TFlops during prefilling and 410 TFlops during decoding. We also release a deep-dive blog for our new FP8 sparse decoding kernel. Check it out [here](docs/20250929-hopper-fp8-sparse-deep-dive.md).
-- **2025.08.01 Kernels for MHA on SM100**: Thanks to [NVIDIA's PR](https://github.com/deepseek-ai/FlashMLA/pull/76) for MHA forward / backward kernels on SM100!
-- **2025.04.22 Deep-Dive Blog**: We'd love to share the technical details behind the new FlashMLA kernel! Check out our deep-dive write-up [here](docs/20250422-new-kernel-deep-dive.md).
-- **2025.04.22 Performance Update**: We're excited to announce the new release of Flash MLA, which delivers 5% ~ 15% performance improvement for compute-bound workloads, achieving up to 660 TFlops on NVIDIA H800 SXM5 GPUs. The interface of the new version is fully compatible with the old one. Simply upgrade to the new version for an immediate performance boost! 🚀🚀🚀
-
-## Performance
+## Tests and Benchmarks
 
 #### Test & benchmark MLA decoding (Sparse & Dense):
 
@@ -62,46 +52,33 @@ python tests/test_flash_mla_sparse_decoding.py
 FLASH_MLA_DECODE_BF16=1 python tests/test_flash_mla_sparse_decoding.py
 ```
 
-The dense MLA decoding kernel achieves up to 3000 GB/s in memory-bound configuration and 660 TFLOPS in computation-bound configuration on H800 SXM5 with CUDA 12.8. The token-level sparse MLA decoding kernel (which uses an FP8 KV cache while performing the matrix multiplication in bfloat16) achieves 410 TFLOPS in compute-bound configuration on H800 SXM5 with CUDA 12.8, and achieves up to 350 TFlops on B200 (which is not really optimized yet).
-
-#### Test & benchmark MHA prefill (Dense):
-
-```bash
-python tests/test_fmha_sm100.py
-```
-
-It achieves up to 1460 TFlops in forward and 1000 TFlops in backward computation on B200, as reported by NVIDIA.
-
 #### Test & benchmark MLA prefill (Sparse):
 
 ```bash
 python tests/test_flash_mla_sparse_prefill.py
 ```
 
-It achieves up to 640 TFlops in forward computation on H800 SXM5 with CUDA 12.8, and achieves up to 1450 TFlops on B200, CUDA 12.9.
+Run these scripts in the Hygon HCU environment. Correctness and performance results depend on the input configuration, software environment, and device load.
 
 ## Requirements
 
-- SM90 / SM100 (See the support matrix below)
-- CUDA 12.8 and above (CUDA 12.9+ is required for SM100 kernels)
-- PyTorch 2.0 and above
-
-For the Hygon HCU gfx93 path in this branch, build with the local AICC/ROCm
-toolchain and the pinned HYTLASS submodule described below.
+- Linux with Hygon HCU gfx936/gfx938 hardware.
+- Hygon DTK/AICC toolchain and a matching HCU-enabled PyTorch environment. FP8 paths and tests require the corresponding FP8 data types.
+- A host C++ compiler with GCC 9 or later and C++20 support.
+- The pinned HYTLASS submodule described below.
 
 Support matrix:
 
-| Kernel | GPU Architecture | MLA Mode [2] | KVCache Format |
+| Kernel | HCU Architecture | Attention Mode | KV Cache Format |
 | :---: | :---: | :---: | :---: |
-| Dense Decoding | SM90 | MQA | BF16 |
-| Sparse Decoding | SM90 & SM100 | MQA | FP8 [1] |
-| DSA BF16 Sparse Decoding | gfx93 | MQA | BF16 |
-| Dense Prefill | SM100 | MHA |  |
-| Sparse Prefill | SM90 & SM100 / gfx93 | MQA |  |
+| Dense Decoding | gfx936 / gfx938 | MQA | BF16 / FP16 |
+| Sparse Decoding | gfx936 / gfx938 | MQA | FP8 with scales |
+| DSA BF16 Sparse Decoding | gfx936 / gfx938 | MQA | BF16 |
+| Sparse Prefill | gfx936 / gfx938 | MQA | BF16 |
 
-[1]: For more details on using FP8 KV cache, see documents below.
+MQA denotes Multi-Query Attention. The sparse paths use one KV head. Supported head counts, head dimensions, and optional parameters vary by kernel; refer to the API checks and tests for the selected path.
 
-[2]: Here "MLA Mode" refers to the mode used for MLA calculation. MQA stands for Multi-Query Attention mode (i.e. `head_dim_k` =  576 with `head_dim_v` = 512), while MHA stands for Multi-Head Attention mode (i.e. `head_dim_k` = 192 / 128 with `head_dim_v` = 128). For a detailed explanation of these modes, please refer to the appendix of [DeepSeek V3.2's Paper](https://github.com/deepseek-ai/DeepSeek-V3.2-Exp).
+For FP8 KV cache layouts, see the usage notes below and [tests/quant.py](tests/quant.py).
 
 ## Installation
 
@@ -121,7 +98,7 @@ FlashMLA-specific register layouts and operation tags are in `csrc/hytlass_ext.h
 the HYTLASS submodule itself is used without local modifications.
 
 When running tests directly from the source tree, prefer an in-place build so
-the local `flash_mla` package can find the compiled `flash_mla.cuda` extension:
+the local `flash_mla` package can find its compiled HCU extension:
 
 ```bash
 python setup.py build_ext --inplace
@@ -129,9 +106,9 @@ python tests/test_flash_mla_sparse_prefill.py
 FLASH_MLA_DECODE_BF16=1 python tests/test_flash_mla_sparse_decoding.py
 ```
 
-If you only run `pip install -v .` or `python setup.py install`, avoid launching
-tests from a different unbuilt source checkout, otherwise Python may import that
-checkout source `flash_mla/` directory and fail with `No module named flash_mla.cuda`.
+If you install the package separately, avoid launching tests from a different
+unbuilt source checkout, because Python may import that checkout's `flash_mla/`
+directory instead of the installed package and fail to load the compiled extension.
 
 ## Usage
 
@@ -142,24 +119,26 @@ To use the MLA decoding kernels, call get_mla_metadata once before the decoding 
 ```python
 from flash_mla import get_mla_metadata, flash_mla_with_kvcache
 
-tile_scheduler_metadata, num_splits = get_mla_metadata(
-    cache_seqlens,
-    s_q * h_q // h_kv,
-    h_kv,
-    h_q,
-    is_fp8,
-    topk,
-)
+tile_scheduler_metadata, num_splits = get_mla_metadata()
 
 for i in range(num_layers):
     ...
     o_i, lse_i = flash_mla_with_kvcache(
-        q_i, kvcache_i, block_table, cache_seqlens, dv,
-        tile_scheduler_metadata, num_splits,
-        is_causal, is_fp8_kvcache, indices,
+        q=q_i,
+        k_cache=kvcache_i,
+        block_table=block_table,
+        cache_seqlens=cache_seqlens,
+        head_dim_v=512,
+        tile_scheduler_metadata=tile_scheduler_metadata,
+        num_splits=num_splits,
+        causal=is_causal,
+        is_fp8_kvcache=is_fp8_kvcache,
+        indices=indices,
     )
     ...
 ```
+
+Reuse the scheduling metadata only while input shapes and the relevant sequence-length values remain unchanged. Create fresh metadata when these change. For sparse decoding, set `causal=False`; `block_table` and `cache_seqlens` may be `None` because `indices` contains absolute KV cache positions.
 
 Where
 
@@ -175,7 +154,7 @@ This branch also supports the DSA BF16 sparse decode path when
 `is_fp8_kvcache=False` and `k_cache` / `extra_k_cache` are `torch.bfloat16`.
 The test suite enables this path with `FLASH_MLA_DECODE_BF16=1`.
 
-In the "FP8 with scale" format, each token's KV cache is 656 Bytes, structured as:
+For the FP8 sparse layout with `head_dim_k=576` and `head_dim_v=512`, each token's KV cache is 656 bytes, structured as:
 -   **First 512 bytes:** The "quantized NoPE" part, containing 512 `float8_e4m3` values.
 -   **Next 16 bytes:** Scale factors, containing 4 `float32` values. The first `float32` is the scale for the first 128 `float8_e4m3` values, the second for the next 128, and so on.
 -   **Last 128 bytes:** The "RoPE" part, containing 64 `bfloat16` values. This part is not quantized for accuracy.
@@ -194,7 +173,7 @@ The kernel returns `(out, lse)`, where:
 -   `out` is the attention result.
 -   `lse` is the log-sum-exp value of the attention scores for each query head.
 
-See `tests/test_flash_mla_decoding.py` for a complete example.
+See [tests/test_flash_mla_sparse_decoding.py](tests/test_flash_mla_sparse_decoding.py) and [tests/test_flash_mla_dense_decoding.py](tests/test_flash_mla_dense_decoding.py) for complete examples.
 
 ### Sparse MLA Prefill
 
@@ -229,57 +208,17 @@ out = S @ focused_kv  # [s_q, h_q, d_qk]
 return (out, max_logits, lse)
 ```
 
-See `tests/test_flash_mla_prefill.py` for a complete example.
-
-### Dense MHA Prefill
-
-This kernel implements the standard dense Multi-Head Attention (MHA) forward and backward operations. It can be called using:
--   `flash_attn_varlen_func`
--   `flash_attn_varlen_qkvpacked_func`
--   `flash_attn_varlen_kvpacked_func`
-
-The usage is similar to the `flash_attn` package. See `tests/test_fmha_sm100.py` for a complete example.
+See [tests/test_flash_mla_sparse_prefill.py](tests/test_flash_mla_sparse_prefill.py) for a complete example.
 
 ## Acknowledgement
 
-FlashMLA is inspired by [FlashAttention 2&3](https://github.com/dao-AILab/flash-attention/) and [cutlass](https://github.com/nvidia/cutlass) projects.
+We acknowledge the authors of the upstream FlashMLA project and the HYTLASS contributors. Source attribution and third-party license information are recorded in [Third-Party Notices](THIRD_PARTY_NOTICES.md).
 
-## Community Support
+## Hygon HCU Resources
 
-### MetaX
-For MetaX GPUs, visit the official website: [MetaX](https://www.metax-tech.com).
-
-The corresponding FlashMLA version can be found at: [MetaX-MACA/FlashMLA](https://github.com/MetaX-MACA/FlashMLA)
-
-
-### Moore Threads
-For the Moore Threads GPU, visit the official website: [Moore Threads](https://www.mthreads.com/).
-
-The corresponding FlashMLA version is available on GitHub: [MooreThreads/MT-flashMLA](https://github.com/MooreThreads/MT-flashMLA).
-
-
-### Hygon HCU
-For the Hygon HCU, visit the official website: [Hygon Developer](https://developer.sourcefind.cn/).
-
-The corresponding FlashMLA version is available here: [OpenDAS/MLAttention](https://developer.sourcefind.cn/codes/OpenDAS/MLAttention).
-
-
-### Intellifusion
-For the Intellifusion NNP, visit the official website: [Intellifusion](https://www.intellif.com).
-
-The corresponding FlashMLA version is available on Gitee: [Intellifusion/tyllm](https://gitee.com/Intellifusion_2025/tyllm/blob/master/python/tylang/flash_mla.py).
-
-
-### Iluvatar Corex
-For Iluvatar Corex GPUs, visit the official website: [Iluvatar Corex](https://www.iluvatar.com).
-
-The corresponding FlashMLA version is available on GitHub: [Deep-Spark/FlashMLA](https://github.com/Deep-Spark/FlashMLA/tree/iluvatar_flashmla)
-
-
-### AMD Instinct
-For AMD Instinct GPUs, visit the official website: [AMD Instinct](https://www.amd.com/en/products/accelerators/instinct.html).
-
-The corresponding FlashMLA version can be found at: [AITER/MLA](https://github.com/ROCm/aiter/blob/main/aiter/mla.py)
+- [Hygon Developer](https://developer.sourcefind.cn/)
+- [FlashMLA-das repository](https://github.com/HYGON-AI/FlashMLA-das)
+- [HYTLASS dependency](https://github.com/HYGON-AI/hytlass)
 
 ## Citation
 
