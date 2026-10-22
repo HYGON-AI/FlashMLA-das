@@ -73,6 +73,10 @@ architecture, with no newly failing case or changed failure signature.
 Checked passing outputs are bitwise identical: 138 tensors on gfx938 and 118 on
 gfx936. Both requested architecture comparisons are complete for this selection;
 baseline failures and unsupported entry points remain documented limitations.
+The [focused gfx938 FP8 QKV review](hytlass-qkv-review-gfx938-20261022.md)
+supplies same-input repeat controls for two failed branches: both builds remain
+incorrect and the baseline itself is unstable. This does not prove failed
+outputs equivalent or identify the kernel root cause; no unrelated fix was made.
 
 Source checks cover the pinned submodule, header resolution, original register
 layouts, release inheritance ABI, template argument changes, and unchanged
