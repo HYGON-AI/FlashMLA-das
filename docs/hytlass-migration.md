@@ -50,11 +50,20 @@ in place. See [Third-Party Notices](../THIRD_PARTY_NOTICES.md).
 
 ## Validation
 
+The acceptance criterion for this dependency migration is no newly failing
+correctness case relative to the previous dependency build. Numerical failures
+and faults reproduced by that baseline are recorded as existing limitations;
+fixing them is outside this change. Unrelated experimental fixes were withdrawn
+before the new isolated migration build.
+
 The [2026-10-21 HCU validation snapshot](hytlass-validation-20261021.md)
-records both successful builds, matching selected correctness outcomes,
-and two rounds of timing and output comparisons. Both builds reproduce numerical
-failures and a GPU VMFault;
-the migration has not passed the release gate.
+records both successful builds and matching selected correctness outcomes.
+Its timing results are historical observations: they do not establish compliance
+with the subsequently required idle-device checks. A fresh gfx938 comparison
+uses a three-sample VRAM=0%, HCU=0%, no-process gate and monitors foreign KFD
+allocations and queues while the worker runs. Interrupted rounds are excluded.
+See the [2026-10-22 dependency regression report](hytlass-validation-20261022.md).
+gfx936 runtime validation remains a separate follow-up.
 
 Source checks cover the pinned submodule, header resolution, original register
 layouts, release inheritance ABI, template argument changes, and unchanged
@@ -89,7 +98,9 @@ FLASH_MLA_DECODE_BF16=1 python tests/test_flash_mla_sparse_decoding.py
 python tests/test_flash_mla_sparse_prefill.py
 ```
 
-Validate the BF16/FP16, FP8 KV, FP8 QKV, and DSA paths and compare performance
-with the previous build before integrating the migration into a release.
+Compare BF16/FP16, FP8 KV, FP8 QKV, and DSA correctness with the previous build.
+New failures require investigation; baseline-reproduced failures do not require
+unrelated kernel fixes in this migration. This is representative runtime
+coverage, not a claim that every shape or architecture is correct.
 The `.s` and `.co` files in `flash_mla/asm` are unchanged by this migration;
 their compiler-provenance cleanup and reproducible-build review remain separate.
