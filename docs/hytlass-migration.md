@@ -62,8 +62,12 @@ Its timing results are historical observations: they do not establish compliance
 with the subsequently required idle-device checks. A fresh gfx938 comparison
 uses a three-sample VRAM=0%, HCU=0%, no-process gate and monitors foreign KFD
 allocations and queues while the worker runs. Interrupted rounds are excluded.
-See the [2026-10-22 dependency regression report](hytlass-validation-20261022.md).
-gfx936 runtime validation remains a separate follow-up.
+The [gfx938 report](hytlass-validation-20261022.md) and
+[gfx936 report](hytlass-validation-gfx936-20261022.md) record 89 paired cases per
+architecture, with no newly failing case or changed failure signature.
+Checked passing outputs are bitwise identical: 138 tensors on gfx938 and 118 on
+gfx936. Both requested architecture comparisons are complete for this selection;
+baseline failures and unsupported entry points remain documented limitations.
 
 Source checks cover the pinned submodule, header resolution, original register
 layouts, release inheritance ABI, template argument changes, and unchanged

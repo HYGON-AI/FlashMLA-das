@@ -95,7 +95,9 @@ assertion location or GPU VMFault classification.
 
 ## Follow-up and Evidence
 
-gfx936 runtime validation is still required and will be performed separately.
+The [separate gfx936 runtime comparison](hytlass-validation-gfx936-20261022.md)
+is complete: 89 matching status/failure-signature pairs, no new failures, and
+118 bitwise-identical checked output tensors from 55 passing pairs.
 gfx928/gfx936/gfx938 standalone ABI compilation passed previously; compilation
 does not establish runtime correctness on those architectures. No performance
 claim is made from this correctness round. Historical performance measurements
@@ -109,4 +111,5 @@ CPU tensor captures remain in the isolated remote results directory; hashes
 and comparison metrics are included in the report.
 Withdrawn experiments are retained separately as
 `FlashMLA-withdrawn-extra-changes-20261022-111824` and are not part of this branch.
-The PR remains a draft pending the separate gfx936 check and normal review.
+The PR remains a draft for normal review; both requested architecture
+comparisons are complete for the selected cases.
