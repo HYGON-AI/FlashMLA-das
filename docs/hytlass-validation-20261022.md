@@ -4,8 +4,10 @@
 
 The [follow-up impact review](hytlass-impact-review-20261022.md) inventories all
 affected components and records supplementary gfx936 coverage. It explicitly
-documents different failed-case LSE hashes in gfx938 direct-QKV FP8 cases 18/19;
-their cause is not established by matching baseline failure signatures.
+documents different failed-case LSE hashes in gfx938 direct-QKV FP8 cases 18/19.
+The [focused repeat review](hytlass-qkv-review-gfx938-20261022.md) subsequently
+reproduces baseline instability with identical retained inputs; this does not
+establish the kernel root cause or prove failed outputs equivalent.
 
 The gate is no new correctness failures after replacing the customized CUTLASS
 dependency with public HYTLASS. Existing failures reproduced with the previous
@@ -67,8 +69,9 @@ artifacts remain unchanged.
 
 ## Results
 
-The selected gfx938 dependency-regression gate passed: no new failure or output
-change was observed after replacing the dependency.
+The selected gfx938 dependency-regression gate passed: no newly failing case
+or change in checked passing outputs was observed after replacing the dependency.
+Unstable failed-case outputs are documented separately below and in the repeat review.
 
 | Outcome | Baseline | Migration |
 | --- | ---: | ---: |

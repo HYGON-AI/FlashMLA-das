@@ -129,11 +129,15 @@ cause, bound every possible migration effect, or prove failed outputs equivalent
 No unrelated attempt to fix this behavior was made.
 
 The saved gfx938 direct-QKV FP8 cases 18/19 also have different failed-case LSE
-hashes, while their output hashes match. They already fail the baseline's
-numerical check. They were not rerun on gfx938 in this gfx936 follow-up, and
-their LSE difference remains unattributed. gfx936 rejects that entry point and
-cannot provide gfx938 numerical evidence for it. These failed branches must not
-be described as having fully equivalent or correct outputs.
+hashes. A subsequent [focused gfx938 repeat review](hytlass-qkv-review-gfx938-20261022.md)
+ran each case 12 times per build with verified identical inputs and references.
+All 12 baseline LSE hashes differ in each case, as do the migration hashes;
+outputs also vary within the baseline. All 48 calls still fail output checks.
+The original matching output hashes represent all-NaN tensors. This establishes
+existing baseline instability and supplies the missing same-build control;
+it does not establish the kernel root cause or attribute every cross-build
+value difference. These failed branches must not be described as having fully
+equivalent or correct outputs. gfx936 rejects this entry point.
 
 ## Evidence
 
@@ -147,6 +151,9 @@ Its SHA-256 is
 `fd3c9ae85831c1239e587650150f81eec180ce39749da57d1ca8c8b72b4673b5`.
 Raw tensors remain in `/tmp/flashmla-impact-results-gfx936-20261022` and
 `/tmp/flashmla-cutlass-results-gfx936-final-20261022` inside the container.
+The focused gfx938 review adds `FlashMLA-HYTLASS-qkv-review-gfx938-20261022.json`
+and `FlashMLA-HYTLASS-qkv-evidence-gfx938-20261022.tar.gz`; its report records
+the archive hash and all four valid idle-device rounds.
 
 The original [gfx938 report](hytlass-validation-20261022.md) and
 [gfx936 report](hytlass-validation-gfx936-20261022.md) retain the original
