@@ -7,6 +7,10 @@ production kernels or tolerances. Together with the [gfx938 comparison](hytlass-
 this completes the requested two-architecture correctness comparison for the
 selected cases; it is not exhaustive correctness coverage.
 
+The [follow-up impact review](hytlass-impact-review-20261022.md) adds 42 gfx936
+configurations and 12 same-build repeat runs, with no new failing case. It also
+examines failed/auxiliary captures and complete thread/register mapping.
+
 ## Builds
 
 | Item | Baseline | Migration |

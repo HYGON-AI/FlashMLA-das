@@ -2,6 +2,11 @@
 
 ## Scope and Acceptance
 
+The [follow-up impact review](hytlass-impact-review-20261022.md) inventories all
+affected components and records supplementary gfx936 coverage. It explicitly
+documents different failed-case LSE hashes in gfx938 direct-QKV FP8 cases 18/19;
+their cause is not established by matching baseline failure signatures.
+
 The gate is no new correctness failures after replacing the customized CUTLASS
 dependency with public HYTLASS. Existing failures reproduced with the previous
 dependency are recorded without changing unrelated kernels or tolerances.

@@ -50,6 +50,11 @@ in place. See [Third-Party Notices](../THIRD_PARTY_NOTICES.md).
 
 ## Validation
 
+The [component impact review](hytlass-impact-review-20261022.md) traces all
+11 exported entry points and 29 build units, compares complete register/thread
+maps, and adds 42 gfx936 configurations plus 12 failed-case repeat runs. It also
+records failed-output differences and the limits of matching baseline failures.
+
 The acceptance criterion for this dependency migration is no newly failing
 correctness case relative to the previous dependency build. Numerical failures
 and faults reproduced by that baseline are recorded as existing limitations;
