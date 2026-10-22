@@ -61,10 +61,13 @@ The four files in the third row are `block_info.h`, `kernel_traits.h`,
 copyright; the others retain PyTorch or NVIDIA DALI source references. The
 maintainer's confirmation is not used to remove or supersede those records.
 
-The newly added `.gitlab-ci.yml`, which was outside the original 195-item
-source table, also receives the Hygon/MIT notice. Thus 134 source/configuration
-files receive notices. Shebangs, encoding lines, file bodies, original
-attribution, generated metadata, and precompiled artifacts are preserved.
+During the attribution update, the then-present GitLab CI configuration, which
+was outside the original 195-item source table, also received the Hygon/MIT
+notice, bringing that update to 134 source/configuration files. The internal
+GitLab pipeline and its three helper scripts were subsequently removed from
+the open-source tree; that historical count is not a current file inventory.
+The attribution update preserved shebangs, encoding lines, file bodies,
+original attribution, generated metadata, and precompiled artifacts.
 
 ## Recorded Examples
 
