@@ -1,5 +1,11 @@
 # HCU Validation Snapshot: 2026-10-21
 
+> Historical snapshot. The migration acceptance criterion was subsequently
+> clarified as no new correctness failures relative to the old dependency.
+> Baseline-reproduced failures are recorded without expanding this change to
+> fix them. Timings below lack the later strict idle-device evidence and are
+> not used for current acceptance. See [migration validation](hytlass-migration.md#validation).
+
 Both dependency versions compile successfully. The selected correctness tests
 have the same pass/fail outcomes, including the dense failures and GPU VMFault
 reproduced by the previous dependency build. This does not establish release
@@ -107,7 +113,7 @@ evidence of unchanged performance in every supported configuration.
 The complete JSON report and compressed build/test logs, including the harness,
 are saved as `FlashMLA-HYTLASS-HCU-validation-20261021.json` and the matching
 `.tar.gz` in the operator's Downloads directory. The harness was identical
-between builds. Keep the PR in Draft until failures are resolved or their
-support limits are agreed, and the performance tradeoff is reviewed.
+between builds. This snapshot alone does not complete the fresh guarded gfx938
+comparison or the requested gfx936 follow-up; the PR remains in Draft.
 Dependency access, assembly compiler provenance, and the separate review of
 historical author emails remain outside this runtime validation.
